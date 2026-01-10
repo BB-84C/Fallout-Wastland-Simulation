@@ -100,7 +100,7 @@ const App: React.FC = () => {
         : `模拟初始化。正在定位档案... 成功。欢迎，${actor.name}。`;
 
       const startNarration = `${introMsg} ${actor.lore}`;
-      const imgData = await generateSceneImage(`The ${gameState.location} landscape during the year ${gameState.currentYear}`);
+      const imgData = await generateSceneImage(`The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`);
       
       setGameState(prev => ({
         ...prev,
@@ -186,15 +186,9 @@ const App: React.FC = () => {
         });
       }
 
-      let imageUrl: string | undefined = undefined;
-      let sources: any[] | undefined = undefined;
-      // Generate image for narrative highlights or new NPCs
-      if (updatedHistory.length % 5 === 0 || response.newNpc) {
-        const visualPrompt = response.imagePrompt || "Fallout wasteland encounter";
-        const imgData = await generateSceneImage(visualPrompt);
-        imageUrl = imgData?.url;
-        sources = imgData?.sources;
-      }
+      // ALWAYS generate an image for every turn as requested
+      const visualPrompt = response.imagePrompt || actionText;
+      const imgData = await generateSceneImage(visualPrompt);
 
       setGameState(prev => ({
         ...prev,
@@ -206,8 +200,8 @@ const App: React.FC = () => {
         history: [...updatedHistory, { 
           sender: 'narrator', 
           text: response.storyText, 
-          imageUrl: imageUrl,
-          groundingSources: sources
+          imageUrl: imgData?.url,
+          groundingSources: imgData?.sources
         }]
       }));
     } catch (err) {

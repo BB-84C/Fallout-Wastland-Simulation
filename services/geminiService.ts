@@ -225,13 +225,14 @@ export async function generateSceneImage(prompt: string): Promise<{url: string, 
   
   try {
     // STAGE 1: Visual Research using Search Grounding
-    // This allows us to "research" the prompt and Fallout lore via Google Search.
+    // We explicitly extract keywords and use Search to "see" what things look like.
     const researchResponse = await researchAi.models.generateContent({
       model: 'gemini-3-pro-preview',
-      contents: `Perform visual reference research for a Fallout scene: "${prompt}". 
-      Focus on specific textures, environmental cues, and lore-accurate props (Vault-Tec, Power Armor, etc.). 
-      Always include "Fallout" in your search to ensure franchise accuracy.
-      Provide a highly detailed technical visual description for a professional illustrator.`,
+      contents: `Research visual references for this Fallout scene: "${prompt}".
+      1. Extract 3-5 keywords related to Fallout lore, items, or environment.
+      2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
+      3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
+      4. Format your final response as a detailed scene description for a concept artist.`,
       config: {
         tools: [{ googleSearch: {} }]
       }
@@ -248,12 +249,11 @@ export async function generateSceneImage(prompt: string): Promise<{url: string, 
       })) || [];
 
     // STAGE 2: Grounded Generation with Gemini 2.5 Flash Image
-    // We pass the "Research results" as the new high-fidelity prompt.
     const imageAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const imageResponse = await imageAi.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: {
-        parts: [{ text: `Fallout Cinematic Concept Art: ${detailedDescription}. Style: Realistic, atmospheric, post-apocalyptic concept art.` }],
+        parts: [{ text: `Cinematic Fallout Concept Art. Environment: ${detailedDescription}. Atmosphere: Desolate, atmospheric, detailed. Style: Digital art, 4k, hyper-realistic wasteland aesthetic.` }],
       },
       config: { 
         imageConfig: { aspectRatio: "16:9" }
