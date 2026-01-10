@@ -1,0 +1,367 @@
+
+import React, { useState, useCallback, useEffect } from 'react';
+import { GameState, Actor, Language, Quest } from './types';
+import { FALLOUT_ERA_STARTS } from './constants';
+import Terminal from './components/Terminal';
+import StatBar from './components/StatBar';
+import { createPlayerCharacter, getNarrativeResponse, generateSceneImage } from './services/geminiService';
+
+const SAVE_KEY = 'fallout_wasteland_save';
+
+// Removed redundant window.aistudio declaration as it is pre-configured in the environment.
+
+const App: React.FC = () => {
+  const [view, setView] = useState<'start' | 'creation' | 'playing'>('start');
+  const [gameState, setGameState] = useState<GameState>({
+    player: null,
+    currentYear: 2281,
+    location: 'Mojave Wasteland',
+    currentTime: new Date(Date.UTC(2281, 9, 23, 10, 0, 0)).toISOString(),
+    history: [],
+    knownNpcs: [],
+    quests: [],
+    isThinking: false,
+    language: 'en',
+  });
+  const [userInput, setUserInput] = useState('');
+  const [charDescription, setCharDescription] = useState('');
+  const [hasSave, setHasSave] = useState(false);
+  const [keyAlert, setKeyAlert] = useState(false);
+
+  useEffect(() => {
+    const saved = localStorage.getItem(SAVE_KEY);
+    if (saved) setHasSave(true);
+  }, []);
+
+  const saveGame = useCallback(() => {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(gameState));
+      setHasSave(true);
+      alert(gameState.language === 'en' ? "Game Saved Successfully!" : "游戏保存成功！");
+    } catch (e) {
+      console.error("Save failed", e);
+      alert(gameState.language === 'en' ? "Save failed! History might be too large." : "保存失败！历史记录可能过大。");
+    }
+  }, [gameState]);
+
+  const loadGame = useCallback(() => {
+    const saved = localStorage.getItem(SAVE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      setGameState(parsed);
+      setView('playing');
+    }
+  }, []);
+
+  const handleKeySelection = async () => {
+    // Accessing pre-configured window.aistudio
+    await window.aistudio.openSelectKey();
+    setKeyAlert(false);
+  };
+
+  const pickEra = useCallback(async () => {
+    // Check if user has selected key for high-quality images
+    if (typeof window.aistudio !== 'undefined') {
+      const hasKey = await window.aistudio.hasSelectedApiKey();
+      if (!hasKey) {
+        setKeyAlert(true);
+      }
+    }
+
+    const era = FALLOUT_ERA_STARTS[Math.floor(Math.random() * FALLOUT_ERA_STARTS.length)];
+    const randomHour = Math.floor(Math.random() * 12) + 6;
+    const date = new Date(Date.UTC(era.year, 6, 15, randomHour, 0, 0));
+    const initialTime = date.toISOString();
+    
+    setGameState(prev => ({ 
+      ...prev, 
+      currentYear: era.year, 
+      location: era.region,
+      currentTime: initialTime
+    }));
+    setView('creation');
+  }, []);
+
+  const handleCharacterCreation = async () => {
+    if (!charDescription.trim()) return;
+    setGameState(prev => ({ ...prev, isThinking: true }));
+    try {
+      const actor = await createPlayerCharacter(
+        charDescription, 
+        gameState.currentYear, 
+        gameState.location, 
+        gameState.language
+      );
+      
+      const introMsg = gameState.language === 'en' 
+        ? `Simulation Initialized. Locating profile... Success. Welcome, ${actor.name}.`
+        : `模拟初始化。正在定位档案... 成功。欢迎，${actor.name}。`;
+
+      const startNarration = `${introMsg} ${actor.lore}`;
+      const imgUrl = await generateSceneImage(`The ${gameState.location} landscape during the year ${gameState.currentYear}`);
+      
+      setGameState(prev => ({
+        ...prev,
+        player: actor,
+        isThinking: false,
+        history: [{ sender: 'narrator', text: startNarration, imageUrl: imgUrl || undefined }]
+      }));
+      setView('playing');
+    } catch (err) {
+      console.error("Vault-Tec Database Error:", err);
+      setGameState(prev => ({ 
+        ...prev, 
+        isThinking: false,
+        history: [...prev.history, { 
+          sender: 'narrator', 
+          text: gameState.language === 'en' 
+            ? `VAULT-TEC ERROR: Connection timed out while constructing profile. Please try again.` 
+            : `避难所科技错误：构建档案时连接超时。请重试。` 
+        }]
+      }));
+    }
+  };
+
+  const handleAction = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!userInput.trim() || gameState.isThinking || !gameState.player) return;
+
+    const actionText = userInput;
+    setUserInput('');
+
+    const updatedHistory = [...gameState.history, { sender: 'player', text: actionText } as const];
+
+    setGameState(prev => ({
+      ...prev,
+      isThinking: true,
+      history: updatedHistory
+    }));
+
+    try {
+      const response = await getNarrativeResponse(
+        gameState.player,
+        updatedHistory,
+        actionText,
+        gameState.currentYear,
+        gameState.location,
+        gameState.quests,
+        gameState.language
+      );
+
+      if (response.ruleViolation) {
+        setGameState(prev => ({
+          ...prev,
+          isThinking: false,
+          history: [...updatedHistory, { 
+            sender: 'narrator', 
+            text: `[RULE ERROR / 规则错误] ${response.ruleViolation}` 
+          }]
+        }));
+        return;
+      }
+
+      const newTime = new Date(gameState.currentTime);
+      newTime.setMinutes(newTime.getMinutes() + response.timePassedMinutes);
+
+      const mergedQuests = [...gameState.quests];
+      if (response.questUpdates) {
+        response.questUpdates.forEach(update => {
+          const index = mergedQuests.findIndex(q => q.id === update.id || q.name === update.name);
+          if (index > -1) {
+            const oldQuest = mergedQuests[index];
+            if (update.status === 'completed' && oldQuest.status === 'active') {
+              response.storyText += `\n\n[QUEST FINISHED: ${update.name}]\n${update.hiddenProgress}`;
+            }
+            mergedQuests[index] = update;
+          } else {
+            mergedQuests.push(update);
+          }
+        });
+      }
+
+      let imageUrl: string | undefined = undefined;
+      // Generate image for narrative highlights
+      if (updatedHistory.length % 5 === 0 || response.newNpc) {
+        const visualPrompt = response.imagePrompt || "Fallout wasteland encounter";
+        imageUrl = await generateSceneImage(visualPrompt);
+      }
+
+      setGameState(prev => ({
+        ...prev,
+        isThinking: false,
+        currentTime: newTime.toISOString(),
+        quests: mergedQuests,
+        knownNpcs: response.newNpc ? [...prev.knownNpcs, response.newNpc] : prev.knownNpcs,
+        history: [...updatedHistory, { 
+          sender: 'narrator', 
+          text: response.storyText, 
+          imageUrl: imageUrl || undefined 
+        }]
+      }));
+    } catch (err) {
+      console.error(err);
+      setGameState(prev => ({ 
+        ...prev, 
+        isThinking: false,
+        history: [...updatedHistory, { 
+          sender: 'narrator', 
+          text: gameState.language === 'en' 
+            ? `VAULT-TEC ERROR: Narrative link unstable.` 
+            : `避难所科技错误：叙事链路不稳定。` 
+        }]
+      }))
+    }
+  };
+
+  const toggleLanguage = (lang: Language) => {
+    setGameState(prev => ({ ...prev, language: lang }));
+  };
+
+  if (view === 'start') {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-8 text-center">
+        <div className="max-w-3xl space-y-8 pip-boy-border p-12 bg-black/60 shadow-2xl relative">
+          <div className="absolute top-4 right-4 flex space-x-2">
+            <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
+            <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
+          </div>
+          <h1 className="text-7xl font-bold glow-text tracking-tighter">FALLOUT</h1>
+          <h2 className="text-3xl tracking-widest opacity-80 uppercase">
+            {gameState.language === 'en' ? 'Wasteland Chronicles' : '废土编年史'}
+          </h2>
+          <p className="text-xl opacity-70 italic">
+            {gameState.language === 'en' ? 'War. War never changes.' : '战争。战争从未改变。'}
+          </p>
+          <div className="space-y-4 pt-8">
+             <button 
+              onClick={pickEra}
+              className="w-full text-2xl border-2 border-[#1aff1a] py-4 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+             >
+              {gameState.language === 'en' ? 'Initialize New Simulation' : '初始化新模拟'}
+             </button>
+             {hasSave && (
+               <button 
+                onClick={loadGame}
+                className="w-full text-2xl border-2 border-[#1aff1a]/50 py-4 hover:bg-[#1aff1a]/50 hover:text-black transition-all font-bold uppercase bg-[#1aff1a]/10"
+               >
+                {gameState.language === 'en' ? 'Continue Last Save' : '继续上次存档'}
+               </button>
+             )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'creation') {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-8">
+        {keyAlert && (
+          <div className="fixed top-0 left-0 w-full h-full z-[2000] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+            <div className="max-w-md w-full pip-boy-border p-8 bg-black">
+              <h3 className="text-2xl font-bold mb-4">API KEY REQUIRED</h3>
+              <p className="mb-6 opacity-80 leading-relaxed">
+                For high-quality image generation and real-time visual referencing, you must select a paid API key.
+                <br /><br />
+                <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" className="underline text-[#1aff1a]">Learn about billing</a>
+              </p>
+              <button 
+                onClick={handleKeySelection}
+                className="w-full py-3 bg-[#1aff1a] text-black font-bold uppercase hover:bg-white transition-colors"
+              >
+                SELECT API KEY
+              </button>
+              <button 
+                onClick={() => setKeyAlert(false)}
+                className="w-full mt-2 py-2 text-xs opacity-40 uppercase hover:opacity-100"
+              >
+                Continue without (Fallback to basic images)
+              </button>
+            </div>
+          </div>
+        )}
+        <div className="max-w-4xl w-full pip-boy-border p-8 bg-black/80">
+          <h2 className="text-4xl font-bold mb-4 glow-text uppercase">
+            {gameState.language === 'en' ? 'Identity Reconstruction' : '身份重建'}
+          </h2>
+          <div className="mb-6 space-y-2 p-4 bg-[#1aff1a]/10 border border-[#1aff1a]/20">
+             <div className="text-xl">
+               {gameState.language === 'en' ? 'PARAMS: ' : '参数 (PARAMS): '}
+               {gameState.location} / {gameState.currentYear}
+             </div>
+          </div>
+          <p className="mb-4 text-lg">
+            {gameState.language === 'en' 
+              ? 'Describe your origin, skills, and current state. The system will derive your profile.' 
+              : '描述你的出身、技能和现状。系统将生成你的档案。'}
+          </p>
+          <textarea 
+            value={charDescription}
+            onChange={(e) => setCharDescription(e.target.value)}
+            className="w-full h-40 bg-black border border-[#1aff1a] p-4 text-[#1aff1a] focus:outline-none text-xl"
+            disabled={gameState.isThinking}
+            placeholder={gameState.language === 'en' ? "I am a vault dweller who..." : "我是一名来自避难所的..."}
+          />
+          <button 
+            onClick={handleCharacterCreation}
+            disabled={gameState.isThinking || !charDescription.trim()}
+            className="mt-6 w-full text-2xl border-2 border-[#1aff1a] py-4 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase disabled:opacity-50"
+          >
+            {gameState.isThinking 
+              ? (gameState.language === 'en' ? 'Processing...' : '处理中...') 
+              : (gameState.language === 'en' ? 'Generate Profile' : '生成档案')}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-screen w-screen overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 bg-black/40">
+        <header className="p-4 border-b border-[#1aff1a]/30 bg-black/60 flex justify-between items-center">
+          <div className="flex items-center space-x-4">
+             <div className="w-10 h-10 border-2 border-[#1aff1a] flex items-center justify-center font-bold text-xl">13</div>
+             <h1 className="text-2xl font-bold tracking-widest uppercase">PIP-BOY 3000 Mk IV</h1>
+          </div>
+        </header>
+
+        <Terminal history={gameState.history} isThinking={gameState.isThinking} />
+
+        <form onSubmit={handleAction} className="p-4 bg-black/80 border-t border-[#1aff1a]/30 flex space-x-4">
+          <input 
+            type="text"
+            value={userInput}
+            onChange={(e) => setUserInput(e.target.value)}
+            placeholder={gameState.language === 'en' ? "Your action..." : "你的行动..."}
+            className="flex-1 bg-black border border-[#1aff1a]/50 p-4 text-[#1aff1a] text-xl focus:outline-none"
+            disabled={gameState.isThinking}
+            autoFocus
+          />
+          <button 
+            type="submit"
+            disabled={gameState.isThinking || !userInput.trim()}
+            className="px-8 border-2 border-[#1aff1a] hover:bg-[#1aff1a] hover:text-black font-bold uppercase transition-all"
+          >
+            {gameState.language === 'en' ? 'EXE' : '执行'}
+          </button>
+        </form>
+      </div>
+
+      {gameState.player && (
+        <StatBar 
+          player={gameState.player} 
+          location={gameState.location} 
+          year={gameState.currentYear}
+          time={gameState.currentTime}
+          quests={gameState.quests}
+          language={gameState.language}
+          onLanguageToggle={toggleLanguage}
+          onSave={saveGame}
+        />
+      )}
+    </div>
+  );
+};
+
+export default App;

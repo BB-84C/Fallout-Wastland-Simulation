@@ -1,0 +1,99 @@
+
+export enum SpecialAttr {
+  Strength = 'Strength',
+  Perception = 'Perception',
+  Endurance = 'Endurance',
+  Charisma = 'Charisma',
+  Intelligence = 'Intelligence',
+  Agility = 'Agility',
+  Luck = 'Luck'
+}
+
+export interface SpecialSet {
+  [SpecialAttr.Strength]: number;
+  [SpecialAttr.Perception]: number;
+  [SpecialAttr.Endurance]: number;
+  [SpecialAttr.Charisma]: number;
+  [SpecialAttr.Intelligence]: number;
+  [SpecialAttr.Agility]: number;
+  [SpecialAttr.Luck]: number;
+}
+
+export enum Skill {
+  SmallGuns = 'Small Guns',
+  BigGuns = 'Big Guns',
+  EnergyWeapons = 'Energy Weapons',
+  Unarmed = 'Unarmed',
+  MeleeWeapons = 'Melee Weapons',
+  Medicine = 'Medicine',
+  Repair = 'Repair',
+  Science = 'Science',
+  Sneak = 'Sneak',
+  Lockpick = 'Lockpick',
+  Steal = 'Steal',
+  Speech = 'Speech',
+  Barter = 'Barter',
+  Survival = 'Survival'
+}
+
+export type SkillSet = Partial<Record<Skill, number>>;
+
+export interface Perk {
+  name: string;
+  description: string;
+  rank: number;
+}
+
+export interface InventoryItem {
+  name: string;
+  type: 'Weapon' | 'Armor' | 'Aid' | 'Misc';
+  description: string;
+  weight: number;
+  value: number;
+}
+
+export interface Actor {
+  name: string;
+  age: number;
+  gender: string;
+  faction: string;
+  special: SpecialSet;
+  skills: SkillSet;
+  perks: Perk[];
+  inventory: InventoryItem[];
+  lore: string;
+  health: number;
+  maxHealth: number;
+  karma: number; // -100 to 100
+}
+
+export type Language = 'en' | 'zh';
+
+export interface Quest {
+  id: string;
+  name: string;
+  objective: string;
+  status: 'active' | 'completed' | 'failed';
+  hiddenProgress: string; // Internal lore consistency for LLM
+}
+
+export interface GameState {
+  player: Actor | null;
+  currentYear: number;
+  location: string;
+  currentTime: string; // ISO string or formatted
+  history: { sender: 'player' | 'narrator'; text: string; imageUrl?: string }[];
+  knownNpcs: Actor[];
+  quests: Quest[];
+  isThinking: boolean;
+  language: Language;
+}
+
+export interface NarratorResponse {
+  storyText: string;
+  ruleViolation: string | null; // Null if player followed the rules
+  timePassedMinutes: number;
+  questUpdates?: Quest[];
+  newNpc?: Actor;
+  imagePrompt?: string;
+}
