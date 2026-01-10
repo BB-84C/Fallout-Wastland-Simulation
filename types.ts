@@ -90,16 +90,25 @@ export interface HistoryEntry {
   groundingSources?: GroundingSource[];
 }
 
+export interface GameSettings {
+  highQualityImage: boolean;
+  imageFrequency: number;
+}
+
 export interface GameState {
   player: Actor | null;
   currentYear: number;
   location: string;
-  currentTime: string; // ISO string or formatted
+  currentTime: string; // Environment time
   history: HistoryEntry[];
   knownNpcs: Actor[];
   quests: Quest[];
   isThinking: boolean;
   language: Language;
+  ap: number;
+  lastApUpdateTime: string; // Real-world time
+  isAdmin: boolean;
+  settings: GameSettings;
 }
 
 export interface NarratorResponse {
@@ -108,6 +117,6 @@ export interface NarratorResponse {
   timePassedMinutes: number;
   questUpdates?: Quest[];
   newNpc?: Actor;
-  updatedPlayer?: Actor; // For inventory/caps/health changes
+  updatedPlayer?: Actor;
   imagePrompt?: string;
 }
