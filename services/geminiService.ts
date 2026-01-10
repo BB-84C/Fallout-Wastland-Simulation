@@ -216,39 +216,48 @@ export async function getNarrativeResponse(
 }
 
 /**
- * TWO-STAGE GENERATION:
- * Stage 1: Research visual details using gemini-3-pro-preview with Google Search.
+ * Two-stage generation (optional):
+ * Stage 1: Research visual details using gemini-3-pro with Google Search.
  * Stage 2: Generate the image using gemini-2.5-flash-image based on research findings.
  */
-export async function generateSceneImage(prompt: string): Promise<{url: string, sources: GroundingSource[]} | undefined> {
-  const researchAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
+export async function generateSceneImage(
+  prompt: string,
+  options?: { highQuality?: boolean }
+): Promise<{url: string, sources: GroundingSource[]} | undefined> {
+  const useHighQuality = options?.highQuality !== false;
+
   try {
-    // STAGE 1: Visual Research using Search Grounding
-    // We explicitly extract keywords and use Search to "see" what things look like.
-    const researchResponse = await researchAi.models.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: `Research visual references for this Fallout scene: "${prompt}".
-      1. Extract 3-5 keywords related to Fallout lore, items, or environment.
-      2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
-      3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
-      4. Format your final response as a detailed scene description for a concept artist.`,
-      config: {
-        tools: [{ googleSearch: {} }]
-      }
-    });
+    let detailedDescription = prompt;
+    let groundingSources: GroundingSource[] = [];
 
-    const detailedDescription = researchResponse.text || prompt;
-    
-    // Extract search grounding sources to display in the UI as per SDK rules.
-    const groundingSources: GroundingSource[] = researchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks
-      ?.filter((chunk: any) => chunk.web)
-      ?.map((chunk: any) => ({
-        title: chunk.web.title,
-        uri: chunk.web.uri
-      })) || [];
+    if (useHighQuality) {
+      const researchAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      // STAGE 1: Visual Research using Search Grounding
+      // We explicitly extract keywords and use Search to "see" what things look like.
+      const researchResponse = await researchAi.models.generateContent({
+        model: 'gemini-3-pro',
+        contents: `Research visual references for this Fallout scene: "${prompt}".
+        1. Extract 3-5 keywords related to Fallout lore, items, or environment.
+        2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
+        3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
+        4. Format your final response as a detailed scene description for a concept artist.`,
+        config: {
+          tools: [{ googleSearch: {} }]
+        }
+      });
 
-    // STAGE 2: Grounded Generation with Gemini 2.5 Flash Image
+      detailedDescription = researchResponse.text || prompt;
+
+      // Extract search grounding sources to display in the UI as per SDK rules.
+      groundingSources = researchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks
+        ?.filter((chunk: any) => chunk.web)
+        ?.map((chunk: any) => ({
+          title: chunk.web.title,
+          uri: chunk.web.uri
+        })) || [];
+    }
+
+    // STAGE 2: Image generation
     const imageAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const imageResponse = await imageAi.models.generateContent({
       model: 'gemini-2.5-flash-image',
@@ -270,7 +279,7 @@ export async function generateSceneImage(prompt: string): Promise<{url: string, 
       }
     }
   } catch (e) {
-    console.error("Two-stage image generation failed:", e);
+    console.error("Image generation failed:", e);
   }
   return undefined;
 }

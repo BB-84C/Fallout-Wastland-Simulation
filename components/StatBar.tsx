@@ -9,6 +9,9 @@ interface StatBarProps {
   time: string;
   quests: Quest[];
   language: Language;
+  ap: number;
+  maxAp: number;
+  isAdmin: boolean;
   onLanguageToggle: (lang: Language) => void;
   onSave: () => void;
   onClose: () => void;
@@ -58,6 +61,9 @@ const StatBar: React.FC<StatBarProps> = ({
   time, 
   quests, 
   language, 
+  ap,
+  maxAp,
+  isAdmin,
   onLanguageToggle,
   onSave,
   onClose
@@ -91,6 +97,24 @@ const StatBar: React.FC<StatBarProps> = ({
                       style={{ width: `${(player.health / player.maxHealth) * 100}%` }}
                     ></div>
                   </div>
+                </div>
+
+                <div>
+                  <div className="flex justify-between text-[10px] uppercase mb-1">
+                    <span>AP</span>
+                    <span>{isAdmin ? '∞' : `${ap} / ${maxAp}`}</span>
+                  </div>
+                  <div className="w-full bg-[#1aff1a]/10 h-3 border border-[#1aff1a]/30">
+                    <div 
+                      className="bg-[#1aff1a] h-full shadow-[0_0_10px_#1aff1a] transition-all duration-500" 
+                      style={{ width: `${isAdmin ? 100 : Math.max(0, Math.min(100, (ap / maxAp) * 100))}%` }}
+                    ></div>
+                  </div>
+                  {!isAdmin && (
+                    <div className="text-[9px] opacity-50 mt-1 uppercase tracking-widest">
+                      +6 / 30 min
+                    </div>
+                  )}
                 </div>
                 
                 <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 space-y-2">

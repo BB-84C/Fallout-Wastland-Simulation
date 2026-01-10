@@ -70,6 +70,11 @@ export interface Actor {
 
 export type Language = 'en' | 'zh';
 
+export interface GameSettings {
+  highQualityImages: boolean;
+  imageEveryTurns: number;
+}
+
 export interface Quest {
   id: string;
   name: string;
@@ -100,6 +105,10 @@ export interface GameState {
   quests: Quest[];
   isThinking: boolean;
   language: Language;
+  settings: GameSettings;
+  ap: number;
+  apLastUpdated: number;
+  turnCount: number;
 }
 
 export interface NarratorResponse {
