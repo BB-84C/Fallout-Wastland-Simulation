@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { GameState, Actor, Language, Quest } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry } from './types';
 import { FALLOUT_ERA_STARTS } from './constants';
 import Terminal from './components/Terminal';
 import StatBar from './components/StatBar';
@@ -100,13 +100,18 @@ const App: React.FC = () => {
         : `模拟初始化。正在定位档案... 成功。欢迎，${actor.name}。`;
 
       const startNarration = `${introMsg} ${actor.lore}`;
-      const imgUrl = await generateSceneImage(`The ${gameState.location} landscape during the year ${gameState.currentYear}`);
+      const imgData = await generateSceneImage(`The ${gameState.location} landscape during the year ${gameState.currentYear}`);
       
       setGameState(prev => ({
         ...prev,
         player: actor,
         isThinking: false,
-        history: [{ sender: 'narrator', text: startNarration, imageUrl: imgUrl || undefined }]
+        history: [{ 
+          sender: 'narrator', 
+          text: startNarration, 
+          imageUrl: imgData?.url,
+          groundingSources: imgData?.sources
+        }]
       }));
       setView('playing');
     } catch (err) {
@@ -131,7 +136,7 @@ const App: React.FC = () => {
     const actionText = userInput;
     setUserInput('');
 
-    const updatedHistory = [...gameState.history, { sender: 'player', text: actionText } as const];
+    const updatedHistory: HistoryEntry[] = [...gameState.history, { sender: 'player', text: actionText }];
 
     setGameState(prev => ({
       ...prev,
@@ -182,10 +187,13 @@ const App: React.FC = () => {
       }
 
       let imageUrl: string | undefined = undefined;
+      let sources: any[] | undefined = undefined;
       // Generate image for narrative highlights or new NPCs
       if (updatedHistory.length % 5 === 0 || response.newNpc) {
         const visualPrompt = response.imagePrompt || "Fallout wasteland encounter";
-        imageUrl = await generateSceneImage(visualPrompt);
+        const imgData = await generateSceneImage(visualPrompt);
+        imageUrl = imgData?.url;
+        sources = imgData?.sources;
       }
 
       setGameState(prev => ({
@@ -198,7 +206,8 @@ const App: React.FC = () => {
         history: [...updatedHistory, { 
           sender: 'narrator', 
           text: response.storyText, 
-          imageUrl: imageUrl || undefined 
+          imageUrl: imageUrl,
+          groundingSources: sources
         }]
       }));
     } catch (err) {

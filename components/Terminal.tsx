@@ -1,14 +1,9 @@
 
 import React, { useEffect, useRef } from 'react';
-
-interface Message {
-  sender: 'player' | 'narrator';
-  text: string;
-  imageUrl?: string;
-}
+import { HistoryEntry } from '../types';
 
 interface TerminalProps {
-  history: Message[];
+  history: HistoryEntry[];
   isThinking: boolean;
 }
 
@@ -44,6 +39,25 @@ const Terminal: React.FC<TerminalProps> = ({ history, isThinking }) => {
             <div className="mt-4 border-2 border-[#1aff1a]/50 p-1 bg-black/60 shadow-lg max-w-2xl">
               <img src={msg.imageUrl} alt="Scene" className="w-full h-auto rounded-sm opacity-90 hover:opacity-100 transition-opacity" />
               <div className="text-[10px] text-center mt-1 opacity-40 uppercase">VAULT-TEC VISUAL RECONSTRUCTION</div>
+              {/* Render grounding sources from Search Grounding to follow SDK requirements */}
+              {msg.groundingSources && msg.groundingSources.length > 0 && (
+                <div className="mt-2 p-2 border-t border-[#1aff1a]/20 text-[10px] bg-black/20">
+                  <div className="opacity-40 uppercase mb-1 font-bold">Visual References:</div>
+                  <div className="flex flex-wrap gap-2">
+                    {msg.groundingSources.map((source, idx) => (
+                      <a 
+                        key={idx} 
+                        href={source.uri} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-[#1aff1a] hover:underline opacity-60 hover:opacity-100 transition-opacity truncate max-w-[200px]"
+                      >
+                        [{source.title}]
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

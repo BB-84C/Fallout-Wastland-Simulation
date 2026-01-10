@@ -78,12 +78,24 @@ export interface Quest {
   hiddenProgress: string; // Internal lore consistency for LLM
 }
 
+export interface GroundingSource {
+  title: string;
+  uri: string;
+}
+
+export interface HistoryEntry {
+  sender: 'player' | 'narrator';
+  text: string;
+  imageUrl?: string;
+  groundingSources?: GroundingSource[];
+}
+
 export interface GameState {
   player: Actor | null;
   currentYear: number;
   location: string;
   currentTime: string; // ISO string or formatted
-  history: { sender: 'player' | 'narrator'; text: string; imageUrl?: string }[];
+  history: HistoryEntry[];
   knownNpcs: Actor[];
   quests: Quest[];
   isThinking: boolean;

@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest } from "../types";
+import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource } from "../types";
 
 const actorSchema = {
   type: Type.OBJECT,
@@ -75,7 +75,7 @@ const questSchema = {
 };
 
 /**
- * Resizes and compresses a base64 image to target ~400KB and 640p height.
+ * Resizes image to 640p height and compresses to JPEG to stay under 400KB.
  */
 async function compressImage(base64: string): Promise<string> {
   return new Promise((resolve) => {
@@ -83,32 +83,21 @@ async function compressImage(base64: string): Promise<string> {
     img.onload = () => {
       const canvas = document.createElement('canvas');
       const targetHeight = 640;
-      const scale = targetHeight / img.height;
-      const width = img.width * scale;
-      const height = targetHeight;
-
-      canvas.width = width;
-      canvas.height = height;
+      const h = img.height || 1;
+      const w = img.width || 1;
+      const scale = targetHeight / h;
+      
+      canvas.width = w * scale;
+      canvas.height = targetHeight;
+      
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         resolve(base64);
         return;
       }
 
-      ctx.drawImage(img, 0, 0, width, height);
-      
-      // Start with quality 0.7 to keep file size low
-      let quality = 0.7;
-      let result = canvas.toDataURL('image/jpeg', quality);
-      
-      // Rough estimation of base64 size (string length * 0.75)
-      // 400KB is roughly 533,333 characters in base64
-      while (result.length > 533333 && quality > 0.1) {
-        quality -= 0.1;
-        result = canvas.toDataURL('image/jpeg', quality);
-      }
-      
-      resolve(result);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.8));
     };
     img.onerror = () => resolve(base64);
     img.src = base64;
@@ -137,7 +126,7 @@ export async function createPlayerCharacter(userInput: string, year: number, reg
   const targetLang = lang === 'zh' ? 'Chinese' : 'English';
   
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: 'gemini-3-pro-preview',
     contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps).`,
     config: {
       responseMimeType: "application/json",
@@ -187,7 +176,7 @@ export async function getNarrativeResponse(
   `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: 'gemini-3-pro-preview',
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -226,30 +215,62 @@ export async function getNarrativeResponse(
   return safeJsonParse(response.text);
 }
 
-export async function generateSceneImage(prompt: string): Promise<string | undefined> {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+/**
+ * TWO-STAGE GENERATION:
+ * Stage 1: Research visual details using gemini-3-pro-preview with Google Search.
+ * Stage 2: Generate the image using gemini-2.5-flash-image based on research findings.
+ */
+export async function generateSceneImage(prompt: string): Promise<{url: string, sources: GroundingSource[]} | undefined> {
+  const researchAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-image-preview',
+    // STAGE 1: Visual Research using Search Grounding
+    // This allows us to "research" the prompt and Fallout lore via Google Search.
+    const researchResponse = await researchAi.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: `Perform visual reference research for a Fallout scene: "${prompt}". 
+      Focus on specific textures, environmental cues, and lore-accurate props (Vault-Tec, Power Armor, etc.). 
+      Always include "Fallout" in your search to ensure franchise accuracy.
+      Provide a highly detailed technical visual description for a professional illustrator.`,
+      config: {
+        tools: [{ googleSearch: {} }]
+      }
+    });
+
+    const detailedDescription = researchResponse.text || prompt;
+    
+    // Extract search grounding sources to display in the UI as per SDK rules.
+    const groundingSources: GroundingSource[] = researchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks
+      ?.filter((chunk: any) => chunk.web)
+      ?.map((chunk: any) => ({
+        title: chunk.web.title,
+        uri: chunk.web.uri
+      })) || [];
+
+    // STAGE 2: Grounded Generation with Gemini 2.5 Flash Image
+    // We pass the "Research results" as the new high-fidelity prompt.
+    const imageAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const imageResponse = await imageAi.models.generateContent({
+      model: 'gemini-2.5-flash-image',
       contents: {
-        parts: [{ text: `Generate a Fallout-themed scene: ${prompt}. Refer to Fallout visual archives to ensure environmental accuracy (e.g. vault tech, power armor, wasteland ruins). Style: Cinematic concept art.` }],
+        parts: [{ text: `Fallout Cinematic Concept Art: ${detailedDescription}. Style: Realistic, atmospheric, post-apocalyptic concept art.` }],
       },
       config: { 
-        imageConfig: { aspectRatio: "16:9", imageSize: "1K" },
-        tools: [{ googleSearch: {} }] 
+        imageConfig: { aspectRatio: "16:9" }
       },
     });
 
-    for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData) {
-        const rawBase64 = `data:image/png;base64,${part.inlineData.data}`;
-        // Compress the image before returning to avoid storage issues
-        return await compressImage(rawBase64);
+    if (imageResponse.candidates?.[0]?.content?.parts) {
+      for (const part of imageResponse.candidates[0].content.parts) {
+        if (part.inlineData) {
+          const rawBase64 = `data:image/png;base64,${part.inlineData.data}`;
+          const compressed = await compressImage(rawBase64);
+          return { url: compressed, sources: groundingSources };
+        }
       }
     }
   } catch (e) {
-    console.error("High-quality image generation failed.", e);
+    console.error("Two-stage image generation failed:", e);
   }
   return undefined;
 }
