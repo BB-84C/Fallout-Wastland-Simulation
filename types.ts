@@ -46,7 +46,7 @@ export interface Perk {
 
 export interface InventoryItem {
   name: string;
-  type: 'Weapon' | 'Armor' | 'Aid' | 'Misc';
+  type: 'Weapon' | 'Armor' | 'Aid' | 'Misc' | 'Currency';
   description: string;
   weight: number;
   value: number;
@@ -65,6 +65,7 @@ export interface Actor {
   health: number;
   maxHealth: number;
   karma: number; // -100 to 100
+  caps: number; // Bottle Caps currency
 }
 
 export type Language = 'en' | 'zh';
@@ -91,9 +92,10 @@ export interface GameState {
 
 export interface NarratorResponse {
   storyText: string;
-  ruleViolation: string | null; // Null if player followed the rules
+  ruleViolation: string | null;
   timePassedMinutes: number;
   questUpdates?: Quest[];
   newNpc?: Actor;
+  updatedPlayer?: Actor; // For inventory/caps/health changes
   imagePrompt?: string;
 }

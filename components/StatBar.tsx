@@ -1,6 +1,6 @@
 
-import React from 'react';
-import { Actor, Language, Quest } from '../types';
+import React, { useState } from 'react';
+import { Actor, Language, Quest, SpecialAttr, Skill } from '../types';
 
 interface StatBarProps {
   player: Actor;
@@ -11,7 +11,45 @@ interface StatBarProps {
   language: Language;
   onLanguageToggle: (lang: Language) => void;
   onSave: () => void;
+  onClose: () => void;
 }
+
+type Tab = 'STAT' | 'SPEC' | 'SKIL' | 'PERK' | 'DATA' | 'INV';
+
+const skillLocalizations: Record<Language, Record<Skill, string>> = {
+  en: {
+    [Skill.SmallGuns]: 'Small Guns',
+    [Skill.BigGuns]: 'Big Guns',
+    [Skill.EnergyWeapons]: 'Energy Weapons',
+    [Skill.Unarmed]: 'Unarmed',
+    [Skill.MeleeWeapons]: 'Melee Weapons',
+    [Skill.Medicine]: 'Medicine',
+    [Skill.Repair]: 'Repair',
+    [Skill.Science]: 'Science',
+    [Skill.Sneak]: 'Sneak',
+    [Skill.Lockpick]: 'Lockpick',
+    [Skill.Steal]: 'Steal',
+    [Skill.Speech]: 'Speech',
+    [Skill.Barter]: 'Barter',
+    [Skill.Survival]: 'Survival',
+  },
+  zh: {
+    [Skill.SmallGuns]: '轻型枪械',
+    [Skill.BigGuns]: '重型枪械',
+    [Skill.EnergyWeapons]: '能量武器',
+    [Skill.Unarmed]: '徒手',
+    [Skill.MeleeWeapons]: '近战武器',
+    [Skill.Medicine]: '医药',
+    [Skill.Repair]: '修理',
+    [Skill.Science]: '科学',
+    [Skill.Sneak]: '潜行',
+    [Skill.Lockpick]: '开锁',
+    [Skill.Steal]: '盗窃',
+    [Skill.Speech]: '口才',
+    [Skill.Barter]: '交易',
+    [Skill.Survival]: '生存',
+  }
+};
 
 const StatBar: React.FC<StatBarProps> = ({ 
   player, 
@@ -21,8 +59,11 @@ const StatBar: React.FC<StatBarProps> = ({
   quests, 
   language, 
   onLanguageToggle,
-  onSave
+  onSave,
+  onClose
 }) => {
+  const [activeTab, setActiveTab] = useState<Tab>('STAT');
+
   const dateStr = new Date(time).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
     month: 'short',
     day: 'numeric',
@@ -31,101 +72,214 @@ const StatBar: React.FC<StatBarProps> = ({
     minute: '2-digit'
   });
 
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case 'STAT':
+        return (
+          <div className="space-y-6 animate-in fade-in duration-300">
+            <div>
+              <h3 className="text-xs uppercase opacity-50 mb-2 tracking-widest">{language === 'en' ? 'Condition' : '状态'}</h3>
+              <div className="space-y-4">
+                <div>
+                  <div className="flex justify-between text-[10px] uppercase mb-1">
+                    <span>HP</span>
+                    <span>{player.health} / {player.maxHealth}</span>
+                  </div>
+                  <div className="w-full bg-[#1aff1a]/10 h-3 border border-[#1aff1a]/30">
+                    <div 
+                      className="bg-[#1aff1a] h-full shadow-[0_0_10px_#1aff1a] transition-all duration-500" 
+                      style={{ width: `${(player.health / player.maxHealth) * 100}%` }}
+                    ></div>
+                  </div>
+                </div>
+                
+                <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs uppercase font-bold opacity-70">{language === 'en' ? 'Caps' : '瓶盖'}</span>
+                    <span className="text-xl font-bold text-[#1aff1a] glow-text">{player.caps} ₵</span>
+                  </div>
+                  <div className="flex justify-between items-center pt-2 border-t border-[#1aff1a]/20">
+                    <span className="text-xs uppercase font-bold opacity-70">{language === 'en' ? 'Karma' : '因果'}</span>
+                    <span className={`text-sm font-bold ${player.karma >= 0 ? 'text-[#1aff1a]' : 'text-red-500'}`}>
+                      {player.karma > 50 ? (language === 'en' ? 'Saint' : '圣人') : 
+                       player.karma > 20 ? (language === 'en' ? 'Good' : '善良') : 
+                       player.karma > -20 ? (language === 'en' ? 'Neutral' : '中立') : 
+                       player.karma > -50 ? (language === 'en' ? 'Evil' : '邪恶') : (language === 'en' ? 'Devil' : '恶魔')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="text-xs space-y-1 opacity-80 pt-4 border-t border-[#1aff1a]/10">
+              <div className="flex justify-between"><span>LOC:</span> <span className="text-right">{location}</span></div>
+              <div className="flex justify-between"><span>DATE:</span> <span className="text-right">{dateStr}</span></div>
+              <div className="flex justify-between"><span>FACT:</span> <span className="text-right">{player.faction}</span></div>
+            </div>
+          </div>
+        );
+
+      case 'SPEC':
+        return (
+          <div className="space-y-2 animate-in slide-in-from-right-4 duration-300">
+            {Object.entries(player.special).map(([key, val]) => (
+              <div key={key} className="flex justify-between items-center border-b border-[#1aff1a]/10 py-2 hover:bg-[#1aff1a]/5 px-1">
+                <span className="text-sm font-bold tracking-widest">{key.toUpperCase()}</span>
+                <span className="text-xl font-bold glow-text">{val}</span>
+              </div>
+            ))}
+          </div>
+        );
+
+      case 'SKIL':
+        return (
+          <div className="space-y-1 animate-in slide-in-from-right-4 duration-300">
+            {Object.values(Skill).map((skill) => (
+              <div key={skill} className="flex justify-between items-center border-b border-[#1aff1a]/5 py-1.5 px-1 hover:bg-[#1aff1a]/5">
+                <span className="text-xs opacity-90">{skillLocalizations[language][skill]}</span>
+                <span className="text-sm font-bold">{(player.skills as any)[skill] || 0}</span>
+              </div>
+            ))}
+          </div>
+        );
+
+      case 'PERK':
+        return (
+          <div className="space-y-3 animate-in slide-in-from-right-4 duration-300">
+            {player.perks.length === 0 && <div className="text-center py-10 opacity-30 italic">{language === 'en' ? 'No perks earned' : '暂无额外能力'}</div>}
+            {player.perks.map((perk, idx) => (
+              <div key={idx} className="border border-[#1aff1a]/20 p-2 bg-[#1aff1a]/5">
+                <div className="text-sm font-bold text-[#1aff1a] mb-1 uppercase">{perk.name}</div>
+                <div className="text-[11px] opacity-70 leading-tight">{perk.description}</div>
+              </div>
+            ))}
+          </div>
+        );
+
+      case 'DATA':
+        return (
+          <div className="space-y-4 animate-in slide-in-from-right-4 duration-300">
+             <div>
+                <h4 className="text-[10px] uppercase opacity-50 mb-2">{language === 'en' ? 'Active Quests' : '进行中的任务'}</h4>
+                <div className="space-y-2">
+                  {quests.filter(q => q.status === 'active').length === 0 && <div className="text-xs opacity-30 italic px-2">--- {language === 'en' ? 'Empty' : '空'} ---</div>}
+                  {quests.filter(q => q.status === 'active').map(q => (
+                    <div key={q.id} className="text-sm border-l-2 border-[#1aff1a] pl-2 py-2 bg-[#1aff1a]/5">
+                      <div className="font-bold text-[#1aff1a] uppercase text-xs mb-1">{q.name}</div>
+                      <div className="opacity-70 text-[11px]">{q.objective}</div>
+                    </div>
+                  ))}
+                </div>
+             </div>
+             {quests.filter(q => q.status !== 'active').length > 0 && (
+               <div className="pt-4 border-t border-[#1aff1a]/10">
+                  <h4 className="text-[10px] uppercase opacity-50 mb-2">{language === 'en' ? 'Completed' : '已完成'}</h4>
+                  <div className="space-y-1">
+                    {quests.filter(q => q.status !== 'active').map(q => (
+                      <div key={q.id} className="text-[11px] opacity-40 line-through px-2">
+                        {q.name}
+                      </div>
+                    ))}
+                  </div>
+               </div>
+             )}
+          </div>
+        );
+
+      case 'INV':
+        return (
+          <div className="space-y-1 animate-in slide-in-from-right-4 duration-300">
+            <div className="flex justify-between text-[10px] uppercase opacity-40 px-1 mb-2">
+              <span>{language === 'en' ? 'Item' : '物品'}</span>
+              <span>{language === 'en' ? 'Weight' : '重量'}</span>
+            </div>
+            {player.inventory.map((item, idx) => (
+              <div key={idx} className="text-xs p-1.5 border-b border-[#1aff1a]/5 flex justify-between hover:bg-[#1aff1a]/5 group">
+                <div className="flex flex-col truncate pr-2">
+                  <span className="font-bold group-hover:text-white transition-colors">{item.name}</span>
+                  <span className="text-[9px] opacity-50 truncate">{item.type}</span>
+                </div>
+                <span className="opacity-40 whitespace-nowrap self-center">{item.weight} lb</span>
+              </div>
+            ))}
+            <div className="pt-4 text-[10px] opacity-50 text-right">
+               {language === 'en' ? 'Total Weight: ' : '总重: '}
+               {player.inventory.reduce((acc, curr) => acc + curr.weight, 0).toFixed(1)} / {player.special.Strength * 10 + 50} lb
+            </div>
+          </div>
+        );
+    }
+  };
+
+  const tabs: {id: Tab; label: string}[] = [
+    { id: 'STAT', label: language === 'en' ? 'STAT' : '状态' },
+    { id: 'SPEC', label: 'SPEC' },
+    { id: 'SKIL', label: language === 'en' ? 'SKIL' : '技能' },
+    { id: 'PERK', label: language === 'en' ? 'PERK' : '能力' },
+    { id: 'DATA', label: language === 'en' ? 'DATA' : '数据' },
+    { id: 'INV', label: 'INV' }
+  ];
+
   return (
-    <div className="w-80 h-full border-l border-[#1aff1a]/30 bg-black/60 p-4 overflow-y-auto space-y-6 flex flex-col">
-      <div className="border-b border-[#1aff1a]/30 pb-4 space-y-2">
-        <div className="flex justify-between items-center mb-2">
+    <div className="w-full md:w-80 h-full border-l border-[#1aff1a]/30 bg-black/80 p-0 overflow-hidden flex flex-col no-scrollbar">
+      {/* Top Utility Header */}
+      <div className="p-3 border-b border-[#1aff1a]/30 space-y-3 bg-black">
+        <div className="flex justify-between items-center">
           <button 
-            onClick={() => onLanguageToggle(language === 'en' ? 'zh' : 'en')}
-            className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors"
+            onClick={onClose}
+            className="md:hidden text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/20 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
           >
-            {language === 'en' ? 'ENGLISH / 中文' : '中文 / ENGLISH'}
+            {language === 'en' ? 'RETURN' : '返回'}
           </button>
-          <button 
-            onClick={onSave}
-            className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
-          >
-            {language === 'en' ? 'SAVE GAME' : '保存游戏'}
-          </button>
+          <div className="flex space-x-2">
+            <button 
+              onClick={() => onLanguageToggle(language === 'en' ? 'zh' : 'en')}
+              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors"
+            >
+              {language === 'en' ? 'EN / 中' : '中 / EN'}
+            </button>
+            <button 
+              onClick={onSave}
+              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+            >
+              {language === 'en' ? 'SAVE' : '保存'}
+            </button>
+          </div>
         </div>
         
-        <h2 className="text-3xl font-bold glow-text uppercase leading-none">{player.name}</h2>
-        <div className="text-sm opacity-70">
-          <div>{location}</div>
-          <div className="text-[#1aff1a]/90 font-bold">{dateStr}</div>
-        </div>
-
-        <div className="mt-4">
-           <div className="text-[10px] uppercase opacity-50 mb-1">Condition (HP)</div>
-           <div className="w-full bg-[#1aff1a]/10 h-2 border border-[#1aff1a]/30">
-              <div 
-                className="bg-[#1aff1a] h-full shadow-[0_0_10px_#1aff1a]" 
-                style={{ width: `${(player.health / player.maxHealth) * 100}%` }}
-              ></div>
-           </div>
-           <div className="text-right text-[10px] mt-1">{player.health} / {player.maxHealth}</div>
+        <div className="space-y-0.5">
+          <h2 className="text-xl font-bold glow-text uppercase leading-none truncate">{player.name}</h2>
+          <div className="text-[10px] opacity-60 uppercase tracking-tighter">Pip-Boy 3000 Interface v4.0.2</div>
         </div>
       </div>
 
-      <section>
-        <h3 className="text-lg font-bold border-b border-[#1aff1a]/20 mb-2 uppercase tracking-widest text-[#1aff1a]/80">
-          {language === 'en' ? 'S.P.E.C.I.A.L.' : '属性'}
-        </h3>
-        <div className="flex flex-wrap gap-x-4 gap-y-1">
-          {Object.entries(player.special).map(([key, val]) => (
-            <div key={key} className="flex items-center text-xl">
-              <span className="opacity-70 mr-1">{key.charAt(0)}:</span>
-              <span className="font-bold">{val}</span>
-            </div>
-          ))}
-        </div>
-      </section>
+      {/* Sub-Menu Tabs */}
+      <div className="flex border-b border-[#1aff1a]/30 bg-[#1aff1a]/5">
+        {tabs.map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex-1 py-2 text-[10px] font-bold transition-all border-r last:border-r-0 border-[#1aff1a]/20 ${
+              activeTab === tab.id 
+                ? 'bg-[#1aff1a] text-black shadow-[inset_0_0_8px_rgba(0,0,0,0.5)]' 
+                : 'text-[#1aff1a]/60 hover:text-[#1aff1a] hover:bg-[#1aff1a]/10'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
-      <section>
-        <h3 className="text-lg font-bold border-b border-[#1aff1a]/20 mb-2 uppercase tracking-widest text-[#1aff1a]/80">
-          {language === 'en' ? 'PERKS' : '额外能力'}
-        </h3>
-        <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
-          {player.perks.length === 0 && <div className="text-xs opacity-40">None</div>}
-          {player.perks.map((perk, idx) => (
-            <div key={idx} className="group relative border border-[#1aff1a]/20 p-2 bg-[#1aff1a]/5 hover:bg-[#1aff1a]/10 transition-colors">
-              <div className="text-base font-bold text-[#1aff1a] mb-1">{perk.name}</div>
-              <div className="text-xs opacity-80 leading-tight">
-                {perk.description}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
+      {/* Content Area */}
+      <div className="flex-1 overflow-y-auto p-4 no-scrollbar">
+        {renderTabContent()}
+      </div>
 
-      <section>
-        <h3 className="text-lg font-bold border-b border-[#1aff1a]/20 mb-2 uppercase tracking-widest text-[#1aff1a]/80">
-          {language === 'en' ? 'DATA - QUESTS' : '数据 - 任务'}
-        </h3>
-        <div className="space-y-3 max-h-48 overflow-y-auto pr-1">
-          {quests.length === 0 && <div className="text-sm opacity-40">{language === 'en' ? 'No active quests' : '没有进行中的任务'}</div>}
-          {quests.filter(q => q.status === 'active').map(q => (
-            <div key={q.id} className="text-sm border-l-2 border-[#1aff1a] pl-2 py-1 bg-[#1aff1a]/5">
-              <div className="font-bold text-[#1aff1a] uppercase text-xs">{q.name}</div>
-              <div className="opacity-70 text-[11px] leading-tight">Objective: {q.objective}</div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="flex-1">
-        <h3 className="text-lg font-bold border-b border-[#1aff1a]/20 mb-2 uppercase tracking-widest text-[#1aff1a]/80">
-          {language === 'en' ? 'INV' : '物品栏'}
-        </h3>
-        <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
-          {player.inventory.map((item, idx) => (
-            <div key={idx} className="text-xs p-1 border border-[#1aff1a]/5 flex justify-between">
-              <span>{item.name}</span>
-              <span className="opacity-40">{item.weight}lbs</span>
-            </div>
-          ))}
-        </div>
-      </section>
+      {/* Bottom Footer Info */}
+      <div className="p-2 bg-[#1aff1a]/5 border-t border-[#1aff1a]/20 text-[9px] flex justify-between opacity-50 uppercase tracking-widest">
+        <span>Vault-Tec Industries</span>
+        <span>{location.split(' ')[0]}</span>
+      </div>
     </div>
   );
 };

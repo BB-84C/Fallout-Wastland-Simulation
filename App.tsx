@@ -8,8 +8,6 @@ import { createPlayerCharacter, getNarrativeResponse, generateSceneImage } from 
 
 const SAVE_KEY = 'fallout_wasteland_save';
 
-// Removed redundant window.aistudio declaration as it is pre-configured in the environment.
-
 const App: React.FC = () => {
   const [view, setView] = useState<'start' | 'creation' | 'playing'>('start');
   const [gameState, setGameState] = useState<GameState>({
@@ -27,6 +25,7 @@ const App: React.FC = () => {
   const [charDescription, setCharDescription] = useState('');
   const [hasSave, setHasSave] = useState(false);
   const [keyAlert, setKeyAlert] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem(SAVE_KEY);
@@ -35,12 +34,15 @@ const App: React.FC = () => {
 
   const saveGame = useCallback(() => {
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify(gameState));
+      const data = JSON.stringify(gameState);
+      localStorage.setItem(SAVE_KEY, data);
       setHasSave(true);
       alert(gameState.language === 'en' ? "Game Saved Successfully!" : "游戏保存成功！");
     } catch (e) {
       console.error("Save failed", e);
-      alert(gameState.language === 'en' ? "Save failed! History might be too large." : "保存失败！历史记录可能过大。");
+      alert(gameState.language === 'en' 
+        ? "Save failed! Local storage may be full." 
+        : "保存失败！本地存储可能已满。");
     }
   }, [gameState]);
 
@@ -54,15 +56,15 @@ const App: React.FC = () => {
   }, []);
 
   const handleKeySelection = async () => {
-    // Accessing pre-configured window.aistudio
-    await window.aistudio.openSelectKey();
+    if ((window as any).aistudio?.openSelectKey) {
+      await (window as any).aistudio.openSelectKey();
+    }
     setKeyAlert(false);
   };
 
   const pickEra = useCallback(async () => {
-    // Check if user has selected key for high-quality images
-    if (typeof window.aistudio !== 'undefined') {
-      const hasKey = await window.aistudio.hasSelectedApiKey();
+    if (typeof (window as any).aistudio !== 'undefined') {
+      const hasKey = await (window as any).aistudio.hasSelectedApiKey();
       if (!hasKey) {
         setKeyAlert(true);
       }
@@ -180,7 +182,7 @@ const App: React.FC = () => {
       }
 
       let imageUrl: string | undefined = undefined;
-      // Generate image for narrative highlights
+      // Generate image for narrative highlights or new NPCs
       if (updatedHistory.length % 5 === 0 || response.newNpc) {
         const visualPrompt = response.imagePrompt || "Fallout wasteland encounter";
         imageUrl = await generateSceneImage(visualPrompt);
@@ -192,6 +194,7 @@ const App: React.FC = () => {
         currentTime: newTime.toISOString(),
         quests: mergedQuests,
         knownNpcs: response.newNpc ? [...prev.knownNpcs, response.newNpc] : prev.knownNpcs,
+        player: response.updatedPlayer || prev.player, 
         history: [...updatedHistory, { 
           sender: 'narrator', 
           text: response.storyText, 
@@ -219,30 +222,30 @@ const App: React.FC = () => {
 
   if (view === 'start') {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen p-8 text-center">
-        <div className="max-w-3xl space-y-8 pip-boy-border p-12 bg-black/60 shadow-2xl relative">
+      <div className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center">
+        <div className="max-w-3xl w-full space-y-6 md:space-y-8 pip-boy-border p-6 md:p-12 bg-black/60 shadow-2xl relative">
           <div className="absolute top-4 right-4 flex space-x-2">
             <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
             <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
           </div>
-          <h1 className="text-7xl font-bold glow-text tracking-tighter">FALLOUT</h1>
-          <h2 className="text-3xl tracking-widest opacity-80 uppercase">
+          <h1 className="text-5xl md:text-7xl font-bold glow-text tracking-tighter">FALLOUT</h1>
+          <h2 className="text-xl md:text-3xl tracking-widest opacity-80 uppercase">
             {gameState.language === 'en' ? 'Wasteland Chronicles' : '废土编年史'}
           </h2>
-          <p className="text-xl opacity-70 italic">
+          <p className="text-lg md:text-xl opacity-70 italic">
             {gameState.language === 'en' ? 'War. War never changes.' : '战争。战争从未改变。'}
           </p>
-          <div className="space-y-4 pt-8">
+          <div className="space-y-4 pt-4 md:pt-8">
              <button 
               onClick={pickEra}
-              className="w-full text-2xl border-2 border-[#1aff1a] py-4 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+              className="w-full text-xl md:text-2xl border-2 border-[#1aff1a] py-4 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
              >
               {gameState.language === 'en' ? 'Initialize New Simulation' : '初始化新模拟'}
              </button>
              {hasSave && (
                <button 
                 onClick={loadGame}
-                className="w-full text-2xl border-2 border-[#1aff1a]/50 py-4 hover:bg-[#1aff1a]/50 hover:text-black transition-all font-bold uppercase bg-[#1aff1a]/10"
+                className="w-full text-xl md:text-2xl border-2 border-[#1aff1a]/50 py-4 hover:bg-[#1aff1a]/50 hover:text-black transition-all font-bold uppercase bg-[#1aff1a]/10"
                >
                 {gameState.language === 'en' ? 'Continue Last Save' : '继续上次存档'}
                </button>
@@ -255,7 +258,7 @@ const App: React.FC = () => {
 
   if (view === 'creation') {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen p-8">
+      <div className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8">
         {keyAlert && (
           <div className="fixed top-0 left-0 w-full h-full z-[2000] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
             <div className="max-w-md w-full pip-boy-border p-8 bg-black">
@@ -280,17 +283,17 @@ const App: React.FC = () => {
             </div>
           </div>
         )}
-        <div className="max-w-4xl w-full pip-boy-border p-8 bg-black/80">
-          <h2 className="text-4xl font-bold mb-4 glow-text uppercase">
+        <div className="max-w-4xl w-full pip-boy-border p-6 md:p-8 bg-black/80">
+          <h2 className="text-3xl md:text-4xl font-bold mb-4 glow-text uppercase">
             {gameState.language === 'en' ? 'Identity Reconstruction' : '身份重建'}
           </h2>
           <div className="mb-6 space-y-2 p-4 bg-[#1aff1a]/10 border border-[#1aff1a]/20">
-             <div className="text-xl">
+             <div className="text-lg md:text-xl">
                {gameState.language === 'en' ? 'PARAMS: ' : '参数 (PARAMS): '}
                {gameState.location} / {gameState.currentYear}
              </div>
           </div>
-          <p className="mb-4 text-lg">
+          <p className="mb-4 text-base md:text-lg">
             {gameState.language === 'en' 
               ? 'Describe your origin, skills, and current state. The system will derive your profile.' 
               : '描述你的出身、技能和现状。系统将生成你的档案。'}
@@ -298,14 +301,14 @@ const App: React.FC = () => {
           <textarea 
             value={charDescription}
             onChange={(e) => setCharDescription(e.target.value)}
-            className="w-full h-40 bg-black border border-[#1aff1a] p-4 text-[#1aff1a] focus:outline-none text-xl"
+            className="w-full h-40 md:h-48 bg-black border border-[#1aff1a] p-4 text-[#1aff1a] focus:outline-none text-lg md:text-xl"
             disabled={gameState.isThinking}
             placeholder={gameState.language === 'en' ? "I am a vault dweller who..." : "我是一名来自避难所的..."}
           />
           <button 
             onClick={handleCharacterCreation}
             disabled={gameState.isThinking || !charDescription.trim()}
-            className="mt-6 w-full text-2xl border-2 border-[#1aff1a] py-4 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase disabled:opacity-50"
+            className="mt-6 w-full text-xl md:text-2xl border-2 border-[#1aff1a] py-4 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase disabled:opacity-50"
           >
             {gameState.isThinking 
               ? (gameState.language === 'en' ? 'Processing...' : '处理中...') 
@@ -317,48 +320,67 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
-      <div className="flex-1 flex flex-col min-w-0 bg-black/40">
-        <header className="p-4 border-b border-[#1aff1a]/30 bg-black/60 flex justify-between items-center">
-          <div className="flex items-center space-x-4">
-             <div className="w-10 h-10 border-2 border-[#1aff1a] flex items-center justify-center font-bold text-xl">13</div>
-             <h1 className="text-2xl font-bold tracking-widest uppercase">PIP-BOY 3000 Mk IV</h1>
+    <div className="flex flex-col md:flex-row h-screen w-screen overflow-hidden relative">
+      {/* Main Terminal Area */}
+      <div className="flex-1 flex flex-col min-w-0 bg-black/40 h-full overflow-hidden">
+        <header className="p-3 md:p-4 border-b border-[#1aff1a]/30 bg-black/60 flex justify-between items-center z-20">
+          <div className="flex items-center space-x-2 md:space-x-4">
+             <div className="w-8 h-8 md:w-10 md:h-10 border-2 border-[#1aff1a] flex items-center justify-center font-bold text-lg md:text-xl">13</div>
+             <h1 className="text-lg md:text-2xl font-bold tracking-widest uppercase truncate max-w-[150px] md:max-w-none">PIP-BOY 3000</h1>
+          </div>
+          <div className="flex items-center space-x-2">
+            <button 
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              className="md:hidden border-2 border-[#1aff1a] px-3 py-1 font-bold text-sm uppercase hover:bg-[#1aff1a] hover:text-black transition-all"
+            >
+              {isSidebarOpen ? (gameState.language === 'en' ? 'CLOSE' : '关闭') : (gameState.language === 'en' ? 'STAT' : '状态')}
+            </button>
+            <div className="hidden md:block opacity-50 text-xs">Mk IV</div>
           </div>
         </header>
 
         <Terminal history={gameState.history} isThinking={gameState.isThinking} />
 
-        <form onSubmit={handleAction} className="p-4 bg-black/80 border-t border-[#1aff1a]/30 flex space-x-4">
+        <form onSubmit={handleAction} className="p-3 md:p-4 bg-black/80 border-t border-[#1aff1a]/30 flex space-x-2 md:space-x-4">
           <input 
             type="text"
             value={userInput}
             onChange={(e) => setUserInput(e.target.value)}
             placeholder={gameState.language === 'en' ? "Your action..." : "你的行动..."}
-            className="flex-1 bg-black border border-[#1aff1a]/50 p-4 text-[#1aff1a] text-xl focus:outline-none"
+            className="flex-1 bg-black border border-[#1aff1a]/50 p-3 md:p-4 text-[#1aff1a] text-lg md:text-xl focus:outline-none"
             disabled={gameState.isThinking}
             autoFocus
           />
           <button 
             type="submit"
             disabled={gameState.isThinking || !userInput.trim()}
-            className="px-8 border-2 border-[#1aff1a] hover:bg-[#1aff1a] hover:text-black font-bold uppercase transition-all"
+            className="px-4 md:px-8 border-2 border-[#1aff1a] hover:bg-[#1aff1a] hover:text-black font-bold uppercase transition-all whitespace-nowrap"
           >
             {gameState.language === 'en' ? 'EXE' : '执行'}
           </button>
         </form>
       </div>
 
+      {/* Responsive StatBar */}
       {gameState.player && (
-        <StatBar 
-          player={gameState.player} 
-          location={gameState.location} 
-          year={gameState.currentYear}
-          time={gameState.currentTime}
-          quests={gameState.quests}
-          language={gameState.language}
-          onLanguageToggle={toggleLanguage}
-          onSave={saveGame}
-        />
+        <div className={`
+          absolute md:static inset-0 z-40 md:z-auto
+          transition-transform duration-300 ease-in-out
+          ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}
+          w-full md:w-80 h-full bg-black/95 md:bg-transparent
+        `}>
+          <StatBar 
+            player={gameState.player} 
+            location={gameState.location} 
+            year={gameState.currentYear}
+            time={gameState.currentTime}
+            quests={gameState.quests}
+            language={gameState.language}
+            onLanguageToggle={toggleLanguage}
+            onSave={saveGame}
+            onClose={() => setIsSidebarOpen(false)}
+          />
+        </div>
       )}
     </div>
   );
