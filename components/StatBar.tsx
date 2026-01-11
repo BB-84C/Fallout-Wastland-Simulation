@@ -12,8 +12,10 @@ interface StatBarProps {
   ap: number;
   maxAp: number;
   isAdmin: boolean;
+  showApRecovery: boolean;
   onLanguageToggle: (lang: Language) => void;
   onSave: () => void;
+  showSave: boolean;
   onClose: () => void;
 }
 
@@ -64,8 +66,10 @@ const StatBar: React.FC<StatBarProps> = ({
   ap,
   maxAp,
   isAdmin,
+  showApRecovery,
   onLanguageToggle,
   onSave,
+  showSave,
   onClose
 }) => {
   const [activeTab, setActiveTab] = useState<Tab>('STAT');
@@ -110,7 +114,7 @@ const StatBar: React.FC<StatBarProps> = ({
                       style={{ width: `${isAdmin ? 100 : Math.max(0, Math.min(100, (ap / maxAp) * 100))}%` }}
                     ></div>
                   </div>
-                  {!isAdmin && (
+                  {showApRecovery && (
                     <div className="text-[9px] opacity-50 mt-1 uppercase tracking-widest">
                       +6 / 30 min
                     </div>
@@ -262,12 +266,14 @@ const StatBar: React.FC<StatBarProps> = ({
             >
               {language === 'en' ? 'EN / 中' : '中 / EN'}
             </button>
-            <button 
-              onClick={onSave}
-              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
-            >
-              {language === 'en' ? 'SAVE' : '保存'}
-            </button>
+            {showSave && (
+              <button 
+                onClick={onSave}
+                className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+              >
+                {language === 'en' ? 'SAVE' : '保存'}
+              </button>
+            )}
           </div>
         </div>
         

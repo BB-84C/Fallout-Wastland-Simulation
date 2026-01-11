@@ -75,6 +75,17 @@ export interface GameSettings {
   imageEveryTurns: number;
 }
 
+export type UserTier = 'admin' | 'normal' | 'guest';
+
+export interface UserRecord {
+  username: string;
+  passkey: string;
+  tier: 'admin' | 'normal';
+  ap: number;
+  apLastUpdated: number;
+  settings?: GameSettings;
+}
+
 export interface Quest {
   id: string;
   name: string;

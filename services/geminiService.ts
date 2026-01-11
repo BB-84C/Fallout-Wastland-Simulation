@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource } from "../types";
+import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier } from "../types";
 
 const actorSchema = {
   type: Type.OBJECT,
@@ -62,13 +62,15 @@ const actorSchema = {
 const TEXT_MODELS = {
   adminPrimary: 'gemini-3-pro-preview',
   adminFallback: 'gemini-3-flash-preview',
-  user: 'gemini-2.5-flash'
+  normal: 'gemini-2.5-flash',
+  guest: 'gemini-2.5-flash-lite'
 };
 
 const IMAGE_MODELS = {
   adminPrimary: 'gemini-3-pro-image-preview',
   adminFallback: 'gemini-2.5-flash-image',
-  user: 'gemini-2.5-flash-image'
+  normal: 'gemini-2.5-flash-image',
+  guest: 'gemini-2.5-flash-image'
 };
 
 const questSchema = {
@@ -84,6 +86,24 @@ const questSchema = {
     },
     required: ["id", "name", "objective", "status", "hiddenProgress"]
   }
+};
+
+const resolveApiKey = () => {
+  const viteKey = (import.meta as any)?.env?.VITE_API_KEY;
+  const envKey = typeof process !== 'undefined' ? (process as any)?.env?.API_KEY : undefined;
+  if (viteKey) {
+    return { key: viteKey as string, source: 'VITE_API_KEY' };
+  }
+  if (envKey) {
+    return { key: envKey as string, source: 'process.env.API_KEY' };
+  }
+  return { key: undefined, source: 'missing' };
+};
+
+const describeApiKey = (key?: string) => {
+  if (!key) return 'missing';
+  const last4 = key.slice(-4);
+  return `len=${key.length}, last4=${last4}`;
 };
 
 /**
@@ -138,16 +158,22 @@ export async function createPlayerCharacter(
   year: number,
   region: string,
   lang: Language,
-  options?: { isAdmin?: boolean }
+  options?: { tier?: UserTier; onProgress?: (message: string) => void }
 ): Promise<Actor> {
-  const isAdmin = options?.isAdmin === true;
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const tier = options?.tier ?? 'guest';
+  const isAdmin = tier === 'admin';
+  const textModel = tier === 'admin' ? TEXT_MODELS.adminPrimary : tier === 'normal' ? TEXT_MODELS.normal : TEXT_MODELS.guest;
+  const { key: apiKey, source } = resolveApiKey();
+  const emit = (message: string) => options?.onProgress?.(message);
+  const ai = new GoogleGenAI({ apiKey: apiKey || '' });
   const targetLang = lang === 'zh' ? 'Chinese' : 'English';
   
   const response = await (async () => {
     try {
+      emit(`API key: ${source} (${describeApiKey(apiKey)})`);
+      emit(`Requesting character profile from ${textModel}...`);
       return await ai.models.generateContent({
-        model: isAdmin ? TEXT_MODELS.adminPrimary : TEXT_MODELS.user,
+        model: textModel,
         contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps).`,
         config: {
           responseMimeType: "application/json",
@@ -163,7 +189,8 @@ export async function createPlayerCharacter(
       });
     } catch (e) {
       if (!isAdmin) throw e;
-      const fallbackAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      emit(`Primary model failed. Retrying with ${TEXT_MODELS.adminFallback}...`);
+      const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
       return await fallbackAi.models.generateContent({
         model: TEXT_MODELS.adminFallback,
         contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps).`,
@@ -183,7 +210,18 @@ export async function createPlayerCharacter(
   })();
   
   if (!response.text) throw new Error("No response from Vault-Tec database.");
-  return safeJsonParse(response.text);
+  emit(`Response received (${response.text.length} chars). Parsing JSON...`);
+  try {
+    const parsed = safeJsonParse(response.text);
+    emit('Character JSON parsed successfully.');
+    return parsed;
+  } catch (e) {
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    const preview = response.text.slice(0, 400).replace(/\s+/g, ' ').trim();
+    emit(`JSON parse failed: ${errorMessage}`);
+    emit(`Response preview: ${preview}`);
+    throw e;
+  }
 }
 
 export async function getNarrativeResponse(
@@ -194,12 +232,15 @@ export async function getNarrativeResponse(
   location: string,
   quests: Quest[],
   lang: Language,
-  options?: { isAdmin?: boolean }
+  options?: { tier?: UserTier }
 ): Promise<NarratorResponse> {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const { key: apiKey } = resolveApiKey();
+  const ai = new GoogleGenAI({ apiKey: apiKey || '' });
   const targetLang = lang === 'zh' ? 'Chinese' : 'English';
   const context = history.slice(-15).map(h => `${h.sender.toUpperCase()}: ${h.text}`).join('\n');
-  const isAdmin = options?.isAdmin === true;
+  const tier = options?.tier ?? 'guest';
+  const isAdmin = tier === 'admin';
+  const textModel = tier === 'admin' ? TEXT_MODELS.adminPrimary : tier === 'normal' ? TEXT_MODELS.normal : TEXT_MODELS.guest;
 
   const prompt = `
     Environment Year: ${year}
@@ -221,7 +262,7 @@ export async function getNarrativeResponse(
   const response = await (async () => {
     try {
       return await ai.models.generateContent({
-        model: isAdmin ? TEXT_MODELS.adminPrimary : TEXT_MODELS.user,
+        model: textModel,
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -257,7 +298,7 @@ export async function getNarrativeResponse(
       });
     } catch (e) {
       if (!isAdmin) throw e;
-      const fallbackAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
       return await fallbackAi.models.generateContent({
         model: TEXT_MODELS.adminFallback,
         contents: prompt,
@@ -307,10 +348,14 @@ export async function getNarrativeResponse(
  */
 export async function generateSceneImage(
   prompt: string,
-  options?: { highQuality?: boolean; isAdmin?: boolean }
+  options?: { highQuality?: boolean; tier?: UserTier }
 ): Promise<{url?: string, sources?: GroundingSource[], error?: string} | undefined> {
   const useHighQuality = options?.highQuality !== false;
-  const isAdmin = options?.isAdmin === true;
+  const tier = options?.tier ?? 'guest';
+  const isAdmin = tier === 'admin';
+  const textModel = tier === 'admin' ? TEXT_MODELS.adminPrimary : tier === 'normal' ? TEXT_MODELS.normal : TEXT_MODELS.guest;
+  const imageModel = tier === 'admin' ? IMAGE_MODELS.adminPrimary : tier === 'normal' ? IMAGE_MODELS.normal : IMAGE_MODELS.guest;
+  const { key: apiKey } = resolveApiKey();
 
   try {
     let detailedDescription = prompt;
@@ -320,10 +365,10 @@ export async function generateSceneImage(
       // STAGE 1: Visual Research using Search Grounding
       // We explicitly extract keywords and use Search to "see" what things look like.
       const researchResponse = await (async () => {
-        const researchAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const researchAi = new GoogleGenAI({ apiKey: apiKey || '' });
         try {
           return await researchAi.models.generateContent({
-            model: isAdmin ? TEXT_MODELS.adminPrimary : TEXT_MODELS.user,
+            model: textModel,
             contents: `Research visual references for this Fallout scene: "${prompt}".
             1. Extract 3-5 keywords related to Fallout lore, items, or environment.
             2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
@@ -335,7 +380,7 @@ export async function generateSceneImage(
           });
         } catch (e) {
           if (!isAdmin) return undefined;
-          const fallbackAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+          const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
           return await fallbackAi.models.generateContent({
             model: TEXT_MODELS.adminFallback,
             contents: `Research visual references for this Fallout scene: "${prompt}".
@@ -365,10 +410,10 @@ export async function generateSceneImage(
 
     // STAGE 2: Image generation
     const imageResponse = await (async () => {
-      const imageAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const imageAi = new GoogleGenAI({ apiKey: apiKey || '' });
       try {
         return await imageAi.models.generateContent({
-          model: isAdmin ? IMAGE_MODELS.adminPrimary : IMAGE_MODELS.user,
+          model: imageModel,
           contents: {
             parts: [{ text: `Cinematic Fallout Concept Art. Environment: ${detailedDescription}. Atmosphere: Desolate, atmospheric, detailed. Style: Digital art, 4k, hyper-realistic wasteland aesthetic.` }],
           },
@@ -380,7 +425,7 @@ export async function generateSceneImage(
         if (!isAdmin) {
           return { error: e instanceof Error ? e.message : String(e) };
         }
-        const fallbackAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
         return await fallbackAi.models.generateContent({
           model: IMAGE_MODELS.adminFallback,
           contents: {
