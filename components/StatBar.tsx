@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { Actor, Language, Quest, SpecialAttr, Skill } from '../types';
+import { localizeLocation } from '../localization';
 
 interface StatBarProps {
   player: Actor;
@@ -8,6 +9,7 @@ interface StatBarProps {
   year: number;
   time: string;
   quests: Quest[];
+  knownNpcs: Actor[];
   language: Language;
   ap: number;
   maxAp: number;
@@ -19,7 +21,7 @@ interface StatBarProps {
   onClose: () => void;
 }
 
-type Tab = 'STAT' | 'SPEC' | 'SKIL' | 'PERK' | 'DATA' | 'INV';
+type Tab = 'STAT' | 'SPEC' | 'SKIL' | 'PERK' | 'COMP' | 'DATA' | 'INV';
 
 const skillLocalizations: Record<Language, Record<Skill, string>> = {
   en: {
@@ -62,6 +64,7 @@ const StatBar: React.FC<StatBarProps> = ({
   year, 
   time, 
   quests, 
+  knownNpcs,
   language, 
   ap,
   maxAp,
@@ -73,6 +76,7 @@ const StatBar: React.FC<StatBarProps> = ({
   onClose
 }) => {
   const [activeTab, setActiveTab] = useState<Tab>('STAT');
+  const [expandedCompanion, setExpandedCompanion] = useState<string | null>(null);
 
   const dateStr = new Date(time).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
     month: 'short',
@@ -81,6 +85,8 @@ const StatBar: React.FC<StatBarProps> = ({
     hour: '2-digit',
     minute: '2-digit'
   });
+  const companions = knownNpcs.filter(npc => npc.ifCompanion);
+  const displayLocation = localizeLocation(location, language);
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -140,7 +146,7 @@ const StatBar: React.FC<StatBarProps> = ({
             </div>
 
             <div className="text-xs space-y-1 opacity-80 pt-4 border-t border-[#1aff1a]/10">
-              <div className="flex justify-between"><span>LOC:</span> <span className="text-right">{location}</span></div>
+              <div className="flex justify-between"><span>LOC:</span> <span className="text-right">{displayLocation}</span></div>
               <div className="flex justify-between"><span>DATE:</span> <span className="text-right">{dateStr}</span></div>
               <div className="flex justify-between"><span>FACT:</span> <span className="text-right">{player.faction}</span></div>
             </div>
@@ -181,6 +187,116 @@ const StatBar: React.FC<StatBarProps> = ({
                 <div className="text-[11px] opacity-70 leading-tight">{perk.description}</div>
               </div>
             ))}
+          </div>
+        );
+
+      case 'COMP':
+        return (
+          <div className="space-y-3 animate-in slide-in-from-right-4 duration-300">
+            {companions.length === 0 && (
+              <div className="text-center py-10 opacity-30 italic">
+                {language === 'en' ? 'No companions' : '暂无同伴'}
+              </div>
+            )}
+            {companions.map((companion) => {
+              const isExpanded = expandedCompanion === companion.name;
+              return (
+                <div key={companion.name} className="border border-[#1aff1a]/20 p-2 bg-[#1aff1a]/5">
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedCompanion(isExpanded ? null : companion.name)}
+                      className="shrink-0 border border-[#1aff1a]/20 bg-black/30"
+                      aria-label={language === 'en' ? 'Toggle companion details' : '展开同伴详情'}
+                    >
+                      {companion.avatarUrl ? (
+                        <img
+                          src={companion.avatarUrl}
+                          alt={`${companion.name} avatar`}
+                          className="w-[100px] h-[100px] object-cover"
+                          width={100}
+                          height={100}
+                        />
+                      ) : (
+                        <div className="w-[100px] h-[100px] flex items-center justify-center text-[9px] uppercase opacity-60">
+                          {language === 'en' ? 'No Avatar' : '暂无头像'}
+                        </div>
+                      )}
+                    </button>
+                    <div className="flex-1">
+                      <div className="text-sm font-bold text-[#1aff1a] mb-1 uppercase">{companion.name}</div>
+                      <div className="text-[11px] opacity-70">{companion.faction}</div>
+                      <div className="text-[10px] opacity-50">
+                        {language === 'en' ? 'Age' : '年龄'} {companion.age} · {companion.gender}
+                      </div>
+                      <div className="text-[9px] uppercase opacity-40 mt-2">
+                        {language === 'en' ? 'Tap avatar for dossier' : '点击头像展开档案'}
+                      </div>
+                    </div>
+                  </div>
+                  {isExpanded && (
+                    <div className="mt-3 space-y-3 text-[11px]">
+                      <div>
+                        <div className="text-[10px] uppercase opacity-60 mb-1">{language === 'en' ? 'Lore' : '背景'}</div>
+                        <div className="opacity-80 leading-tight">{companion.lore}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase opacity-60 mb-1">SPECIAL</div>
+                        <div className="grid grid-cols-2 gap-1">
+                          {Object.entries(companion.special).map(([key, val]) => (
+                            <div key={key} className="flex justify-between border-b border-[#1aff1a]/10">
+                              <span className="opacity-70">{key}</span>
+                              <span className="font-bold">{val}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase opacity-60 mb-1">{language === 'en' ? 'Skills' : '技能'}</div>
+                        <div className="grid grid-cols-2 gap-1">
+                          {Object.values(Skill).map((skill) => (
+                            <div key={skill} className="flex justify-between border-b border-[#1aff1a]/10">
+                              <span className="opacity-70">{skillLocalizations[language][skill]}</span>
+                              <span className="font-bold">{(companion.skills as any)[skill] || 0}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase opacity-60 mb-1">{language === 'en' ? 'Perks' : '能力'}</div>
+                        {companion.perks.length === 0 ? (
+                          <div className="opacity-40 italic">{language === 'en' ? 'None' : '暂无'}</div>
+                        ) : (
+                          <div className="space-y-1">
+                            {companion.perks.map((perk, idx) => (
+                              <div key={`${perk.name}-${idx}`} className="text-[10px]">
+                                <span className="font-bold uppercase">{perk.name}</span>
+                                <span className="opacity-70"> — {perk.description}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase opacity-60 mb-1">{language === 'en' ? 'Inventory' : '物品'}</div>
+                        {companion.inventory.length === 0 ? (
+                          <div className="opacity-40 italic">{language === 'en' ? 'Empty' : '空'}</div>
+                        ) : (
+                          <div className="space-y-1">
+                            {companion.inventory.map((item, idx) => (
+                              <div key={`${item.name}-${idx}`} className="text-[10px]">
+                                <span className="font-bold">{item.name}</span>
+                                <span className="opacity-70"> · {item.type} · {item.weight} lb</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         );
 
@@ -241,11 +357,12 @@ const StatBar: React.FC<StatBarProps> = ({
 
   const tabs: {id: Tab; label: string}[] = [
     { id: 'STAT', label: language === 'en' ? 'STAT' : '状态' },
-    { id: 'SPEC', label: 'SPEC' },
+    { id: 'SPEC', label: 'SPECIAL' },
     { id: 'SKIL', label: language === 'en' ? 'SKIL' : '技能' },
     { id: 'PERK', label: language === 'en' ? 'PERK' : '能力' },
+    { id: 'COMP', label: language === 'en' ? 'COMP' : '同伴' },
     { id: 'DATA', label: language === 'en' ? 'DATA' : '数据' },
-    { id: 'INV', label: 'INV' }
+    { id: 'INV', label: language === 'en' ? 'INV' : '背包' }
   ];
 
   return (
@@ -308,7 +425,7 @@ const StatBar: React.FC<StatBarProps> = ({
       {/* Bottom Footer Info */}
       <div className="p-2 bg-[#1aff1a]/5 border-t border-[#1aff1a]/20 text-[9px] flex justify-between opacity-50 uppercase tracking-widest">
         <span>Vault-Tec Industries</span>
-        <span>{location.split(' ')[0]}</span>
+        <span>{displayLocation.split(' ')[0]}</span>
       </div>
     </div>
   );

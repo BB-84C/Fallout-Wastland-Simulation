@@ -1,10 +1,11 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult } from './types';
 import { FALLOUT_ERA_STARTS } from './constants';
+import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
 import StatBar from './components/StatBar';
-import { createPlayerCharacter, getNarrativeResponse, generateSceneImage } from './services/geminiService';
+import { createPlayerCharacter, getNarrativeResponse, generateSceneImage, generateCompanionAvatar } from './services/geminiService';
 
 const SAVE_KEY_PREFIX = 'fallout_wasteland_save';
 const USERS_DB_KEY = 'fallout_users_db';
@@ -15,7 +16,7 @@ const AP_RECOVERY_INTERVAL_MS = 30 * 60 * 1000;
 const AP_RECOVERY_AMOUNT = 6;
 const DEFAULT_SETTINGS: GameSettings = {
   highQualityImages: true,
-  imageEveryTurns: 3
+  imageEveryTurns: 8
 };
 
 const syncApState = (ap: number, apLastUpdated: number, now: number, maxAp: number) => {
@@ -175,6 +176,34 @@ const mergeUsersDb = (
     };
   });
   return merged;
+};
+
+const mergeNpc = (existing: Actor, incoming: Actor): Actor => ({
+  ...existing,
+  ...incoming,
+  ifCompanion: incoming.ifCompanion ?? existing.ifCompanion,
+  avatarUrl: existing.avatarUrl ?? incoming.avatarUrl
+});
+
+const upsertNpc = (list: Actor[], npc: Actor): Actor[] => {
+  const index = list.findIndex(entry => entry.name === npc.name);
+  const nextNpc = { ...npc, ifCompanion: npc.ifCompanion ?? false };
+  if (index === -1) {
+    return [...list, nextNpc];
+  }
+  const next = [...list];
+  next[index] = mergeNpc(next[index], nextNpc);
+  return next;
+};
+
+const applyCompanionUpdates = (list: Actor[], updates?: CompanionUpdate[]): Actor[] => {
+  if (!updates || updates.length === 0) return list;
+  const updatesByName = new Map(updates.map(update => [update.name, update]));
+  return list.map(npc => {
+    const update = updatesByName.get(npc.name);
+    if (!update) return npc;
+    return { ...npc, ifCompanion: update.ifCompanion };
+  });
 };
 
 type UserSession = {
@@ -600,7 +629,7 @@ const App: React.FC = () => {
     setCreationElapsed(0);
     setCreationPhase(getCreationPhaseText('request', isZh));
     try {
-      const actor = await createPlayerCharacter(
+      const creation = await createPlayerCharacter(
         charDescription, 
         gameState.currentYear, 
         gameState.location, 
@@ -614,23 +643,54 @@ const App: React.FC = () => {
         }
       );
 
+      const { companions: initialCompanions, ...player } = creation as PlayerCreationResult;
+      const seededCompanions = (initialCompanions ?? []).map(companion => ({
+        ...companion,
+        ifCompanion: true
+      }));
+
       setCreationPhase(getCreationPhaseText('image', isZh));
       
       const introMsg = gameState.language === 'en' 
-        ? `Simulation Initialized. Locating profile... Success. Welcome, ${actor.name}.`
-        : `模拟初始化。正在定位档案... 成功。欢迎，${actor.name}。`;
+        ? `Simulation Initialized. Locating profile... Success. Welcome, ${player.name}.`
+        : `模拟初始化。正在定位档案... 成功。欢迎，${player.name}。`;
 
-      const startNarration = `${introMsg} ${actor.lore}`;
-      const imgData = await generateSceneImage(
-        `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
-        { highQuality: gameState.settings.highQualityImages, tier: activeTier }
-      );
+      const startNarration = `${introMsg} ${player.lore}`;
+      const avatarPromise = seededCompanions.length > 0
+        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier })))
+        : Promise.resolve([]);
+      const [imgData, avatarResults] = await Promise.all([
+        generateSceneImage(
+          `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
+          { highQuality: gameState.settings.highQualityImages, tier: activeTier }
+        ),
+        avatarPromise
+      ]);
+
+      let initialKnownNpcs = seededCompanions;
+      if (avatarResults.length > 0) {
+        const avatarByName = new Map<string, string>();
+        avatarResults.forEach((result, index) => {
+          const url = result?.url;
+          if (url) {
+            avatarByName.set(seededCompanions[index].name, url);
+          }
+        });
+        if (avatarByName.size > 0) {
+          initialKnownNpcs = initialKnownNpcs.map(npc => {
+            const avatarUrl = avatarByName.get(npc.name);
+            if (!avatarUrl) return npc;
+            return { ...npc, avatarUrl };
+          });
+        }
+      }
 
       setCreationPhase(getCreationPhaseText('finalize', isZh));
       
       setGameState(prev => ({
         ...prev,
-        player: actor,
+        player,
+        knownNpcs: initialKnownNpcs,
         isThinking: false,
         history: [{ 
           sender: 'narrator', 
@@ -732,6 +792,7 @@ const App: React.FC = () => {
         gameState.currentYear,
         gameState.location,
         gameState.quests,
+        gameState.knownNpcs,
         gameState.language,
         { tier: activeTier }
       );
@@ -767,21 +828,55 @@ const App: React.FC = () => {
         });
       }
 
+      let nextKnownNpcs = gameState.knownNpcs.map(npc => ({
+        ...npc,
+        ifCompanion: npc.ifCompanion ?? false
+      }));
+      if (response.newNpc) {
+        nextKnownNpcs = upsertNpc(nextKnownNpcs, response.newNpc);
+      }
+      nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, response.companionUpdates);
+
+      const companionsNeedingAvatar = nextKnownNpcs.filter(
+        npc => npc.ifCompanion && !npc.avatarUrl
+      );
+
       // Generate images based on the configured frequency.
       const visualPrompt = response.imagePrompt || actionText;
-      const imgData = shouldGenerateImage
-        ? await generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages, tier: activeTier })
-        : undefined;
+      const imagePromise = shouldGenerateImage
+        ? generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages, tier: activeTier })
+        : Promise.resolve(undefined);
+      const avatarPromise = companionsNeedingAvatar.length > 0
+        ? Promise.all(companionsNeedingAvatar.map(npc => generateCompanionAvatar(npc, { tier: activeTier })))
+        : Promise.resolve([]);
+      const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
       const imageLog = shouldGenerateImage && imgData?.error
         ? (isZh ? `\n\n[图像日志] ${imgData.error}` : `\n\n[IMAGE LOG] ${imgData.error}`)
         : '';
+
+      if (avatarResults.length > 0) {
+        const avatarByName = new Map<string, string>();
+        avatarResults.forEach((result, index) => {
+          const url = result?.url;
+          if (url) {
+            avatarByName.set(companionsNeedingAvatar[index].name, url);
+          }
+        });
+        if (avatarByName.size > 0) {
+          nextKnownNpcs = nextKnownNpcs.map(npc => {
+            const avatarUrl = avatarByName.get(npc.name);
+            if (!avatarUrl) return npc;
+            return { ...npc, avatarUrl };
+          });
+        }
+      }
 
       setGameState(prev => ({
         ...prev,
         isThinking: false,
         currentTime: newTime.toISOString(),
         quests: mergedQuests,
-        knownNpcs: response.newNpc ? [...prev.knownNpcs, response.newNpc] : prev.knownNpcs,
+        knownNpcs: nextKnownNpcs,
         player: response.updatedPlayer || prev.player, 
         history: [...updatedHistory, { 
           sender: 'narrator', 
@@ -838,6 +933,8 @@ const App: React.FC = () => {
   };
 
   const isZh = gameState.language === 'zh';
+  const displayLocation = localizeLocation(gameState.location, gameState.language);
+  const displayYear = formatYear(gameState.currentYear, gameState.language);
   const usersEditorModal = isUsersEditorOpen && (
     <div className="fixed top-0 left-0 w-full h-full z-[3100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
       <div className="max-w-3xl w-full pip-boy-border p-6 md:p-8 bg-black">
@@ -1096,7 +1193,7 @@ const App: React.FC = () => {
           <div className="mb-6 space-y-2 p-4 bg-[#1aff1a]/10 border border-[#1aff1a]/20">
              <div className="text-lg md:text-xl">
                {gameState.language === 'en' ? 'PARAMS: ' : '参数 (PARAMS): '}
-               {gameState.location} / {gameState.currentYear}
+               {displayLocation} / {displayYear}
              </div>
           </div>
           <p className="mb-4 text-base md:text-lg">
@@ -1186,8 +1283,8 @@ const App: React.FC = () => {
                 </div>
                 <div className="text-xs opacity-70 mt-1">
                   {isZh
-                    ? '每 N 次交互生成一张图像，默认 3。'
-                    : 'Generate images every N turns of interaction. Default is 3.'}
+                    ? '每 N 次交互生成一张图像，默认 8。'
+                    : 'Generate images every N turns of interaction. Default is 8.'}
                 </div>
                 <div className="mt-3 flex items-center space-x-3">
                   <input
@@ -1206,7 +1303,7 @@ const App: React.FC = () => {
                   <div className="text-[10px] opacity-50 mt-2 uppercase">
                     {isGuest
                       ? (isZh ? '临时用户无法修改。' : 'Temporary users cannot change this.')
-                      : (isZh ? '普通用户最小值为 5。' : 'Normal users minimum is 5.')}
+                      : (isZh ? '普通用户最小值为 8。' : 'Normal users minimum is 8.')}
                   </div>
                 )}
               </div>
@@ -1260,8 +1357,8 @@ const App: React.FC = () => {
                 </div>
                 <div className="opacity-80 mt-2">
                   {isZh
-                    ? '图像频率控制每隔多少回合生成图片，默认 5。'
-                    : 'Image frequency controls how often images appear (every N turns). Default is 5.'}
+                    ? '图像频率控制每隔多少回合生成图片，默认 8。'
+                    : 'Image frequency controls how often images appear (every N turns). Default is 8.'}
                 </div>
               </div>
 
@@ -1274,8 +1371,8 @@ const App: React.FC = () => {
                 </div>
                 <div className="opacity-80 mt-2">
                   {isZh
-                    ? '普通用户：AP 上限 60，可恢复；图像频率最小 3；自动保存。'
-                    : 'Normal: AP max 60 with recovery; image frequency minimum 3; auto-saving enabled.'}
+                    ? '普通用户：AP 上限 60，可恢复；图像频率最小 8；自动保存。'
+                    : 'Normal: AP max 60 with recovery; image frequency minimum 8; auto-saving enabled.'}
                 </div>
                 <div className="opacity-80 mt-2">
                   {isZh
@@ -1361,6 +1458,7 @@ const App: React.FC = () => {
             year={gameState.currentYear}
             time={gameState.currentTime}
             quests={gameState.quests}
+            knownNpcs={gameState.knownNpcs}
             language={gameState.language}
             ap={gameState.ap}
             maxAp={maxAp}

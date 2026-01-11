@@ -66,6 +66,12 @@ export interface Actor {
   maxHealth: number;
   karma: number; // -100 to 100
   caps: number; // Bottle Caps currency
+  ifCompanion?: boolean;
+  avatarUrl?: string;
+}
+
+export interface PlayerCreationResult extends Actor {
+  companions?: Actor[];
 }
 
 export type Language = 'en' | 'zh';
@@ -99,6 +105,12 @@ export interface GroundingSource {
   uri: string;
 }
 
+export interface CompanionUpdate {
+  name: string;
+  ifCompanion: boolean;
+  reason?: string;
+}
+
 export interface HistoryEntry {
   sender: 'player' | 'narrator';
   text: string;
@@ -127,6 +139,7 @@ export interface NarratorResponse {
   ruleViolation: string | null;
   timePassedMinutes: number;
   questUpdates?: Quest[];
+  companionUpdates?: CompanionUpdate[];
   newNpc?: Actor;
   updatedPlayer?: Actor; // For inventory/caps/health changes
   imagePrompt?: string;

@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier } from "../types";
+import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult } from "../types";
 
 const actorSchema = {
   type: Type.OBJECT,
@@ -37,6 +37,7 @@ const actorSchema = {
         }
       }
     },
+    ifCompanion: { type: Type.BOOLEAN },
     inventory: {
       type: Type.ARRAY,
       items: {
@@ -57,6 +58,18 @@ const actorSchema = {
     caps: { type: Type.NUMBER }
   },
   required: ["name", "age", "faction", "special", "skills", "lore", "health", "maxHealth", "caps"]
+};
+
+const playerCreationSchema = {
+  type: Type.OBJECT,
+  properties: {
+    ...actorSchema.properties,
+    companions: {
+      type: Type.ARRAY,
+      items: actorSchema
+    }
+  },
+  required: actorSchema.required
 };
 
 const TEXT_MODELS = {
@@ -136,6 +149,38 @@ async function compressImage(base64: string): Promise<string> {
   });
 }
 
+/**
+ * Resize image to a fixed square avatar size.
+ */
+async function resizeImageToSquare(base64: string, size: number): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const w = img.width || 1;
+      const h = img.height || 1;
+      const scale = Math.max(size / w, size / h);
+      const drawW = w * scale;
+      const drawH = h * scale;
+      const dx = (size - drawW) / 2;
+      const dy = (size - drawH) / 2;
+
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(base64);
+        return;
+      }
+
+      ctx.drawImage(img, dx, dy, drawW, drawH);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(base64);
+    img.src = base64;
+  });
+}
+
 function safeJsonParse(text: string): any {
   const trimmed = text.trim();
   try {
@@ -159,7 +204,7 @@ export async function createPlayerCharacter(
   region: string,
   lang: Language,
   options?: { tier?: UserTier; onProgress?: (message: string) => void }
-): Promise<Actor> {
+): Promise<PlayerCreationResult> {
   const tier = options?.tier ?? 'guest';
   const isAdmin = tier === 'admin';
   const textModel = tier === 'admin' ? TEXT_MODELS.adminPrimary : tier === 'normal' ? TEXT_MODELS.normal : TEXT_MODELS.guest;
@@ -174,17 +219,18 @@ export async function createPlayerCharacter(
       emit(`Requesting character profile from ${textModel}...`);
       return await ai.models.generateContent({
         model: textModel,
-        contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps).`,
+        contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`,
         config: {
           responseMimeType: "application/json",
-          responseSchema: actorSchema,
+          responseSchema: playerCreationSchema,
           systemInstruction: `You are the Vault-Tec Identity Reconstruction System.
           1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
           2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
           3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
           4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
           5. PERK SYSTEM: Assign 1-2 starting perks.
-          6. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description.`
+          6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
+          7. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`
         },
       });
     } catch (e) {
@@ -193,17 +239,18 @@ export async function createPlayerCharacter(
       const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
       return await fallbackAi.models.generateContent({
         model: TEXT_MODELS.adminFallback,
-        contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps).`,
+        contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`,
         config: {
           responseMimeType: "application/json",
-          responseSchema: actorSchema,
+          responseSchema: playerCreationSchema,
           systemInstruction: `You are the Vault-Tec Identity Reconstruction System.
           1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
           2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
           3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
           4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
           5. PERK SYSTEM: Assign 1-2 starting perks.
-          6. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description.`
+          6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
+          7. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`
         },
       });
     }
@@ -231,6 +278,7 @@ export async function getNarrativeResponse(
   year: number,
   location: string,
   quests: Quest[],
+  knownNpcs: Actor[],
   lang: Language,
   options?: { tier?: UserTier }
 ): Promise<NarratorResponse> {
@@ -247,6 +295,7 @@ export async function getNarrativeResponse(
     Environment Location: ${location}
     Current Player Profile: ${JSON.stringify(player)}
     Existing Quests: ${JSON.stringify(quests)}
+    Known NPCs: ${JSON.stringify(knownNpcs)}
     Interaction Context:
     ${context}
     Player's current intent/action: "${userInput}"
@@ -273,6 +322,18 @@ export async function getNarrativeResponse(
               ruleViolation: { type: Type.STRING },
               timePassedMinutes: { type: Type.NUMBER },
               questUpdates: questSchema,
+              companionUpdates: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING },
+                    ifCompanion: { type: Type.BOOLEAN },
+                    reason: { type: Type.STRING }
+                  },
+                  required: ["name", "ifCompanion"]
+                }
+              },
               newNpc: actorSchema,
               updatedPlayer: actorSchema,
               imagePrompt: { type: Type.STRING }
@@ -291,9 +352,13 @@ export async function getNarrativeResponse(
           4. ECONOMY & TRADING: 
              - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
           5. PERKS: Incorporate player perks into story outcomes.
-          6. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
-          7. TRANSLATION: Use "Term (Original)" for unlocalized items.
-          8. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
+          6. COMPANION SYSTEM:
+             - Based on the interaction history and NPC relationship, decide if any known NPC becomes a companion.
+             - If a companion status changes, add an entry in 'companionUpdates' with the NPC name and ifCompanion=true/false.
+             - Only include updates for NPCs already in Known NPCs or the newly created NPC.
+          7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
+          8. TRANSLATION: Use "Term (Original)" for unlocalized items.
+          9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
         },
       });
     } catch (e) {
@@ -311,6 +376,18 @@ export async function getNarrativeResponse(
               ruleViolation: { type: Type.STRING },
               timePassedMinutes: { type: Type.NUMBER },
               questUpdates: questSchema,
+              companionUpdates: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING },
+                    ifCompanion: { type: Type.BOOLEAN },
+                    reason: { type: Type.STRING }
+                  },
+                  required: ["name", "ifCompanion"]
+                }
+              },
               newNpc: actorSchema,
               updatedPlayer: actorSchema,
               imagePrompt: { type: Type.STRING }
@@ -329,9 +406,13 @@ export async function getNarrativeResponse(
           4. ECONOMY & TRADING: 
              - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
           5. PERKS: Incorporate player perks into story outcomes.
-          6. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
-          7. TRANSLATION: Use "Term (Original)" for unlocalized items.
-          8. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
+          6. COMPANION SYSTEM:
+             - Based on the interaction history and NPC relationship, decide if any known NPC becomes a companion.
+             - If a companion status changes, add an entry in 'companionUpdates' with the NPC name and ifCompanion=true/false.
+             - Only include updates for NPCs already in Known NPCs or the newly created NPC.
+          7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
+          8. TRANSLATION: Use "Term (Original)" for unlocalized items.
+          9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
         },
       });
     }
@@ -339,6 +420,66 @@ export async function getNarrativeResponse(
 
   if (!response.text) throw new Error("Connection to the Wasteland lost.");
   return safeJsonParse(response.text);
+}
+
+export async function generateCompanionAvatar(
+  npc: Actor,
+  options?: { tier?: UserTier }
+): Promise<{ url?: string; error?: string } | undefined> {
+  const tier = options?.tier ?? 'guest';
+  const isAdmin = tier === 'admin';
+  const imageModel = tier === 'admin' ? IMAGE_MODELS.adminPrimary : tier === 'normal' ? IMAGE_MODELS.normal : IMAGE_MODELS.guest;
+  const { key: apiKey } = resolveApiKey();
+  const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
+
+  try {
+    const imageAi = new GoogleGenAI({ apiKey: apiKey || '' });
+    const response = await (async () => {
+      try {
+        return await imageAi.models.generateContent({
+          model: imageModel,
+          contents: {
+            parts: [{ text: prompt }],
+          },
+          config: {
+            imageConfig: { aspectRatio: "1:1" }
+          },
+        });
+      } catch (e) {
+        if (!isAdmin) {
+          return { error: e instanceof Error ? e.message : String(e) };
+        }
+        const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
+        return await fallbackAi.models.generateContent({
+          model: IMAGE_MODELS.adminFallback,
+          contents: {
+            parts: [{ text: prompt }],
+          },
+          config: {
+            imageConfig: { aspectRatio: "1:1" }
+          },
+        });
+      }
+    })();
+
+    if ((response as any)?.error) {
+      return { error: (response as any).error };
+    }
+
+    if (response.candidates?.[0]?.content?.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData) {
+          const rawBase64 = `data:image/png;base64,${part.inlineData.data}`;
+          const resized = await resizeImageToSquare(rawBase64, 100);
+          return { url: resized };
+        }
+      }
+    }
+    return { error: "No image data returned from the model." };
+  } catch (e) {
+    console.error("Companion avatar generation failed:", e);
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /**
