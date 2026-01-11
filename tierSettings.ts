@@ -1,0 +1,52 @@
+import { GameSettings, UserTier } from './types';
+
+export const ADMIN_MAX_AP = 100;
+export const NORMAL_MAX_AP = 5;
+export const GUEST_MAX_AP = 10;
+
+export type ApRecoveryConfig = { amount: number; intervalMs: number };
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+const TIER_SETTINGS: Record<UserTier, {
+  maxAp: number;
+  minImageTurns: number;
+  defaultImageTurns: number;
+  historyLimit: number;
+  apRecovery?: ApRecoveryConfig | null;
+}> = {
+  admin: { maxAp: ADMIN_MAX_AP, minImageTurns: 1, defaultImageTurns: 1, historyLimit: 100, apRecovery: null },
+  normal: { maxAp: NORMAL_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 20, apRecovery: { amount: 1, intervalMs: HOUR_MS } },
+  guest: { maxAp: GUEST_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 10, apRecovery: { amount: 1, intervalMs: DAY_MS } }
+};
+
+export const DEFAULT_SETTINGS: GameSettings = {
+  highQualityImages: true,
+  imageEveryTurns: TIER_SETTINGS.normal.defaultImageTurns
+};
+
+export const getTierSettings = (tier: UserTier) => TIER_SETTINGS[tier];
+
+export const getMaxApForTier = (tier: UserTier) => TIER_SETTINGS[tier].maxAp;
+
+export const getMinImageTurnsForTier = (tier: UserTier) => TIER_SETTINGS[tier].minImageTurns;
+
+export const getDefaultImageTurnsForTier = (tier: UserTier) =>
+  TIER_SETTINGS[tier].defaultImageTurns;
+
+export const getHistoryLimitForTier = (tier: UserTier) =>
+  TIER_SETTINGS[tier].historyLimit;
+
+export const getApRecoveryForTier = (tier: UserTier) =>
+  TIER_SETTINGS[tier].apRecovery ?? null;
+
+export const normalizeSettingsForTier = (settings: GameSettings, tier: UserTier) => {
+  const minTurns = getMinImageTurnsForTier(tier);
+  const fallbackTurns = settings.imageEveryTurns || getDefaultImageTurnsForTier(tier);
+  return {
+    ...DEFAULT_SETTINGS,
+    ...settings,
+    imageEveryTurns: Math.max(minTurns, Math.floor(fallbackTurns))
+  };
+};

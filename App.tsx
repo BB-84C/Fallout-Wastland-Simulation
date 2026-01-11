@@ -6,43 +6,44 @@ import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
 import StatBar from './components/StatBar';
 import { createPlayerCharacter, getNarrativeResponse, generateSceneImage, generateCompanionAvatar } from './services/geminiService';
+import {
+  ADMIN_MAX_AP,
+  NORMAL_MAX_AP,
+  GUEST_MAX_AP,
+  DEFAULT_SETTINGS,
+  getApRecoveryForTier,
+  getDefaultImageTurnsForTier,
+  getHistoryLimitForTier,
+  getMaxApForTier,
+  getMinImageTurnsForTier,
+  normalizeSettingsForTier
+} from './tierSettings';
+import type { ApRecoveryConfig } from './tierSettings';
 
 const SAVE_KEY_PREFIX = 'fallout_wasteland_save';
 const USERS_DB_KEY = 'fallout_users_db';
-const ADMIN_MAX_AP = 100;
-const NORMAL_MAX_AP = 60;
-const GUEST_MAX_AP = 30;
-const AP_RECOVERY_INTERVAL_MS = 30 * 60 * 1000;
-const AP_RECOVERY_AMOUNT = 6;
-const DEFAULT_SETTINGS: GameSettings = {
-  highQualityImages: true,
-  imageEveryTurns: 8
-};
 
-const syncApState = (ap: number, apLastUpdated: number, now: number, maxAp: number) => {
+const syncApState = (
+  ap: number,
+  apLastUpdated: number,
+  now: number,
+  maxAp: number,
+  recovery: ApRecoveryConfig | null
+) => {
+  if (!recovery || recovery.amount <= 0 || recovery.intervalMs <= 0) {
+    return { ap, apLastUpdated };
+  }
   if (ap >= maxAp) return { ap, apLastUpdated };
   const elapsed = Math.max(0, now - apLastUpdated);
-  if (elapsed < AP_RECOVERY_INTERVAL_MS) return { ap, apLastUpdated };
-  const intervals = Math.floor(elapsed / AP_RECOVERY_INTERVAL_MS);
-  const recovered = intervals * AP_RECOVERY_AMOUNT;
+  if (elapsed < recovery.intervalMs) return { ap, apLastUpdated };
+  const intervals = Math.floor(elapsed / recovery.intervalMs);
+  const recovered = intervals * recovery.amount;
   const nextAp = Math.min(maxAp, ap + recovered);
-  const nextLastUpdated = apLastUpdated + intervals * AP_RECOVERY_INTERVAL_MS;
+  const nextLastUpdated = apLastUpdated + intervals * recovery.intervalMs;
   return { ap: nextAp, apLastUpdated: nextLastUpdated };
 };
 
 const getSaveKey = (username: string) => `${SAVE_KEY_PREFIX}_${username}`;
-
-const getMaxApForTier = (tier: UserTier) => {
-  if (tier === 'admin') return ADMIN_MAX_AP;
-  if (tier === 'normal') return NORMAL_MAX_AP;
-  return GUEST_MAX_AP;
-};
-
-const getMinImageTurnsForTier = (tier: UserTier) => {
-  if (tier === 'admin') return 1;
-  if (tier === 'normal') return 5;
-  return 3;
-};
 
 const getCreationPhaseText = (phase: 'request' | 'image' | 'finalize', isZh: boolean) => {
   switch (phase) {
@@ -97,13 +98,12 @@ const formatCreationProgress = (message: string, isZh: boolean, showDebug: boole
   return showDebug ? message : null;
 };
 
-const normalizeSettingsForTier = (settings: GameSettings, tier: UserTier) => {
-  const minTurns = getMinImageTurnsForTier(tier);
-  return {
-    ...DEFAULT_SETTINGS,
-    ...settings,
-    imageEveryTurns: Math.max(minTurns, Math.floor(settings.imageEveryTurns || DEFAULT_SETTINGS.imageEveryTurns))
-  };
+const formatRecoveryInterval = (minutes: number, isZh: boolean) => {
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return isZh ? `${hours} 小时` : `${hours} hour${hours === 1 ? '' : 's'}`;
+  }
+  return isZh ? `${minutes} 分钟` : `${minutes} minute${minutes === 1 ? '' : 's'}`;
 };
 
 const createInitialGameState = (settings: GameSettings, ap: number, apLastUpdated: number): GameState => ({
@@ -252,6 +252,19 @@ const App: React.FC = () => {
   const isGuest = activeTier === 'guest';
   const maxAp = getMaxApForTier(activeTier);
   const minImageTurns = getMinImageTurnsForTier(activeTier);
+  const apRecovery = getApRecoveryForTier(activeTier);
+  const normalMaxAp = getMaxApForTier('normal');
+  const guestMaxAp = getMaxApForTier('guest');
+  const normalMinImageTurns = getMinImageTurnsForTier('normal');
+  const guestFixedImageTurns = getMinImageTurnsForTier('guest');
+  const normalDefaultImageTurns = getDefaultImageTurnsForTier('normal');
+  const historyLimit = getHistoryLimitForTier(activeTier);
+  const normalRecovery = getApRecoveryForTier('normal');
+  const guestRecovery = getApRecoveryForTier('guest');
+  const normalRecoveryMinutes = normalRecovery ? Math.round(normalRecovery.intervalMs / 60000) : 0;
+  const guestRecoveryMinutes = guestRecovery ? Math.round(guestRecovery.intervalMs / 60000) : 0;
+  const normalRecoveryAmount = normalRecovery?.amount ?? 0;
+  const guestRecoveryAmount = guestRecovery?.amount ?? 0;
 
   useEffect(() => {
     let active = true;
@@ -329,11 +342,13 @@ const App: React.FC = () => {
   }, [currentUser]);
 
   useEffect(() => {
-    if (view !== 'playing' || !isNormal) return;
+    if (view !== 'playing' || isAdmin) return;
+    const recovery = getApRecoveryForTier(activeTier);
+    if (!recovery) return;
     const interval = setInterval(() => {
       setGameState((prev) => {
         const now = Date.now();
-        const synced = syncApState(prev.ap, prev.apLastUpdated, now, maxAp);
+        const synced = syncApState(prev.ap, prev.apLastUpdated, now, maxAp, recovery);
         if (synced.ap === prev.ap && synced.apLastUpdated === prev.apLastUpdated) {
           return prev;
         }
@@ -341,7 +356,7 @@ const App: React.FC = () => {
       });
     }, 30000);
     return () => clearInterval(interval);
-  }, [view, isNormal, maxAp]);
+  }, [view, activeTier, maxAp, isAdmin]);
 
   useEffect(() => {
     if (view !== 'creation' || !gameState.isThinking || creationStartTime === null) return;
@@ -424,8 +439,8 @@ const App: React.FC = () => {
       let apLastUpdated = typeof currentUser.apLastUpdated === 'number' && currentUser.apLastUpdated > 0
         ? currentUser.apLastUpdated
         : now;
-      if (isNormal) {
-        const synced = syncApState(clampedAp, apLastUpdated, now, maxAp);
+      if (apRecovery) {
+        const synced = syncApState(clampedAp, apLastUpdated, now, maxAp, apRecovery);
         clampedAp = synced.ap;
         apLastUpdated = synced.apLastUpdated;
       }
@@ -468,8 +483,9 @@ const App: React.FC = () => {
     let apLastUpdated = typeof record.apLastUpdated === 'number' && record.apLastUpdated > 0
       ? record.apLastUpdated
       : Date.now();
-    if (tier === 'normal') {
-      const synced = syncApState(ap, apLastUpdated, Date.now(), maxAllowedAp);
+    const recovery = getApRecoveryForTier(tier);
+    if (recovery) {
+      const synced = syncApState(ap, apLastUpdated, Date.now(), maxAllowedAp, recovery);
       ap = synced.ap;
       apLastUpdated = synced.apLastUpdated;
     }
@@ -728,18 +744,19 @@ const App: React.FC = () => {
     let currentAp = gameState.ap;
     let currentApLastUpdated = gameState.apLastUpdated;
 
-    if (isNormal) {
-      const synced = syncApState(currentAp, currentApLastUpdated, now, maxAp);
+    if (!isAdmin && apRecovery) {
+      const synced = syncApState(currentAp, currentApLastUpdated, now, maxAp, apRecovery);
       currentAp = synced.ap;
       currentApLastUpdated = synced.apLastUpdated;
 
       if (currentAp <= 0) {
         const elapsed = Math.max(0, now - currentApLastUpdated);
-        const remainingMs = AP_RECOVERY_INTERVAL_MS - (elapsed % AP_RECOVERY_INTERVAL_MS);
+        const remainingMs = apRecovery.intervalMs - (elapsed % apRecovery.intervalMs);
         const minutesLeft = Math.max(1, Math.ceil(remainingMs / 60000));
+        const waitLabel = formatRecoveryInterval(minutesLeft, isZh);
         const apMessage = gameState.language === 'en'
-          ? `ACTION POINTS DEPLETED. Please return after ${minutesLeft} minutes.`
-          : `行动点已耗尽。请在 ${minutesLeft} 分钟后再试。`;
+          ? `ACTION POINTS DEPLETED. Please return after ${waitLabel}.`
+          : `行动点已耗尽。请在 ${waitLabel} 后再试。`;
         setGameState(prev => ({
           ...prev,
           isThinking: false,
@@ -749,10 +766,10 @@ const App: React.FC = () => {
         }));
         return;
       }
-    } else if (isGuest && currentAp <= 0) {
+    } else if (!isAdmin && currentAp <= 0) {
       const apMessage = gameState.language === 'en'
-        ? `TEMPORARY ACCESS ENDED. Start a new character or log in to continue.`
-        : `临时权限已结束。请登录或新建角色继续。`;
+        ? `ACTION POINTS DEPLETED. Please return later.`
+        : `行动点已耗尽。请稍后再试。`;
       setGameState(prev => ({
         ...prev,
         isThinking: false,
@@ -767,11 +784,12 @@ const App: React.FC = () => {
     setUserInput('');
 
     const updatedHistory: HistoryEntry[] = [...gameState.history, { sender: 'player', text: actionText }];
+    const trimmedHistory = updatedHistory.slice(-historyLimit);
     const imageEveryTurns = Math.max(minImageTurns, Math.floor(gameState.settings.imageEveryTurns || minImageTurns));
     const nextTurn = gameState.turnCount + 1;
     const shouldGenerateImage = nextTurn % imageEveryTurns === 0;
     const nextAp = isAdmin ? currentAp : Math.max(0, currentAp - 1);
-    const nextApLastUpdated = isNormal
+    const nextApLastUpdated = apRecovery
       ? (currentAp >= maxAp ? now : currentApLastUpdated)
       : currentApLastUpdated;
 
@@ -779,15 +797,15 @@ const App: React.FC = () => {
       ...prev,
       isThinking: true,
       history: updatedHistory,
-      ap: nextAp,
-      apLastUpdated: nextApLastUpdated,
+      ap: currentAp,
+      apLastUpdated: currentApLastUpdated,
       turnCount: nextTurn
     }));
 
     try {
       const response = await getNarrativeResponse(
         gameState.player,
-        updatedHistory,
+        trimmedHistory,
         actionText,
         gameState.currentYear,
         gameState.location,
@@ -801,6 +819,8 @@ const App: React.FC = () => {
         setGameState(prev => ({
           ...prev,
           isThinking: false,
+          ap: currentAp,
+          apLastUpdated: currentApLastUpdated,
           history: [...updatedHistory, { 
             sender: 'narrator', 
             text: `[RULE ERROR / 规则错误] ${response.ruleViolation}` 
@@ -877,6 +897,8 @@ const App: React.FC = () => {
         currentTime: newTime.toISOString(),
         quests: mergedQuests,
         knownNpcs: nextKnownNpcs,
+        ap: nextAp,
+        apLastUpdated: nextApLastUpdated,
         player: response.updatedPlayer || prev.player, 
         history: [...updatedHistory, { 
           sender: 'narrator', 
@@ -894,6 +916,8 @@ const App: React.FC = () => {
       setGameState(prev => ({ 
         ...prev, 
         isThinking: false,
+        ap: currentAp,
+        apLastUpdated: currentApLastUpdated,
         history: [...updatedHistory, { 
           sender: 'narrator', 
           text: gameState.language === 'en' 
@@ -991,9 +1015,12 @@ const App: React.FC = () => {
         </h3>
         <div className="text-sm opacity-80 space-y-2">
           <div>{isZh ? '你正在以临时身份体验。' : 'You are playing as a temporary user.'}</div>
-          <div>{isZh ? '限制：仅最低模型、AP 上限 30 且不恢复。' : 'Limits: minimum models only, AP max 30 with no recovery.'}</div>
+          <div>{isZh
+            ? `限制：仅最低模型、AP 上限 ${guestMaxAp}，每 ${formatRecoveryInterval(guestRecoveryMinutes, isZh)} 恢复 ${guestRecoveryAmount} 点。`
+            : `Limits: minimum models only, AP max ${guestMaxAp}, recovers +${guestRecoveryAmount} every ${formatRecoveryInterval(guestRecoveryMinutes, isZh)}.`}
+          </div>
           <div>{isZh ? '不会保存进度，需要新建角色继续。' : 'Progress is not saved; start a new character to continue.'}</div>
-          <div>{isZh ? '无法调整图像频率。' : 'Image frequency cannot be adjusted.'}</div>
+          <div>{isZh ? `图像频率固定为 ${guestFixedImageTurns}。` : `Image frequency is fixed at ${guestFixedImageTurns}.`}</div>
         </div>
         <button
           onClick={() => setShowGuestNotice(false)}
@@ -1283,8 +1310,8 @@ const App: React.FC = () => {
                 </div>
                 <div className="text-xs opacity-70 mt-1">
                   {isZh
-                    ? '每 N 次交互生成一张图像，默认 8。'
-                    : 'Generate images every N turns of interaction. Default is 8.'}
+                    ? `每 N 次交互生成一张图像，默认 ${normalDefaultImageTurns}，临时用户固定为 ${guestFixedImageTurns}。`
+                    : `Generate images every N turns of interaction. Default is ${normalDefaultImageTurns}; temporary users are fixed at ${guestFixedImageTurns}.`}
                 </div>
                 <div className="mt-3 flex items-center space-x-3">
                   <input
@@ -1302,8 +1329,8 @@ const App: React.FC = () => {
                 {!isAdmin && (
                   <div className="text-[10px] opacity-50 mt-2 uppercase">
                     {isGuest
-                      ? (isZh ? '临时用户无法修改。' : 'Temporary users cannot change this.')
-                      : (isZh ? '普通用户最小值为 8。' : 'Normal users minimum is 8.')}
+                      ? (isZh ? `临时用户固定为 ${guestFixedImageTurns}。` : `Temporary users are fixed at ${guestFixedImageTurns}.`)
+                      : (isZh ? `普通用户最小值为 ${normalMinImageTurns}。` : `Normal users minimum is ${normalMinImageTurns}.`)}
                   </div>
                 )}
               </div>
@@ -1329,13 +1356,13 @@ const App: React.FC = () => {
                 <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '行动点 (AP)' : 'Action Points (AP)'}</div>
                 <div className="opacity-80">
                   {isZh
-                    ? 'AP 上限随用户等级变化（管理员无限制，普通 60，临时 30）。每次行动消耗 1 点，AP 为 0 时无法行动。'
-                    : 'AP cap depends on tier (Admin unlimited, Normal 60, Temporary 30). Each action costs 1 AP. You cannot act when AP reaches 0.'}
+                    ? `AP 上限随用户等级变化（管理员无限制，普通 ${normalMaxAp}，临时 ${guestMaxAp}）。每次行动消耗 1 点，AP 为 0 时无法行动。`
+                    : `AP cap depends on tier (Admin unlimited, Normal ${normalMaxAp}, Temporary ${guestMaxAp}). Each action costs 1 AP. You cannot act when AP reaches 0.`}
                 </div>
                 <div className="opacity-80 mt-2">
                   {isZh
-                    ? '普通用户 AP 每 30 分钟恢复 6 点，使用本机时间计算。耗尽时会提示剩余等待分钟数。'
-                    : 'Normal users recover +6 AP every 30 minutes using your device clock. When depleted, the terminal shows minutes remaining.'}
+                    ? `普通用户 AP 每 ${formatRecoveryInterval(normalRecoveryMinutes, isZh)} 恢复 ${normalRecoveryAmount} 点，使用本机时间计算。耗尽时会提示剩余等待分钟数。`
+                    : `Normal users recover +${normalRecoveryAmount} AP every ${formatRecoveryInterval(normalRecoveryMinutes, isZh)} using your device clock. When depleted, the terminal shows minutes remaining.`}
                 </div>
               </div>
 
@@ -1357,8 +1384,8 @@ const App: React.FC = () => {
                 </div>
                 <div className="opacity-80 mt-2">
                   {isZh
-                    ? '图像频率控制每隔多少回合生成图片，默认 8。'
-                    : 'Image frequency controls how often images appear (every N turns). Default is 8.'}
+                    ? `图像频率控制每隔多少回合生成图片，默认 ${normalDefaultImageTurns}，临时用户固定为 ${guestFixedImageTurns}。`
+                    : `Image frequency controls how often images appear (every N turns). Default is ${normalDefaultImageTurns}; temporary users are fixed at ${guestFixedImageTurns}.`}
                 </div>
               </div>
 
@@ -1366,13 +1393,13 @@ const App: React.FC = () => {
                 <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '用户等级' : 'User Tiers'}</div>
                 <div className="opacity-80">
                   {isZh
-                    ? '临时用户：AP 上限 30、不恢复、无保存、不可改图像频率。'
-                    : 'Temporary: AP max 30, no recovery, no saves, cannot change image frequency.'}
+                    ? `临时用户：AP 上限 ${guestMaxAp}，每 ${formatRecoveryInterval(guestRecoveryMinutes, isZh)} 恢复 ${guestRecoveryAmount} 点，无保存，图像频率固定为 ${guestFixedImageTurns}。`
+                    : `Temporary: AP max ${guestMaxAp}, recovers +${guestRecoveryAmount} every ${formatRecoveryInterval(guestRecoveryMinutes, isZh)}, no saves, image frequency fixed at ${guestFixedImageTurns}.`}
                 </div>
                 <div className="opacity-80 mt-2">
                   {isZh
-                    ? '普通用户：AP 上限 60，可恢复；图像频率最小 8；自动保存。'
-                    : 'Normal: AP max 60 with recovery; image frequency minimum 8; auto-saving enabled.'}
+                    ? `普通用户：AP 上限 ${normalMaxAp}，每 ${formatRecoveryInterval(normalRecoveryMinutes, isZh)} 恢复 ${normalRecoveryAmount} 点；图像频率最小 ${normalMinImageTurns}；自动保存。`
+                    : `Normal: AP max ${normalMaxAp}, recovers +${normalRecoveryAmount} every ${formatRecoveryInterval(normalRecoveryMinutes, isZh)}; image frequency minimum ${normalMinImageTurns}; auto-saving enabled.`}
                 </div>
                 <div className="opacity-80 mt-2">
                   {isZh
@@ -1463,7 +1490,8 @@ const App: React.FC = () => {
             ap={gameState.ap}
             maxAp={maxAp}
             isAdmin={isAdmin}
-            showApRecovery={isNormal}
+            showApRecovery={!!apRecovery}
+            apRecovery={apRecovery}
             onLanguageToggle={toggleLanguage}
             onSave={saveGame}
             showSave={isAdmin}

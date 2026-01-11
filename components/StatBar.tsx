@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { Actor, Language, Quest, SpecialAttr, Skill } from '../types';
 import { localizeLocation } from '../localization';
+import type { ApRecoveryConfig } from '../tierSettings';
 
 interface StatBarProps {
   player: Actor;
@@ -15,6 +16,7 @@ interface StatBarProps {
   maxAp: number;
   isAdmin: boolean;
   showApRecovery: boolean;
+  apRecovery?: ApRecoveryConfig | null;
   onLanguageToggle: (lang: Language) => void;
   onSave: () => void;
   showSave: boolean;
@@ -70,6 +72,7 @@ const StatBar: React.FC<StatBarProps> = ({
   maxAp,
   isAdmin,
   showApRecovery,
+  apRecovery,
   onLanguageToggle,
   onSave,
   showSave,
@@ -87,6 +90,10 @@ const StatBar: React.FC<StatBarProps> = ({
   });
   const companions = knownNpcs.filter(npc => npc.ifCompanion);
   const displayLocation = localizeLocation(location, language);
+  const apRecoveryMinutes = apRecovery ? Math.round(apRecovery.intervalMs / 60000) : 0;
+  const apRecoveryLabel = apRecoveryMinutes % 60 === 0
+    ? `${apRecoveryMinutes / 60} hr`
+    : `${apRecoveryMinutes} min`;
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -120,9 +127,9 @@ const StatBar: React.FC<StatBarProps> = ({
                       style={{ width: `${isAdmin ? 100 : Math.max(0, Math.min(100, (ap / maxAp) * 100))}%` }}
                     ></div>
                   </div>
-                  {showApRecovery && (
+                  {showApRecovery && apRecovery && (
                     <div className="text-[9px] opacity-50 mt-1 uppercase tracking-widest">
-                      +6 / 30 min
+                      +{apRecovery.amount} / {apRecoveryLabel}
                     </div>
                   )}
                 </div>
