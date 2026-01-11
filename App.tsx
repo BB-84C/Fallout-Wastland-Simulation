@@ -163,7 +163,8 @@ const App: React.FC = () => {
         charDescription, 
         gameState.currentYear, 
         gameState.location, 
-        gameState.language
+        gameState.language,
+        { isAdmin }
       );
       
       const introMsg = gameState.language === 'en' 
@@ -173,7 +174,7 @@ const App: React.FC = () => {
       const startNarration = `${introMsg} ${actor.lore}`;
       const imgData = await generateSceneImage(
         `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
-        { highQuality: gameState.settings.highQualityImages }
+        { highQuality: gameState.settings.highQualityImages, isAdmin }
       );
       
       setGameState(prev => ({
@@ -263,7 +264,8 @@ const App: React.FC = () => {
         gameState.currentYear,
         gameState.location,
         gameState.quests,
-        gameState.language
+        gameState.language,
+        { isAdmin }
       );
 
       if (response.ruleViolation) {
@@ -300,8 +302,11 @@ const App: React.FC = () => {
       // Generate images based on the configured frequency.
       const visualPrompt = response.imagePrompt || actionText;
       const imgData = shouldGenerateImage
-        ? await generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages })
+        ? await generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages, isAdmin })
         : undefined;
+      const imageLog = shouldGenerateImage && imgData?.error
+        ? (isZh ? `\n\n[图像日志] ${imgData.error}` : `\n\n[IMAGE LOG] ${imgData.error}`)
+        : '';
 
       setGameState(prev => ({
         ...prev,
@@ -312,21 +317,25 @@ const App: React.FC = () => {
         player: response.updatedPlayer || prev.player, 
         history: [...updatedHistory, { 
           sender: 'narrator', 
-          text: response.storyText, 
+          text: `${response.storyText}${imageLog}`, 
           imageUrl: imgData?.url,
           groundingSources: imgData?.sources
         }]
       }));
     } catch (err) {
       console.error(err);
+      const errorDetail = err instanceof Error ? err.message : String(err);
+      const errorLog = gameState.language === 'en'
+        ? `\n\n[LOG] ${errorDetail}`
+        : `\n\n[日志] ${errorDetail}`;
       setGameState(prev => ({ 
         ...prev, 
         isThinking: false,
         history: [...updatedHistory, { 
           sender: 'narrator', 
           text: gameState.language === 'en' 
-            ? `VAULT-TEC ERROR: Narrative link unstable.` 
-            : `避难所科技错误：叙事链路不稳定。` 
+            ? `VAULT-TEC ERROR: Narrative link unstable.${errorLog}` 
+            : `避难所科技错误：叙事链路不稳定。${errorLog}` 
         }]
       }))
     }

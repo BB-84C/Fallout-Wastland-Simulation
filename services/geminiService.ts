@@ -59,6 +59,18 @@ const actorSchema = {
   required: ["name", "age", "faction", "special", "skills", "lore", "health", "maxHealth", "caps"]
 };
 
+const TEXT_MODELS = {
+  adminPrimary: 'gemini-3-pro-preview',
+  adminFallback: 'gemini-3-flash-preview',
+  user: 'gemini-2.5-flash'
+};
+
+const IMAGE_MODELS = {
+  adminPrimary: 'gemini-3-pro-image-preview',
+  adminFallback: 'gemini-2.5-flash-image',
+  user: 'gemini-2.5-flash-image'
+};
+
 const questSchema = {
   type: Type.ARRAY,
   items: {
@@ -121,25 +133,54 @@ function safeJsonParse(text: string): any {
   }
 }
 
-export async function createPlayerCharacter(userInput: string, year: number, region: string, lang: Language): Promise<Actor> {
+export async function createPlayerCharacter(
+  userInput: string,
+  year: number,
+  region: string,
+  lang: Language,
+  options?: { isAdmin?: boolean }
+): Promise<Actor> {
+  const isAdmin = options?.isAdmin === true;
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const targetLang = lang === 'zh' ? 'Chinese' : 'English';
   
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps).`,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: actorSchema,
-      systemInstruction: `You are the Vault-Tec Identity Reconstruction System.
-      1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
-      2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
-      3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
-      4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
-      5. PERK SYSTEM: Assign 1-2 starting perks.
-      6. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description.`
-    },
-  });
+  const response = await (async () => {
+    try {
+      return await ai.models.generateContent({
+        model: isAdmin ? TEXT_MODELS.adminPrimary : TEXT_MODELS.user,
+        contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps).`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: actorSchema,
+          systemInstruction: `You are the Vault-Tec Identity Reconstruction System.
+          1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
+          2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
+          3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
+          4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
+          5. PERK SYSTEM: Assign 1-2 starting perks.
+          6. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description.`
+        },
+      });
+    } catch (e) {
+      if (!isAdmin) throw e;
+      const fallbackAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      return await fallbackAi.models.generateContent({
+        model: TEXT_MODELS.adminFallback,
+        contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps).`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: actorSchema,
+          systemInstruction: `You are the Vault-Tec Identity Reconstruction System.
+          1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
+          2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
+          3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
+          4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
+          5. PERK SYSTEM: Assign 1-2 starting perks.
+          6. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description.`
+        },
+      });
+    }
+  })();
   
   if (!response.text) throw new Error("No response from Vault-Tec database.");
   return safeJsonParse(response.text);
@@ -152,11 +193,13 @@ export async function getNarrativeResponse(
   year: number,
   location: string,
   quests: Quest[],
-  lang: Language
+  lang: Language,
+  options?: { isAdmin?: boolean }
 ): Promise<NarratorResponse> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const targetLang = lang === 'zh' ? 'Chinese' : 'English';
   const context = history.slice(-15).map(h => `${h.sender.toUpperCase()}: ${h.text}`).join('\n');
+  const isAdmin = options?.isAdmin === true;
 
   const prompt = `
     Environment Year: ${year}
@@ -175,41 +218,83 @@ export async function getNarrativeResponse(
        - Use 'questUpdates' to signal changes to the quest log.
   `;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          storyText: { type: Type.STRING },
-          ruleViolation: { type: Type.STRING },
-          timePassedMinutes: { type: Type.NUMBER },
-          questUpdates: questSchema,
-          newNpc: actorSchema,
-          updatedPlayer: actorSchema,
-          imagePrompt: { type: Type.STRING }
+  const response = await (async () => {
+    try {
+      return await ai.models.generateContent({
+        model: isAdmin ? TEXT_MODELS.adminPrimary : TEXT_MODELS.user,
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              storyText: { type: Type.STRING },
+              ruleViolation: { type: Type.STRING },
+              timePassedMinutes: { type: Type.NUMBER },
+              questUpdates: questSchema,
+              newNpc: actorSchema,
+              updatedPlayer: actorSchema,
+              imagePrompt: { type: Type.STRING }
+            },
+            required: ["storyText", "timePassedMinutes", "imagePrompt"]
+          },
+          systemInstruction: `You are the Fallout Overseer. 
+          1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
+          2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
+          3. QUEST SYSTEM (CRITICAL):
+             - You are responsible for maintaining the quest log via the 'questUpdates' field.
+             - CREATE: If the player is given a task (e.g., "Find the water chip", "Kill the radroaches"), you MUST generate a new quest object in 'questUpdates' with a unique ID.
+             - UPDATE: If the player completes an objective or receives new information that changes the goal, provide the updated quest in 'questUpdates'.
+             - FINISH: When a task is done, set its status to 'completed'.
+             - Never delete quests; only update their status.
+          4. ECONOMY & TRADING: 
+             - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
+          5. PERKS: Incorporate player perks into story outcomes.
+          6. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
+          7. TRANSLATION: Use "Term (Original)" for unlocalized items.
+          8. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
         },
-        required: ["storyText", "timePassedMinutes", "imagePrompt"]
-      },
-      systemInstruction: `You are the Fallout Overseer. 
-      1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
-      2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
-      3. QUEST SYSTEM (CRITICAL):
-         - You are responsible for maintaining the quest log via the 'questUpdates' field.
-         - CREATE: If the player is given a task (e.g., "Find the water chip", "Kill the radroaches"), you MUST generate a new quest object in 'questUpdates' with a unique ID.
-         - UPDATE: If the player completes an objective or receives new information that changes the goal, provide the updated quest in 'questUpdates'.
-         - FINISH: When a task is done, set its status to 'completed'.
-         - Never delete quests; only update their status.
-      4. ECONOMY & TRADING: 
-         - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
-      5. PERKS: Incorporate player perks into story outcomes.
-      6. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
-      7. TRANSLATION: Use "Term (Original)" for unlocalized items.
-      8. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
-    },
-  });
+      });
+    } catch (e) {
+      if (!isAdmin) throw e;
+      const fallbackAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      return await fallbackAi.models.generateContent({
+        model: TEXT_MODELS.adminFallback,
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              storyText: { type: Type.STRING },
+              ruleViolation: { type: Type.STRING },
+              timePassedMinutes: { type: Type.NUMBER },
+              questUpdates: questSchema,
+              newNpc: actorSchema,
+              updatedPlayer: actorSchema,
+              imagePrompt: { type: Type.STRING }
+            },
+            required: ["storyText", "timePassedMinutes", "imagePrompt"]
+          },
+          systemInstruction: `You are the Fallout Overseer. 
+          1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
+          2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
+          3. QUEST SYSTEM (CRITICAL):
+             - You are responsible for maintaining the quest log via the 'questUpdates' field.
+             - CREATE: If the player is given a task (e.g., "Find the water chip", "Kill the radroaches"), you MUST generate a new quest object in 'questUpdates' with a unique ID.
+             - UPDATE: If the player completes an objective or receives new information that changes the goal, provide the updated quest in 'questUpdates'.
+             - FINISH: When a task is done, set its status to 'completed'.
+             - Never delete quests; only update their status.
+          4. ECONOMY & TRADING: 
+             - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
+          5. PERKS: Incorporate player perks into story outcomes.
+          6. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
+          7. TRANSLATION: Use "Term (Original)" for unlocalized items.
+          8. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
+        },
+      });
+    }
+  })();
 
   if (!response.text) throw new Error("Connection to the Wasteland lost.");
   return safeJsonParse(response.text);
@@ -217,57 +302,100 @@ export async function getNarrativeResponse(
 
 /**
  * Two-stage generation (optional):
- * Stage 1: Research visual details using gemini-3-pro with Google Search.
- * Stage 2: Generate the image using gemini-2.5-flash-image based on research findings.
+ * Stage 1: Research visual details with a text model and Google Search.
+ * Stage 2: Generate the image with an image model based on research findings.
  */
 export async function generateSceneImage(
   prompt: string,
-  options?: { highQuality?: boolean }
-): Promise<{url: string, sources: GroundingSource[]} | undefined> {
+  options?: { highQuality?: boolean; isAdmin?: boolean }
+): Promise<{url?: string, sources?: GroundingSource[], error?: string} | undefined> {
   const useHighQuality = options?.highQuality !== false;
+  const isAdmin = options?.isAdmin === true;
 
   try {
     let detailedDescription = prompt;
     let groundingSources: GroundingSource[] = [];
 
     if (useHighQuality) {
-      const researchAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
       // STAGE 1: Visual Research using Search Grounding
       // We explicitly extract keywords and use Search to "see" what things look like.
-      const researchResponse = await researchAi.models.generateContent({
-        model: 'gemini-3-pro',
-        contents: `Research visual references for this Fallout scene: "${prompt}".
-        1. Extract 3-5 keywords related to Fallout lore, items, or environment.
-        2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
-        3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
-        4. Format your final response as a detailed scene description for a concept artist.`,
-        config: {
-          tools: [{ googleSearch: {} }]
+      const researchResponse = await (async () => {
+        const researchAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        try {
+          return await researchAi.models.generateContent({
+            model: isAdmin ? TEXT_MODELS.adminPrimary : TEXT_MODELS.user,
+            contents: `Research visual references for this Fallout scene: "${prompt}".
+            1. Extract 3-5 keywords related to Fallout lore, items, or environment.
+            2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
+            3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
+            4. Format your final response as a detailed scene description for a concept artist.`,
+            config: {
+              tools: [{ googleSearch: {} }]
+            }
+          });
+        } catch (e) {
+          if (!isAdmin) return undefined;
+          const fallbackAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+          return await fallbackAi.models.generateContent({
+            model: TEXT_MODELS.adminFallback,
+            contents: `Research visual references for this Fallout scene: "${prompt}".
+            1. Extract 3-5 keywords related to Fallout lore, items, or environment.
+            2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
+            3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
+            4. Format your final response as a detailed scene description for a concept artist.`,
+            config: {
+              tools: [{ googleSearch: {} }]
+            }
+          });
         }
-      });
+      })();
 
-      detailedDescription = researchResponse.text || prompt;
+      if (researchResponse) {
+        detailedDescription = researchResponse.text || prompt;
 
-      // Extract search grounding sources to display in the UI as per SDK rules.
-      groundingSources = researchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks
-        ?.filter((chunk: any) => chunk.web)
-        ?.map((chunk: any) => ({
-          title: chunk.web.title,
-          uri: chunk.web.uri
-        })) || [];
+        // Extract search grounding sources to display in the UI as per SDK rules.
+        groundingSources = researchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks
+          ?.filter((chunk: any) => chunk.web)
+          ?.map((chunk: any) => ({
+            title: chunk.web.title,
+            uri: chunk.web.uri
+          })) || [];
+      }
     }
 
     // STAGE 2: Image generation
-    const imageAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const imageResponse = await imageAi.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [{ text: `Cinematic Fallout Concept Art. Environment: ${detailedDescription}. Atmosphere: Desolate, atmospheric, detailed. Style: Digital art, 4k, hyper-realistic wasteland aesthetic.` }],
-      },
-      config: { 
-        imageConfig: { aspectRatio: "16:9" }
-      },
-    });
+    const imageResponse = await (async () => {
+      const imageAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      try {
+        return await imageAi.models.generateContent({
+          model: isAdmin ? IMAGE_MODELS.adminPrimary : IMAGE_MODELS.user,
+          contents: {
+            parts: [{ text: `Cinematic Fallout Concept Art. Environment: ${detailedDescription}. Atmosphere: Desolate, atmospheric, detailed. Style: Digital art, 4k, hyper-realistic wasteland aesthetic.` }],
+          },
+          config: { 
+            imageConfig: { aspectRatio: "16:9" }
+          },
+        });
+      } catch (e) {
+        if (!isAdmin) {
+          return { error: e instanceof Error ? e.message : String(e) };
+        }
+        const fallbackAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        return await fallbackAi.models.generateContent({
+          model: IMAGE_MODELS.adminFallback,
+          contents: {
+            parts: [{ text: `Cinematic Fallout Concept Art. Environment: ${detailedDescription}. Atmosphere: Desolate, atmospheric, detailed. Style: Digital art, 4k, hyper-realistic wasteland aesthetic.` }],
+          },
+          config: { 
+            imageConfig: { aspectRatio: "16:9" }
+          },
+        });
+      }
+    })();
+
+    if ((imageResponse as any)?.error) {
+      return { error: (imageResponse as any).error };
+    }
 
     if (imageResponse.candidates?.[0]?.content?.parts) {
       for (const part of imageResponse.candidates[0].content.parts) {
@@ -278,8 +406,10 @@ export async function generateSceneImage(
         }
       }
     }
+    return { error: "No image data returned from the model." };
   } catch (e) {
     console.error("Image generation failed:", e);
+    return { error: e instanceof Error ? e.message : String(e) };
   }
   return undefined;
 }
