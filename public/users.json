@@ -2,17 +2,6 @@
   "invitationCode": "patrollingthemojavealmostmakesyouwishforanuclearwinter",
   "users": [
     {
-      "username": "admin",
-      "passkey": "114514",
-      "tier": "admin",
-      "ap": 100,
-      "apLastUpdated": 0,
-      "settings": {
-        "highQualityImages": true,
-        "imageEveryTurns": 1
-      }
-    },
-    {
       "username": "demo_user",
       "passkey": "demo123",
       "tier": "normal",

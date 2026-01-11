@@ -76,9 +76,21 @@ export interface PlayerCreationResult extends Actor {
 
 export type Language = 'en' | 'zh';
 
+export type TextModelId =
+  | 'gemini-3-pro-preview'
+  | 'gemini-3-flash-preview'
+  | 'gemini-2.5-flash'
+  | 'gemini-2.5-flash-lite';
+
+export type ImageModelId =
+  | 'gemini-3-pro-image-preview'
+  | 'gemini-2.5-flash-image';
+
 export interface GameSettings {
   highQualityImages: boolean;
   imageEveryTurns: number;
+  textModel?: TextModelId;
+  imageModel?: ImageModelId;
 }
 
 export type UserTier = 'admin' | 'normal' | 'guest';

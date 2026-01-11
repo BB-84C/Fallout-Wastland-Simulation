@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult } from "../types";
+import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId } from "../types";
 
 const actorSchema = {
   type: Type.OBJECT,
@@ -101,7 +101,10 @@ const questSchema = {
   }
 };
 
-const resolveApiKey = () => {
+const resolveApiKey = (overrideKey?: string) => {
+  if (overrideKey) {
+    return { key: overrideKey, source: 'user' };
+  }
   const viteKey = (import.meta as any)?.env?.VITE_API_KEY;
   const envKey = typeof process !== 'undefined' ? (process as any)?.env?.API_KEY : undefined;
   if (viteKey) {
@@ -208,12 +211,13 @@ export async function createPlayerCharacter(
   year: number,
   region: string,
   lang: Language,
-  options?: { tier?: UserTier; onProgress?: (message: string) => void }
+  options?: { tier?: UserTier; onProgress?: (message: string) => void; apiKey?: string; textModel?: TextModelId }
 ): Promise<PlayerCreationResult> {
   const tier = options?.tier ?? 'guest';
   const isAdmin = tier === 'admin';
   const textModel = tier === 'admin' ? TEXT_MODELS.adminPrimary : tier === 'normal' ? TEXT_MODELS.normal : TEXT_MODELS.guest;
-  const { key: apiKey, source } = resolveApiKey();
+  const selectedTextModel = options?.textModel || textModel;
+  const { key: apiKey, source } = resolveApiKey(options?.apiKey);
   const emit = (message: string) => options?.onProgress?.(message);
   const ai = new GoogleGenAI({ apiKey: apiKey || '' });
   const targetLang = lang === 'zh' ? 'Chinese' : 'English';
@@ -221,9 +225,9 @@ export async function createPlayerCharacter(
   const response = await (async () => {
     try {
       emit(`API key: ${source} (${describeApiKey(apiKey)})`);
-      emit(`Requesting character profile from ${textModel}...`);
+      emit(`Requesting character profile from ${selectedTextModel}...`);
       return await ai.models.generateContent({
-        model: textModel,
+        model: selectedTextModel,
         contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`,
         config: {
           responseMimeType: "application/json",
@@ -305,15 +309,16 @@ export async function getNarrativeResponse(
   quests: Quest[],
   knownNpcs: Actor[],
   lang: Language,
-  options?: { tier?: UserTier }
+  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId }
 ): Promise<NarratorResponse> {
-  const { key: apiKey } = resolveApiKey();
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
   const ai = new GoogleGenAI({ apiKey: apiKey || '' });
   const targetLang = lang === 'zh' ? 'Chinese' : 'English';
   const context = history.map(h => `${h.sender.toUpperCase()}: ${h.text}`).join('\n');
   const tier = options?.tier ?? 'guest';
   const isAdmin = tier === 'admin';
   const textModel = tier === 'admin' ? TEXT_MODELS.adminPrimary : tier === 'normal' ? TEXT_MODELS.normal : TEXT_MODELS.guest;
+  const selectedTextModel = options?.textModel || textModel;
 
   const prompt = `
     Environment Year: ${year}
@@ -336,7 +341,7 @@ export async function getNarrativeResponse(
   const response = await (async () => {
     try {
       return await ai.models.generateContent({
-        model: textModel,
+        model: selectedTextModel,
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -503,12 +508,13 @@ export async function getNarrativeResponse(
 
 export async function generateCompanionAvatar(
   npc: Actor,
-  options?: { tier?: UserTier }
+  options?: { tier?: UserTier; apiKey?: string; imageModel?: ImageModelId }
 ): Promise<{ url?: string; error?: string } | undefined> {
   const tier = options?.tier ?? 'guest';
   const isAdmin = tier === 'admin';
   const imageModel = tier === 'admin' ? IMAGE_MODELS.adminPrimary : tier === 'normal' ? IMAGE_MODELS.normal : IMAGE_MODELS.guest;
-  const { key: apiKey } = resolveApiKey();
+  const selectedImageModel = options?.imageModel || imageModel;
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
   const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
 
   try {
@@ -516,7 +522,7 @@ export async function generateCompanionAvatar(
     const response = await (async () => {
       try {
         return await imageAi.models.generateContent({
-          model: imageModel,
+          model: selectedImageModel,
           contents: {
             parts: [{ text: prompt }],
           },
@@ -568,14 +574,16 @@ export async function generateCompanionAvatar(
  */
 export async function generateSceneImage(
   prompt: string,
-  options?: { highQuality?: boolean; tier?: UserTier }
+  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; imageModel?: ImageModelId; textModel?: TextModelId }
 ): Promise<{url?: string, sources?: GroundingSource[], error?: string} | undefined> {
   const useHighQuality = options?.highQuality !== false;
   const tier = options?.tier ?? 'guest';
   const isAdmin = tier === 'admin';
   const textModel = tier === 'admin' ? TEXT_MODELS.adminPrimary : tier === 'normal' ? TEXT_MODELS.normal : TEXT_MODELS.guest;
+  const selectedTextModel = options?.textModel || textModel;
   const imageModel = tier === 'admin' ? IMAGE_MODELS.adminPrimary : tier === 'normal' ? IMAGE_MODELS.normal : IMAGE_MODELS.guest;
-  const { key: apiKey } = resolveApiKey();
+  const selectedImageModel = options?.imageModel || imageModel;
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
 
   try {
     let detailedDescription = prompt;
@@ -588,7 +596,7 @@ export async function generateSceneImage(
         const researchAi = new GoogleGenAI({ apiKey: apiKey || '' });
         try {
           return await researchAi.models.generateContent({
-            model: textModel,
+            model: selectedTextModel,
             contents: `Research visual references for this Fallout scene: "${prompt}".
             1. Extract 3-5 keywords related to Fallout lore, items, or environment.
             2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
@@ -633,7 +641,7 @@ export async function generateSceneImage(
       const imageAi = new GoogleGenAI({ apiKey: apiKey || '' });
       try {
         return await imageAi.models.generateContent({
-          model: imageModel,
+          model: selectedImageModel,
           contents: {
             parts: [{ text: `Cinematic Fallout Concept Art. Environment: ${detailedDescription}. Atmosphere: Desolate, atmospheric, detailed. Style: Digital art, 4k, hyper-realistic wasteland aesthetic.` }],
           },

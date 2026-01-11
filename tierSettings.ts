@@ -2,7 +2,7 @@ import { GameSettings, UserTier } from './types';
 
 export const ADMIN_MAX_AP = 100;
 export const NORMAL_MAX_AP = 5;
-export const GUEST_MAX_AP = 10;
+export const GUEST_MAX_AP = 20;
 
 export type ApRecoveryConfig = { amount: number; intervalMs: number };
 
@@ -18,7 +18,7 @@ const TIER_SETTINGS: Record<UserTier, {
 }> = {
   admin: { maxAp: ADMIN_MAX_AP, minImageTurns: 1, defaultImageTurns: 1, historyLimit: 100, apRecovery: null },
   normal: { maxAp: NORMAL_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 20, apRecovery: { amount: 1, intervalMs: HOUR_MS } },
-  guest: { maxAp: GUEST_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 10, apRecovery: { amount: 1, intervalMs: DAY_MS } }
+  guest: { maxAp: GUEST_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 10, apRecovery: null }
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -41,8 +41,14 @@ export const getHistoryLimitForTier = (tier: UserTier) =>
 export const getApRecoveryForTier = (tier: UserTier) =>
   TIER_SETTINGS[tier].apRecovery ?? null;
 
-export const normalizeSettingsForTier = (settings: GameSettings, tier: UserTier) => {
-  const minTurns = getMinImageTurnsForTier(tier);
+export const normalizeSettingsForTier = (
+  settings: GameSettings,
+  tier: UserTier,
+  minTurnsOverride?: number
+) => {
+  const minTurns = typeof minTurnsOverride === 'number'
+    ? minTurnsOverride
+    : getMinImageTurnsForTier(tier);
   const fallbackTurns = settings.imageEveryTurns || getDefaultImageTurnsForTier(tier);
   return {
     ...DEFAULT_SETTINGS,

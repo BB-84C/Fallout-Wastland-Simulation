@@ -14,7 +14,7 @@ interface StatBarProps {
   language: Language;
   ap: number;
   maxAp: number;
-  isAdmin: boolean;
+  apUnlimited: boolean;
   showApRecovery: boolean;
   apRecovery?: ApRecoveryConfig | null;
   onLanguageToggle: (lang: Language) => void;
@@ -70,7 +70,7 @@ const StatBar: React.FC<StatBarProps> = ({
   language, 
   ap,
   maxAp,
-  isAdmin,
+  apUnlimited,
   showApRecovery,
   apRecovery,
   onLanguageToggle,
@@ -119,12 +119,12 @@ const StatBar: React.FC<StatBarProps> = ({
                 <div>
                   <div className="flex justify-between text-[10px] uppercase mb-1">
                     <span>AP</span>
-                    <span>{isAdmin ? '∞' : `${ap} / ${maxAp}`}</span>
+                    <span>{apUnlimited ? '∞' : `${ap} / ${maxAp}`}</span>
                   </div>
                   <div className="w-full bg-[#1aff1a]/10 h-3 border border-[#1aff1a]/30">
                     <div 
                       className="bg-[#1aff1a] h-full shadow-[0_0_10px_#1aff1a] transition-all duration-500" 
-                      style={{ width: `${isAdmin ? 100 : Math.max(0, Math.min(100, (ap / maxAp) * 100))}%` }}
+                      style={{ width: `${apUnlimited ? 100 : Math.max(0, Math.min(100, (ap / maxAp) * 100))}%` }}
                     ></div>
                   </div>
                   {showApRecovery && apRecovery && (
