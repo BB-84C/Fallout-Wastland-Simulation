@@ -273,11 +273,12 @@ export async function createPlayerCharacter(
       2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
       3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
       4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
-      5. PERK SYSTEM: Assign 1-2 starting perks.
-      6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
-      7. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`
-    },
-  });
+          5. PERK SYSTEM: Assign 1-2 starting perks.
+          6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
+          7. SKILLS: The skills object must include all skills with numeric values (do not omit any skill).
+          8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`
+        },
+      });
   
   if (!response.text) throw new Error("No response from Vault-Tec database.");
   emit(`Response received (${response.text.length} chars). Parsing JSON...`);

@@ -12,7 +12,8 @@ const CLAUDE_BASE_URL = "https://api.anthropic.com/v1";
 const DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 
 const actorSchemaHint = `Return JSON with keys:
-name, age, gender, faction, special, skills, perks, inventory, lore, health, maxHealth, karma, caps, ifCompanion (optional), avatarUrl (optional).`;
+name, age, gender, faction, special, skills, perks, inventory, lore, health, maxHealth, karma, caps, ifCompanion (optional), avatarUrl (optional).
+Skills must include numeric values for: Small Guns, Big Guns, Energy Weapons, Unarmed, Melee Weapons, Medicine, Repair, Science, Sneak, Lockpick, Steal, Speech, Barter, Survival.`;
 
 const actorSchema = {
   type: Type.OBJECT,
@@ -109,7 +110,8 @@ const buildCharacterSystem = (targetLang: string) => `You are the Vault-Tec Iden
 4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
 5. PERK SYSTEM: Assign 1-2 starting perks.
 6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
-7. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
+7. SKILLS: The skills object must include all skills with numeric values (do not omit any skill).
+8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
 ${actorSchemaHint}`;
 
 const buildNarratorSystem = (targetLang: string, year: number, location: string) => `You are the Fallout Overseer.
@@ -454,7 +456,7 @@ const generateDoubaoImage = async (apiKey: string, model: string, prompt: string
     body: JSON.stringify({
       model,
       prompt,
-      size: "1024x1024",
+      size: "2048x2048",
       response_format: "b64_json"
     })
   });

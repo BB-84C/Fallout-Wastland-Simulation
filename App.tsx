@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet } from './types';
 import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
@@ -141,6 +141,120 @@ const lockHistoryTurnsForTier = (settings: GameSettings, tier: UserTier) => {
     }
   }
   return settings;
+};
+
+const normalizeKey = (value: string) =>
+  value.toLowerCase().replace(/[\s\-_]+/g, '').trim();
+
+const SPECIAL_KEY_MAP: Record<string, SpecialAttr> = {
+  s: SpecialAttr.Strength,
+  strength: SpecialAttr.Strength,
+  str: SpecialAttr.Strength,
+  p: SpecialAttr.Perception,
+  perception: SpecialAttr.Perception,
+  per: SpecialAttr.Perception,
+  e: SpecialAttr.Endurance,
+  endurance: SpecialAttr.Endurance,
+  end: SpecialAttr.Endurance,
+  c: SpecialAttr.Charisma,
+  charisma: SpecialAttr.Charisma,
+  cha: SpecialAttr.Charisma,
+  i: SpecialAttr.Intelligence,
+  intelligence: SpecialAttr.Intelligence,
+  int: SpecialAttr.Intelligence,
+  a: SpecialAttr.Agility,
+  agility: SpecialAttr.Agility,
+  agi: SpecialAttr.Agility,
+  l: SpecialAttr.Luck,
+  luck: SpecialAttr.Luck,
+  力量: SpecialAttr.Strength,
+  感知: SpecialAttr.Perception,
+  耐力: SpecialAttr.Endurance,
+  魅力: SpecialAttr.Charisma,
+  智力: SpecialAttr.Intelligence,
+  敏捷: SpecialAttr.Agility,
+  幸运: SpecialAttr.Luck
+};
+
+const SKILL_ALIASES: Record<Skill, string[]> = {
+  [Skill.SmallGuns]: ['small guns', 'smallguns', 'small_guns', '轻型枪械', '小型枪械', '轻枪械'],
+  [Skill.BigGuns]: ['big guns', 'bigguns', 'big_guns', '重型枪械', '大型枪械'],
+  [Skill.EnergyWeapons]: ['energy weapons', 'energyweapons', 'energy_weapons', '能量武器'],
+  [Skill.Unarmed]: ['unarmed', '徒手', '徒手格斗', '徒手戰鬥'],
+  [Skill.MeleeWeapons]: ['melee weapons', 'meleeweapons', 'melee_weapons', '近战武器', '近戰武器'],
+  [Skill.Medicine]: ['medicine', '医药', '醫藥'],
+  [Skill.Repair]: ['repair', '修理'],
+  [Skill.Science]: ['science', '科学', '科學'],
+  [Skill.Sneak]: ['sneak', '潜行', '潛行'],
+  [Skill.Lockpick]: ['lockpick', 'lock pick', '开锁', '開鎖'],
+  [Skill.Steal]: ['steal', '盗窃', '盜竊'],
+  [Skill.Speech]: ['speech', '口才', '說服'],
+  [Skill.Barter]: ['barter', '交易', '贸易', '貿易'],
+  [Skill.Survival]: ['survival', '生存']
+};
+
+const SKILL_KEY_MAP: Record<string, Skill> = Object.values(Skill).reduce((acc, skill) => {
+  acc[normalizeKey(skill)] = skill;
+  SKILL_ALIASES[skill].forEach(alias => {
+    acc[normalizeKey(alias)] = skill;
+  });
+  return acc;
+}, {} as Record<string, Skill>);
+
+const normalizeSpecial = (special: Record<string, any> | null | undefined) => {
+  const next = { ...DEFAULT_SPECIAL };
+  if (!special || typeof special !== 'object') return next;
+  Object.entries(special).forEach(([key, value]) => {
+    const num = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(num)) return;
+    const normalized = normalizeKey(key);
+    const mapped = SPECIAL_KEY_MAP[normalized] ?? SPECIAL_KEY_MAP[key];
+    if (!mapped) return;
+    next[mapped] = num;
+  });
+  return next;
+};
+
+const buildSkillDefaults = (special: SpecialSet): SkillSet => ({
+  [Skill.SmallGuns]: special[SpecialAttr.Agility] * 2 + 5,
+  [Skill.BigGuns]: special[SpecialAttr.Endurance] * 2 + 5,
+  [Skill.EnergyWeapons]: special[SpecialAttr.Perception] * 2 + 5,
+  [Skill.Unarmed]: special[SpecialAttr.Endurance] * 2 + 5,
+  [Skill.MeleeWeapons]: special[SpecialAttr.Strength] * 2 + 5,
+  [Skill.Medicine]: special[SpecialAttr.Intelligence] * 2 + 5,
+  [Skill.Repair]: special[SpecialAttr.Intelligence] * 2 + 5,
+  [Skill.Science]: special[SpecialAttr.Intelligence] * 2 + 5,
+  [Skill.Sneak]: special[SpecialAttr.Agility] * 2 + 5,
+  [Skill.Lockpick]: special[SpecialAttr.Perception] * 2 + 5,
+  [Skill.Steal]: special[SpecialAttr.Agility] * 2 + 5,
+  [Skill.Speech]: special[SpecialAttr.Charisma] * 2 + 5,
+  [Skill.Barter]: special[SpecialAttr.Charisma] * 2 + 5,
+  [Skill.Survival]: special[SpecialAttr.Endurance] * 2 + 5
+});
+
+const normalizeSkills = (
+  skills: Record<string, any> | null | undefined,
+  special?: SpecialSet,
+  includeDefaults = false
+): SkillSet => {
+  const normalizedSkills: SkillSet = includeDefaults && special
+    ? buildSkillDefaults(special)
+    : {};
+  if (!skills || typeof skills !== 'object') return normalizedSkills;
+  Object.entries(skills).forEach(([key, value]) => {
+    const num = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(num)) return;
+    const normalized = normalizeKey(key);
+    const mapped = SKILL_KEY_MAP[normalized];
+    if (!mapped) return;
+    const existing = normalizedSkills[mapped];
+    if (typeof existing === 'number') {
+      normalizedSkills[mapped] = Math.max(existing, num);
+    } else {
+      normalizedSkills[mapped] = num;
+    }
+  });
+  return normalizedSkills;
 };
 
 const normalizeSessionSettings = (settings: GameSettings, tier: UserTier, hasKey: boolean) => {
@@ -327,22 +441,29 @@ const mergeUsersDb = (
   return merged;
 };
 
-const normalizeActor = (actor: Actor): Actor => ({
-  ...actor,
-  special: actor.special ?? DEFAULT_SPECIAL,
-  skills: actor.skills ?? {},
-  perks: Array.isArray(actor.perks) ? actor.perks : [],
-  inventory: Array.isArray(actor.inventory) ? actor.inventory : []
-});
+const normalizeActor = (actor: Actor): Actor => {
+  const nextSpecial = normalizeSpecial(actor.special);
+  return {
+    ...actor,
+    special: nextSpecial,
+    skills: normalizeSkills(actor.skills, nextSpecial, true),
+    perks: Array.isArray(actor.perks) ? actor.perks : [],
+    inventory: Array.isArray(actor.inventory) ? actor.inventory : []
+  };
+};
 
-const mergeActor = (base: Actor, update: Actor): Actor => ({
-  ...base,
-  ...update,
-  special: update.special ?? base.special,
-  skills: update.skills ?? base.skills,
-  perks: Array.isArray(update.perks) ? update.perks : base.perks,
-  inventory: Array.isArray(update.inventory) ? update.inventory : base.inventory
-});
+const mergeActor = (base: Actor, update: Actor): Actor => {
+  const nextSpecial = update.special ? normalizeSpecial(update.special) : base.special;
+  const updateSkills = update.skills ? normalizeSkills(update.skills, nextSpecial, false) : {};
+  return {
+    ...base,
+    ...update,
+    special: nextSpecial,
+    skills: update.skills ? { ...base.skills, ...updateSkills } : base.skills,
+    perks: Array.isArray(update.perks) ? update.perks : base.perks,
+    inventory: Array.isArray(update.inventory) ? update.inventory : base.inventory
+  };
+};
 
 const mergeNpc = (existing: Actor, incoming: Actor): Actor => {
   const merged = mergeActor(existing, incoming);

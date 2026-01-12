@@ -60,6 +60,27 @@ const skillLocalizations: Record<Language, Record<Skill, string>> = {
   }
 };
 
+const specialLocalizations: Record<Language, Record<SpecialAttr, string>> = {
+  en: {
+    [SpecialAttr.Strength]: 'Strength',
+    [SpecialAttr.Perception]: 'Perception',
+    [SpecialAttr.Endurance]: 'Endurance',
+    [SpecialAttr.Charisma]: 'Charisma',
+    [SpecialAttr.Intelligence]: 'Intelligence',
+    [SpecialAttr.Agility]: 'Agility',
+    [SpecialAttr.Luck]: 'Luck'
+  },
+  zh: {
+    [SpecialAttr.Strength]: '力量',
+    [SpecialAttr.Perception]: '感知',
+    [SpecialAttr.Endurance]: '耐力',
+    [SpecialAttr.Charisma]: '魅力',
+    [SpecialAttr.Intelligence]: '智力',
+    [SpecialAttr.Agility]: '敏捷',
+    [SpecialAttr.Luck]: '幸运'
+  }
+};
+
 const StatBar: React.FC<StatBarProps> = ({ 
   player, 
   location, 
@@ -165,7 +186,11 @@ const StatBar: React.FC<StatBarProps> = ({
           <div className="space-y-2 animate-in slide-in-from-right-4 duration-300">
             {Object.entries(player.special).map(([key, val]) => (
               <div key={key} className="flex justify-between items-center border-b border-[#1aff1a]/10 py-2 hover:bg-[#1aff1a]/5 px-1">
-                <span className="text-sm font-bold tracking-widest">{key.toUpperCase()}</span>
+                <span className="text-sm font-bold tracking-widest">
+                  {language === 'zh'
+                    ? `${key.toUpperCase()} ${specialLocalizations.zh[key as SpecialAttr] || ''}`.trim()
+                    : key.toUpperCase()}
+                </span>
                 <span className="text-xl font-bold glow-text">{val}</span>
               </div>
             ))}
