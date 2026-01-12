@@ -1,13 +1,12 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, TextModelId, ImageModelId } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider } from './types';
 import { FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
 import StatBar from './components/StatBar';
-import { createPlayerCharacter, getNarrativeResponse, generateSceneImage, generateCompanionAvatar } from './services/geminiService';
+import { createPlayerCharacter, getNarrativeResponse, generateSceneImage, generateCompanionAvatar } from './services/modelService';
 import {
-  ADMIN_MAX_AP,
   NORMAL_MAX_AP,
   GUEST_MAX_AP,
   DEFAULT_SETTINGS,
@@ -23,17 +22,13 @@ import type { ApRecoveryConfig } from './tierSettings';
 const SAVE_KEY_PREFIX = 'fallout_wasteland_save';
 const USERS_DB_KEY = 'fallout_users_db';
 const USER_API_KEY_PREFIX = 'fallout_user_api_key';
-const ADMIN_USERNAME = 'admin';
-const ADMIN_PASSKEY = 'nukacola';
-const TEXT_MODEL_OPTIONS: { value: TextModelId; label: string }[] = [
-  { value: 'gemini-3-pro-preview', label: 'gemini-3-pro-preview' },
-  { value: 'gemini-3-flash-preview', label: 'gemini-3-flash-preview' },
-  { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
-  { value: 'gemini-2.5-flash-lite', label: 'gemini-2.5-flash-lite' }
-];
-const IMAGE_MODEL_OPTIONS: { value: ImageModelId; label: string }[] = [
-  { value: 'gemini-3-pro-image-preview', label: 'gemini-3-pro-image-preview' },
-  { value: 'gemini-2.5-flash-image', label: 'gemini-2.5-flash-image' }
+const USER_ONBOARD_PREFIX = 'fallout_user_onboarded';
+const RESERVED_ADMIN_USERNAME = 'admin';
+const MODEL_PROVIDER_OPTIONS: { value: ModelProvider; label: string }[] = [
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'gemini', label: 'Gemini' },
+  { value: 'claude', label: 'Claude' },
+  { value: 'doubao', label: 'Doubao' }
 ];
 
 const syncApState = (
@@ -57,24 +52,42 @@ const syncApState = (
 };
 
 const getSaveKey = (username: string) => `${SAVE_KEY_PREFIX}_${username}`;
-const getUserApiKeyKey = (username: string) => `${USER_API_KEY_PREFIX}_${username}`;
+const getUserApiKeyKey = (username: string, provider: ModelProvider) =>
+  `${USER_API_KEY_PREFIX}_${username}_${provider}`;
+const getUserOnboardKey = (username: string) => `${USER_ONBOARD_PREFIX}_${username}`;
 
-const loadUserApiKey = (username: string) => {
+const loadUserApiKey = (username: string, provider: ModelProvider) => {
   try {
-    return localStorage.getItem(getUserApiKeyKey(username)) || '';
+    return localStorage.getItem(getUserApiKeyKey(username, provider)) || '';
   } catch {
     return '';
   }
 };
 
-const persistUserApiKey = (username: string, key: string) => {
+const persistUserApiKey = (username: string, provider: ModelProvider, key: string) => {
   try {
     const trimmed = key.trim();
     if (!trimmed) {
-      localStorage.removeItem(getUserApiKeyKey(username));
+      localStorage.removeItem(getUserApiKeyKey(username, provider));
       return;
     }
-    localStorage.setItem(getUserApiKeyKey(username), trimmed);
+    localStorage.setItem(getUserApiKeyKey(username, provider), trimmed);
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+const isUserOnboarded = (username: string) => {
+  try {
+    return localStorage.getItem(getUserOnboardKey(username)) === '1';
+  } catch {
+    return false;
+  }
+};
+
+const markUserOnboarded = (username: string) => {
+  try {
+    localStorage.setItem(getUserOnboardKey(username), '1');
   } catch {
     // Ignore storage errors.
   }
@@ -96,10 +109,21 @@ const lockImageTurnsForTier = (settings: GameSettings, tier: UserTier, hasKey: b
   return settings;
 };
 
+const lockHistoryTurnsForTier = (settings: GameSettings, tier: UserTier) => {
+  if (tier === 'guest') {
+    const fixed = getHistoryLimitForTier('guest');
+    if (settings.maxHistoryTurns !== fixed) {
+      return { ...settings, maxHistoryTurns: fixed };
+    }
+  }
+  return settings;
+};
+
 const normalizeSessionSettings = (settings: GameSettings, tier: UserTier, hasKey: boolean) => {
   const minTurnsOverride = tier === 'normal' && hasKey ? 1 : undefined;
   const normalized = normalizeSettingsForTier(settings, tier, minTurnsOverride);
-  return lockImageTurnsForTier(normalized, tier, hasKey);
+  const lockedImages = lockImageTurnsForTier(normalized, tier, hasKey);
+  return lockHistoryTurnsForTier(lockedImages, tier);
 };
 
 const getCreationPhaseText = (phase: 'request' | 'image' | 'finalize', isZh: boolean) => {
@@ -180,9 +204,9 @@ const createInitialGameState = (settings: GameSettings, ap: number, apLastUpdate
 });
 
 const stripAdminUser = (db: Record<string, UserRecord>) => {
-  if (!db[ADMIN_USERNAME]) return db;
+  if (!db[RESERVED_ADMIN_USERNAME]) return db;
   const next = { ...db };
-  delete next[ADMIN_USERNAME];
+  delete next[RESERVED_ADMIN_USERNAME];
   return next;
 };
 
@@ -285,7 +309,7 @@ type UserSession = {
 const App: React.FC = () => {
   const [view, setView] = useState<'auth' | 'start' | 'creation' | 'playing'>('auth');
   const [gameState, setGameState] = useState<GameState>(
-    createInitialGameState(DEFAULT_SETTINGS, ADMIN_MAX_AP, Date.now())
+    createInitialGameState(DEFAULT_SETTINGS, NORMAL_MAX_AP, Date.now())
   );
   const [userInput, setUserInput] = useState('');
   const [charDescription, setCharDescription] = useState('');
@@ -301,8 +325,6 @@ const App: React.FC = () => {
   const [authName, setAuthName] = useState('');
   const [authPasskey, setAuthPasskey] = useState('');
   const [authConfirm, setAuthConfirm] = useState('');
-  const [authInvitation, setAuthInvitation] = useState('');
-  const [authApiKey, setAuthApiKey] = useState('');
   const [authError, setAuthError] = useState('');
   const [showGuestNotice, setShowGuestNotice] = useState(false);
   const [isUsersEditorOpen, setIsUsersEditorOpen] = useState(false);
@@ -325,23 +347,27 @@ const App: React.FC = () => {
   const maxAp = isKeyUnlocked ? getMaxApForTier('admin') : getMaxApForTier(activeTier);
   const minImageTurns = isKeyUnlocked ? 1 : getMinImageTurnsForTier(activeTier);
   const apRecovery = isKeyUnlocked ? null : getApRecoveryForTier(activeTier);
-  const normalMaxAp = getMaxApForTier('normal');
   const guestMaxAp = getMaxApForTier('guest');
   const guestFixedImageTurns = getMinImageTurnsForTier('guest');
   const normalDefaultImageTurns = getDefaultImageTurnsForTier('normal');
-  const historyLimit = isKeyUnlocked ? getHistoryLimitForTier('admin') : getHistoryLimitForTier(activeTier);
-  const canSelectModels = hasUserKey && !isGuest;
-  const selectedTextModel = canSelectModels ? gameState.settings.textModel : undefined;
-  const selectedImageModel = canSelectModels ? gameState.settings.imageModel : undefined;
-  const lockedTextModel = isNormal && !hasUserKey ? 'gemini-2.5-flash-lite' : undefined;
-  const lockedImageModel = isNormal && !hasUserKey ? 'gemini-2.5-flash-image' : undefined;
-  const effectiveTextModel = lockedTextModel || selectedTextModel;
-  const effectiveImageModel = lockedImageModel || selectedImageModel;
+  const rawHistoryLimit = Number.isFinite(gameState.settings.maxHistoryTurns)
+    ? Math.trunc(gameState.settings.maxHistoryTurns)
+    : DEFAULT_SETTINGS.maxHistoryTurns;
+  const lockedHistoryLimit = isGuest ? getHistoryLimitForTier('guest') : rawHistoryLimit;
+  const historyLimit = lockedHistoryLimit === -1 ? null : Math.max(1, lockedHistoryLimit);
+  const activeProvider: ModelProvider = isGuest || isAdmin
+    ? 'gemini'
+    : (gameState.settings.modelProvider || 'gemini');
+  const selectedTextModel = gameState.settings.textModel?.trim() || undefined;
+  const selectedImageModel = gameState.settings.imageModel?.trim() || undefined;
+  const effectiveTextModel = selectedTextModel;
+  const effectiveImageModel = selectedImageModel;
   const canManualSave = isAdmin || normalKeyUnlocked;
   const canAdjustImageFrequency = isAdmin || normalKeyUnlocked;
-  const normalRecovery = getApRecoveryForTier('normal');
-  const normalRecoveryMinutes = normalRecovery ? Math.round(normalRecovery.intervalMs / 60000) : 0;
-  const normalRecoveryAmount = normalRecovery?.amount ?? 0;
+  const isModelConfigured = isNormal
+    ? !!activeProvider && !!hasUserKey && !!selectedTextModel && !!selectedImageModel
+    : true;
+  const canPlay = isGuest || isAdmin || isModelConfigured;
 
   useEffect(() => {
     let active = true;
@@ -407,7 +433,7 @@ const App: React.FC = () => {
     return () => {
       active = false;
     };
-  }, []);
+  }, [isNormal, isModelConfigured, activeProvider, hasUserKey]);
 
   useEffect(() => {
     if (!currentUser || currentUser.tier === 'guest') {
@@ -483,6 +509,22 @@ const App: React.FC = () => {
     setHasSave(true);
   }, [gameState, isNormal, currentUser]);
 
+  useEffect(() => {
+    if (!currentUser || !isNormal) return;
+    if (isModelConfigured) {
+      markUserOnboarded(currentUser.username);
+    }
+  }, [currentUser, isNormal, isModelConfigured]);
+
+  useEffect(() => {
+    if (!currentUser || !isNormal) return;
+    const storedKey = loadUserApiKey(currentUser.username, activeProvider);
+    const currentKey = currentUser.apiKey || '';
+    if (storedKey !== currentKey) {
+      setCurrentUser(prev => (prev ? { ...prev, apiKey: storedKey || undefined } : prev));
+    }
+  }, [currentUser, isNormal, activeProvider]);
+
   const saveGame = useCallback((notify = true) => {
     if (!currentUser || !canManualSave) return;
     try {
@@ -504,7 +546,7 @@ const App: React.FC = () => {
   }, [gameState, currentUser, canManualSave]);
 
   const loadGame = useCallback(() => {
-    if (!currentUser || isGuest) return;
+    if (!currentUser || isGuest || (isNormal && !isModelConfigured)) return;
     const saved = localStorage.getItem(getSaveKey(currentUser.username));
     if (saved) {
       const parsed = JSON.parse(saved);
@@ -534,7 +576,7 @@ const App: React.FC = () => {
       }));
       setView('playing');
     }
-  }, [currentUser, isGuest, activeTier, maxAp, apRecovery]);
+  }, [currentUser, isGuest, isNormal, isModelConfigured, activeTier, maxAp, apRecovery]);
 
   const applySession = (session: UserSession) => {
     setCurrentUser(session);
@@ -551,51 +593,20 @@ const App: React.FC = () => {
       setAuthError(gameState.language === 'en' ? 'Enter username and passkey.' : '请输入用户名和密码。');
       return;
     }
-    if (name === ADMIN_USERNAME) {
-      if (passkey !== ADMIN_PASSKEY) {
-        setAuthError(gameState.language === 'en' ? 'Invalid username or passkey.' : '用户名或密码错误。');
-        return;
-      }
-      const providedApiKey = authApiKey.trim();
-      const storedApiKey = loadUserApiKey(ADMIN_USERNAME);
-      const sessionApiKey = providedApiKey || storedApiKey || undefined;
-      if (providedApiKey) {
-        persistUserApiKey(ADMIN_USERNAME, providedApiKey);
-      }
-      const now = Date.now();
-      const settings = normalizeSessionSettings(DEFAULT_SETTINGS, 'admin', !!sessionApiKey);
-      applySession({
-        username: ADMIN_USERNAME,
-        tier: 'admin',
-        ap: ADMIN_MAX_AP,
-        apLastUpdated: now,
-        settings,
-        apiKey: sessionApiKey,
-        isTemporary: false
-      });
-      setAuthError('');
-      setAuthName('');
-      setAuthPasskey('');
-      setAuthConfirm('');
-      setAuthInvitation('');
-      setAuthApiKey('');
-      setView('start');
-      return;
-    }
     const record = usersDb[name];
     if (!record || record.passkey !== passkey) {
       setAuthError(gameState.language === 'en' ? 'Invalid username or passkey.' : '用户名或密码错误。');
       return;
     }
-    const providedApiKey = authApiKey.trim();
-    const storedApiKey = loadUserApiKey(record.username);
-    const sessionApiKey = providedApiKey || storedApiKey || undefined;
-    if (providedApiKey) {
-      persistUserApiKey(record.username, providedApiKey);
-    }
     const tier = record.tier;
+    const baseSettings = record.settings || DEFAULT_SETTINGS;
+    const provider = (baseSettings.modelProvider ?? 'gemini') as ModelProvider;
+    const storedApiKey = tier === 'normal' ? loadUserApiKey(record.username, provider) : '';
+    const sessionApiKey = storedApiKey || undefined;
     const hasKey = tier === 'normal' && !!sessionApiKey;
-    const settings = normalizeSessionSettings(record.settings || DEFAULT_SETTINGS, tier, hasKey);
+    const settings = normalizeSessionSettings(baseSettings, tier, hasKey);
+    const hasModels = !!settings.textModel?.trim() && !!settings.imageModel?.trim() && !!settings.modelProvider;
+    const needsSetup = tier === 'normal' && (!isUserOnboarded(record.username) || !hasKey || !hasModels);
     const maxAllowedAp = getMaxApForTier(tier);
     let ap = Math.min(maxAllowedAp, typeof record.ap === 'number' ? record.ap : maxAllowedAp);
     let apLastUpdated = typeof record.apLastUpdated === 'number' && record.apLastUpdated > 0
@@ -620,21 +631,21 @@ const App: React.FC = () => {
     setAuthName('');
     setAuthPasskey('');
     setAuthConfirm('');
-    setAuthInvitation('');
-    setAuthApiKey('');
     setView('start');
+    if (needsSetup) {
+      setIsSettingsOpen(true);
+    }
   };
 
   const handleRegister = () => {
     const name = authName.trim();
     const passkey = authPasskey.trim();
     const confirmation = authConfirm.trim();
-    const invite = authInvitation.trim();
     if (!name || !passkey) {
       setAuthError(gameState.language === 'en' ? 'Enter username and passkey.' : '请输入用户名和密码。');
       return;
     }
-    if (name === ADMIN_USERNAME) {
+    if (name === RESERVED_ADMIN_USERNAME) {
       setAuthError(gameState.language === 'en' ? 'Username not available.' : '用户名不可用。');
       return;
     }
@@ -642,25 +653,11 @@ const App: React.FC = () => {
       setAuthError(gameState.language === 'en' ? 'Passkeys do not match.' : '两次输入的密码不一致。');
       return;
     }
-    const normalizedInvite = invite.trim();
-    const normalizedCode = invitationCode.trim();
-    if (!normalizedCode) {
-      setAuthError(gameState.language === 'en' ? 'Invitation code not loaded. Please reload.' : '邀请码未加载，请刷新页面。');
-      return;
-    }
-    if (normalizedInvite !== normalizedCode) {
-      setAuthError(gameState.language === 'en' ? 'Invalid invitation code.' : '邀请码无效。');
-      return;
-    }
     if (usersDb[name]) {
       setAuthError(gameState.language === 'en' ? 'User already exists.' : '用户已存在。');
       return;
     }
     const now = Date.now();
-    const providedApiKey = authApiKey.trim();
-    if (providedApiKey) {
-      persistUserApiKey(name, providedApiKey);
-    }
     const newUser: UserRecord = {
       username: name,
       passkey,
@@ -677,39 +674,31 @@ const App: React.FC = () => {
       tier: 'normal',
       ap: NORMAL_MAX_AP,
       apLastUpdated: now,
-      settings: normalizeSessionSettings(DEFAULT_SETTINGS, 'normal', !!providedApiKey),
-      apiKey: providedApiKey || undefined,
+      settings: normalizeSessionSettings(DEFAULT_SETTINGS, 'normal', false),
+      apiKey: undefined,
       isTemporary: false
     });
     setAuthError('');
     setAuthName('');
     setAuthPasskey('');
     setAuthConfirm('');
-    setAuthInvitation('');
-    setAuthApiKey('');
     setView('start');
+    setIsSettingsOpen(true);
   };
 
   const handleSkipLogin = () => {
     const now = Date.now();
-    const providedApiKey = authApiKey.trim();
-    const storedApiKey = loadUserApiKey('temporary');
-    const sessionApiKey = providedApiKey || storedApiKey || undefined;
-    if (providedApiKey) {
-      persistUserApiKey('temporary', providedApiKey);
-    }
     applySession({
       username: 'temporary',
       tier: 'guest',
       ap: GUEST_MAX_AP,
       apLastUpdated: now,
       settings: normalizeSessionSettings(DEFAULT_SETTINGS, 'guest', false),
-      apiKey: sessionApiKey,
+      apiKey: undefined,
       isTemporary: true
     });
     setView('start');
     setShowGuestNotice(true);
-    setAuthApiKey('');
   };
 
   const openUsersEditor = () => {
@@ -755,7 +744,11 @@ const App: React.FC = () => {
   };
 
   const pickEra = useCallback(async () => {
-    if (typeof (window as any).aistudio !== 'undefined') {
+    if (isNormal && !isModelConfigured) {
+      setIsSettingsOpen(true);
+      return;
+    }
+    if (activeProvider === 'gemini' && !hasUserKey && typeof (window as any).aistudio !== 'undefined') {
       const hasKey = await (window as any).aistudio.hasSelectedApiKey();
       if (!hasKey) {
         setKeyAlert(true);
@@ -777,6 +770,10 @@ const App: React.FC = () => {
   }, []);
 
   const handleCharacterCreation = async () => {
+    if (isNormal && !isModelConfigured) {
+      setIsSettingsOpen(true);
+      return;
+    }
     if (!charDescription.trim()) return;
     setGameState(prev => ({ ...prev, isThinking: true }));
     setCreationStartTime(Date.now());
@@ -792,6 +789,7 @@ const App: React.FC = () => {
           tier: activeTier,
           apiKey: currentUser?.apiKey,
           textModel: effectiveTextModel,
+          provider: activeProvider,
           onProgress: (message) => {
             const mapped = formatCreationProgress(message, isZh, isAdmin);
             if (mapped) setCreationPhase(mapped);
@@ -813,12 +811,12 @@ const App: React.FC = () => {
 
       const startNarration = `${introMsg} ${player.lore}`;
       const avatarPromise = !isGuest && seededCompanions.length > 0
-        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel })))
+        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel, provider: activeProvider })))
         : Promise.resolve([]);
       const [imgData, avatarResults] = await Promise.all([
         generateSceneImage(
           `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
-          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel, textModel: effectiveTextModel }
+          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel, textModel: effectiveTextModel, provider: activeProvider }
         ),
         avatarPromise
       ]);
@@ -879,6 +877,10 @@ const App: React.FC = () => {
   const handleAction = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!userInput.trim() || gameState.isThinking || !gameState.player) return;
+    if (isNormal && !isModelConfigured) {
+      setIsSettingsOpen(true);
+      return;
+    }
 
     const now = Date.now();
     let currentAp = gameState.ap;
@@ -924,7 +926,7 @@ const App: React.FC = () => {
     setUserInput('');
 
     const updatedHistory: HistoryEntry[] = [...gameState.history, { sender: 'player', text: actionText }];
-    const trimmedHistory = updatedHistory.slice(-historyLimit);
+    const trimmedHistory = historyLimit ? updatedHistory.slice(-historyLimit) : updatedHistory;
     const lockedImageTurns = isNormal && !hasUserKey
       ? normalDefaultImageTurns
       : (isGuest ? guestFixedImageTurns : null);
@@ -955,7 +957,7 @@ const App: React.FC = () => {
         gameState.quests,
         gameState.knownNpcs,
         gameState.language,
-        { tier: activeTier, apiKey: currentUser?.apiKey, textModel: effectiveTextModel }
+        { tier: activeTier, apiKey: currentUser?.apiKey, textModel: effectiveTextModel, provider: activeProvider }
       );
 
       if (response.ruleViolation) {
@@ -1007,10 +1009,10 @@ const App: React.FC = () => {
       // Generate images based on the configured frequency.
       const visualPrompt = response.imagePrompt || actionText;
       const imagePromise = shouldGenerateImage
-        ? generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel, textModel: effectiveTextModel })
+        ? generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel, textModel: effectiveTextModel, provider: activeProvider })
         : Promise.resolve(undefined);
       const avatarPromise = companionsNeedingAvatar.length > 0
-        ? Promise.all(companionsNeedingAvatar.map(npc => generateCompanionAvatar(npc, { tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel })))
+        ? Promise.all(companionsNeedingAvatar.map(npc => generateCompanionAvatar(npc, { tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel, provider: activeProvider })))
         : Promise.resolve([]);
       const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
       const imageLog = shouldGenerateImage && imgData?.error
@@ -1085,6 +1087,48 @@ const App: React.FC = () => {
     }));
   };
 
+  const updateModelProvider = (value: ModelProvider) => {
+    if (!currentUser || !isNormal) return;
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        modelProvider: value
+      }
+    }));
+    const storedKey = loadUserApiKey(currentUser.username, value);
+    setCurrentUser(prev => (prev ? { ...prev, apiKey: storedKey || undefined } : prev));
+  };
+
+  const updateModelApiKey = (value: string) => {
+    if (!currentUser || !isNormal) return;
+    const trimmed = value.trim();
+    persistUserApiKey(currentUser.username, activeProvider, trimmed);
+    setCurrentUser(prev => (prev ? { ...prev, apiKey: trimmed || undefined } : prev));
+  };
+
+  const updateTextModelName = (value: string) => {
+    if (!isNormal) return;
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        textModel: value
+      }
+    }));
+  };
+
+  const updateImageModelName = (value: string) => {
+    if (!isNormal) return;
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        imageModel: value
+      }
+    }));
+  };
+
   const updateImageFrequency = (value: string) => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
@@ -1099,24 +1143,16 @@ const App: React.FC = () => {
     }));
   };
 
-  const updateTextModel = (value: string) => {
-    if (!canSelectModels) return;
+  const updateHistoryLimit = (value: string) => {
+    if (!currentUser || isGuest) return;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return;
+    const next = parsed <= -1 ? -1 : Math.max(1, Math.floor(parsed));
     setGameState(prev => ({
       ...prev,
       settings: {
         ...prev.settings,
-        textModel: value as TextModelId
-      }
-    }));
-  };
-
-  const updateImageModel = (value: string) => {
-    if (!canSelectModels) return;
-    setGameState(prev => ({
-      ...prev,
-      settings: {
-        ...prev.settings,
-        imageModel: value as ImageModelId
+        maxHistoryTurns: next
       }
     }));
   };
@@ -1216,16 +1252,16 @@ const App: React.FC = () => {
             </div>
             <div className="text-xs opacity-70 mt-1">
               {isZh
-                ? (isKeyUnlocked
-                  ? '每 N 次交互生成一张图像，可自由调整。'
-                  : (isGuest
-                    ? '临时用户不生成回合图像，仅在创建角色时生成一张。'
-                    : `每 N 次交互生成一张图像，固定为 ${normalDefaultImageTurns}。`))
-                : (isKeyUnlocked
-                  ? 'Generate images every N turns; adjustable.'
-                  : (isGuest
-                    ? 'Temporary users do not generate turn images; only the creation image is shown.'
-                    : `Generate images every N turns of interaction. Fixed at ${normalDefaultImageTurns}.`))}
+                ? (isGuest
+                  ? '临时用户不生成回合图像，仅在创建角色时生成一张。'
+                  : (isNormal && !hasUserKey
+                    ? `设置模型与 API 后可调整图像频率；当前固定为 ${normalDefaultImageTurns}。`
+                    : '每 N 次交互生成一张图像，可自由调整。'))
+                : (isGuest
+                  ? 'Temporary users do not generate turn images; only the creation image is shown.'
+                  : (isNormal && !hasUserKey
+                    ? `Configure provider/API to adjust image frequency; currently fixed at ${normalDefaultImageTurns}.`
+                    : 'Generate images every N turns; adjustable.'))}
             </div>
             <div className="mt-3 flex items-center space-x-3">
               <input
@@ -1242,33 +1278,61 @@ const App: React.FC = () => {
             </div>
             {!isAdmin && (
               <div className="text-[10px] opacity-50 mt-2 uppercase">
-                {normalKeyUnlocked
-                  ? (isZh ? '普通用户已解锁限制。' : 'Normal tier unlocked.')
-                  : (isGuest
-                    ? (isZh ? '临时用户不生成回合图像。' : 'Temporary users do not generate turn images.')
-                    : (isZh ? `普通用户固定为 ${normalDefaultImageTurns}。` : `Normal users are fixed at ${normalDefaultImageTurns}.`))}
+                {isGuest
+                  ? (isZh ? '临时用户不生成回合图像。' : 'Temporary users do not generate turn images.')
+                  : (isNormal && !hasUserKey
+                    ? (isZh ? `完成模型配置后可调整，当前固定为 ${normalDefaultImageTurns}。` : `Adjustable after setup; currently fixed at ${normalDefaultImageTurns}.`)
+                    : (isZh ? '普通用户已完成模型配置。' : 'Normal user setup complete.'))}
               </div>
             )}
           </div>
 
-          {canSelectModels && (
+          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
+            <div className="text-sm font-bold uppercase">
+              {isZh ? '叙事历史上限' : 'Narrator history limit'}
+            </div>
+            <div className="text-xs opacity-70 mt-1">
+              {isZh
+                ? '发送给叙事模型的历史回合上限。设置为 -1 表示全部历史。注册用户默认 100，临时用户固定 20。'
+                : 'Max turns sent to the narrator. Set to -1 to send all history. Registered default is 100; temporary users are fixed at 20.'}
+            </div>
+            <div className="mt-3 flex items-center space-x-3">
+              <input
+                type="number"
+                min={-1}
+                value={gameState.settings.maxHistoryTurns}
+                onChange={(e) => updateHistoryLimit(e.target.value)}
+                disabled={isGuest}
+                className="w-20 bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-sm focus:outline-none disabled:opacity-40"
+              />
+              <span className="text-[10px] uppercase opacity-60">
+                {isZh ? '回合' : 'turns'}
+              </span>
+            </div>
+            {isGuest && (
+              <div className="text-[10px] opacity-50 mt-2 uppercase">
+                {isZh ? '临时用户固定为 20。' : 'Temporary users are fixed at 20.'}
+              </div>
+            )}
+          </div>
+
+          {isNormal && (
             <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5 space-y-4">
               <div>
                 <div className="text-sm font-bold uppercase">
-                  {isZh ? '文本模型' : 'Text model'}
+                  {isZh ? '模型提供商' : 'Model Provider'}
                 </div>
                 <div className="text-xs opacity-70 mt-1">
-                  {isZh ? '选择用于剧情生成的模型。' : 'Choose the model for narrative generation.'}
+                  {isZh
+                    ? '文本模型必须支持多模态输入（文本+图像）、函数调用与联网搜索。'
+                    : 'Text models must be multimodal (text + image input), support function calling, and online search.'}
                 </div>
                 <select
-                  value={gameState.settings.textModel || ''}
-                  onChange={(e) => updateTextModel(e.target.value)}
+                  value={activeProvider}
+                  onChange={(e) => updateModelProvider(e.target.value as ModelProvider)}
                   className="mt-3 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
                 >
-                  <option value="" disabled>
-                    {isZh ? '选择模型' : 'Select a model'}
-                  </option>
-                  {TEXT_MODEL_OPTIONS.map((option) => (
+                  {MODEL_PROVIDER_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -1278,28 +1342,60 @@ const App: React.FC = () => {
 
               <div>
                 <div className="text-sm font-bold uppercase">
-                  {isZh ? '图像模型' : 'Image model'}
+                  {isZh ? 'API Key' : 'API Key'}
                 </div>
                 <div className="text-xs opacity-70 mt-1">
-                  {isZh ? '选择用于图像生成的模型。' : 'Choose the model for image generation.'}
+                  {isZh ? '仅保存在本地浏览器，不会上传到服务器。' : 'Stored only in this browser and never uploaded.'}
                 </div>
-                <select
-                  value={gameState.settings.imageModel || ''}
-                  onChange={(e) => updateImageModel(e.target.value)}
+                <input
+                  type="password"
+                  value={currentUser?.apiKey || ''}
+                  onChange={(e) => updateModelApiKey(e.target.value)}
                   className="mt-3 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
-                >
-                  <option value="" disabled>
-                    {isZh ? '选择模型' : 'Select a model'}
-                  </option>
-                  {IMAGE_MODEL_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  placeholder={isZh ? '粘贴 API Key' : 'Paste API key'}
+                />
               </div>
+
+              <div>
+                <div className="text-sm font-bold uppercase">
+                  {isZh ? '文本模型名称' : 'Text model name'}
+                </div>
+                <div className="text-xs opacity-70 mt-1">
+                  {isZh ? '例如：gpt-4.1-mini 或 gemini-2.5-flash-lite' : 'Example: gpt-4.1-mini or gemini-2.5-flash-lite'}
+                </div>
+                <input
+                  type="text"
+                  value={gameState.settings.textModel || ''}
+                  onChange={(e) => updateTextModelName(e.target.value)}
+                  className="mt-3 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                  placeholder={isZh ? '输入文本模型名称' : 'Enter text model name'}
+                />
+              </div>
+
+              <div>
+                <div className="text-sm font-bold uppercase">
+                  {isZh ? '图像模型名称' : 'Image model name'}
+                </div>
+                <div className="text-xs opacity-70 mt-1">
+                  {isZh ? '例如：gpt-image-1 或 gemini-2.5-flash-image' : 'Example: gpt-image-1 or gemini-2.5-flash-image'}
+                </div>
+                <input
+                  type="text"
+                  value={gameState.settings.imageModel || ''}
+                  onChange={(e) => updateImageModelName(e.target.value)}
+                  className="mt-3 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                  placeholder={isZh ? '输入图像模型名称' : 'Enter image model name'}
+                />
+              </div>
+
+              {!isModelConfigured && (
+                <div className="text-[11px] text-yellow-300 uppercase">
+                  {isZh ? '需要填写提供商、API Key、文本模型和图像模型后才能开始游戏。' : 'Provide provider, API key, text model, and image model to play.'}
+                </div>
+              )}
             </div>
           )}
+
         </div>
       </div>
     </div>
@@ -1321,13 +1417,13 @@ const App: React.FC = () => {
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '行动点 (AP)' : 'Action Points (AP)'}</div>
             <div className="opacity-80">
               {isZh
-                ? `AP 上限随用户等级变化（管理员无限制，普通 ${normalMaxAp}，临时 ${guestMaxAp}）。每次行动消耗 1 点，AP 为 0 时无法行动。`
-                : `AP cap depends on tier (Admin unlimited, Normal ${normalMaxAp}, Temporary ${guestMaxAp}). Each action costs 1 AP. You cannot act when AP reaches 0.`}
+                ? `AP 上限随用户等级变化（注册用户完成配置后无限制，临时 ${guestMaxAp}）。每次行动消耗 1 点，AP 为 0 时无法行动。`
+                : `AP cap depends on tier (Registered users unlimited after setup, Temporary ${guestMaxAp}). Each action costs 1 AP. You cannot act when AP reaches 0.`}
             </div>
             <div className="opacity-80 mt-2">
               {isZh
-                ? `普通用户未提供 API Key 时，每 ${formatRecoveryInterval(normalRecoveryMinutes, isZh)} 恢复 ${normalRecoveryAmount} 点；临时用户不恢复 AP。提供 API Key 的普通用户不受 AP 限制。`
-                : `Normal users without an API key recover +${normalRecoveryAmount} AP every ${formatRecoveryInterval(normalRecoveryMinutes, isZh)}; temporary users do not recover AP. Normal users with an API key have no AP limit.`}
+                ? '普通用户使用自有 API，AP 不受限制；临时用户不恢复 AP。'
+                : 'Normal users play with their own API key and have unlimited AP; temporary users do not recover AP.'}
             </div>
           </div>
 
@@ -1349,23 +1445,18 @@ const App: React.FC = () => {
             </div>
             <div className="opacity-80 mt-2">
               {isZh
-                ? `图像频率控制每隔多少回合生成图片。普通用户未提供 API Key 时固定为 ${normalDefaultImageTurns}，提供后可调整；临时用户不生成回合图像。`
-                : `Image frequency controls how often images appear (every N turns). Normal users without an API key are fixed at ${normalDefaultImageTurns}; with a key it is adjustable. Temporary users do not generate turn images.`}
+                ? '图像频率控制每隔多少回合生成图片。普通用户完成模型配置后可调整；临时用户不生成回合图像。'
+                : 'Image frequency controls how often images appear (every N turns). Normal users can adjust it after setup; temporary users do not generate turn images.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '叙事历史上限控制每次发送给模型的历史回合数，设置为 -1 表示全部。'
+                : 'Narrator history limit controls how many turns are sent to the model; set -1 to include all history.'}
             </div>
           </div>
 
           <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '用户等级' : 'User Tiers'}</div>
-            {normalKeyUnlocked && (
-              <div className="opacity-80 mb-2">
-                {isZh ? '普通用户已提供 API Key：限制已解除。' : 'Normal user API key detected: limits lifted.'}
-              </div>
-            )}
-            {isGuest && hasUserKey && (
-              <div className="opacity-80 mb-2">
-                {isZh ? '已提供 API Key：将使用你的配额，但临时限制仍生效。' : 'API key detected: your quota is used, but guest limits remain.'}
-              </div>
-            )}
             <div className="opacity-80">
               {isZh
                 ? `临时用户：AP 上限 ${guestMaxAp}，无恢复，无保存，仅创建时生成图像，模型固定为 gemini-2.5-flash-lite / gemini-2.5-flash-image。`
@@ -1373,18 +1464,8 @@ const App: React.FC = () => {
             </div>
             <div className="opacity-80 mt-2">
               {isZh
-                ? `普通用户（无 API Key）：AP 上限 ${normalMaxAp}，每 ${formatRecoveryInterval(normalRecoveryMinutes, isZh)} 恢复 ${normalRecoveryAmount} 点；图像固定为 ${normalDefaultImageTurns}；自动保存；模型固定为 gemini-2.5-flash-lite / gemini-2.5-flash-image。`
-                : `Normal (no API key): AP max ${normalMaxAp}, recovers +${normalRecoveryAmount} every ${formatRecoveryInterval(normalRecoveryMinutes, isZh)}; images fixed at ${normalDefaultImageTurns}; auto-save; models fixed to gemini-2.5-flash-lite / gemini-2.5-flash-image.`}
-            </div>
-            <div className="opacity-80 mt-2">
-              {isZh
-                ? '普通用户（提供 API Key）：AP 无限制，可调整图像频率并选择模型，支持手动保存。'
-                : 'Normal (with API key): unlimited AP, adjustable image frequency and model selection, manual saves enabled.'}
-            </div>
-            <div className="opacity-80 mt-2">
-              {isZh
-                ? '管理员：无限制设置与模型，AP 不受限制，保留手动保存。'
-                : 'Admin: unrestricted settings/models with unlimited AP and manual saves.'}
+                ? '普通用户：必须在设置中填写模型提供商、API Key、文本模型与图像模型后才能开始游戏；完成后 AP 无限制、图像频率可调、支持手动保存。'
+                : 'Normal: configure provider/API key plus text and image model names in Settings before playing; after setup AP is unlimited, image frequency is adjustable, and manual saves are enabled.'}
             </div>
           </div>
         </div>
@@ -1399,10 +1480,6 @@ const App: React.FC = () => {
         </h3>
         <div className="text-sm opacity-80 space-y-2">
           <div>{isZh ? '你正在以临时身份体验。' : 'You are playing as a temporary user.'}</div>
-          <div>{hasUserKey
-            ? (isZh ? '已提供 API Key，将使用你的配额，但临时限制仍生效。' : 'API key detected; your quota is used, but guest limits remain.')
-            : (isZh ? '未提供 API Key，临时限制生效。' : 'No API key provided; guest limits apply.')}
-          </div>
           <div>{isZh
             ? `限制：仅 gemini-2.5-flash-lite / gemini-2.5-flash-image，AP 上限 ${guestMaxAp}，不恢复，不保存，回合不生成图像（仅创建时有）。`
             : `Limits: gemini-2.5-flash-lite / gemini-2.5-flash-image only, AP max ${guestMaxAp}, no recovery, no saves, no turn images (creation image only).`}
@@ -1485,33 +1562,8 @@ const App: React.FC = () => {
                   className="w-full bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-sm focus:outline-none"
                   placeholder={isZh ? '确认密码' : 'Confirm passkey'}
                 />
-                <input
-                  type="text"
-                  value={authInvitation}
-                  onChange={(e) => setAuthInvitation(e.target.value)}
-                  className="w-full bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-sm focus:outline-none"
-                  placeholder={isZh ? '邀请码' : 'Invitation code'}
-                />
               </>
             )}
-            <div className="flex items-center justify-between text-[10px] uppercase opacity-60">
-              <span>{isZh ? 'Gemini API Key（可选）【仅保存在本地浏览器，不上传。普通用户提供后可解锁限制并选择模型；临时用户仍受限制】' : 'Gemini API Key (optional) [Stored only in this browser, never uploaded. Unlocks limits/model selection for normal users; guest users remain limited.]'}</span>
-              <span
-                className="cursor-help border border-[#1aff1a]/40 px-1"
-                title={isZh
-                  ? '仅保存在本地浏览器，不上传。普通用户提供后可解锁限制并选择模型；临时用户仍受限制。'
-                  : 'Stored only in this browser and never uploaded. Normal users unlock limits/models; guest users remain limited.'}
-              >
-                ?
-              </span>
-            </div>
-            <input
-              type="password"
-              value={authApiKey}
-              onChange={(e) => setAuthApiKey(e.target.value)}
-              className="w-full bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-sm focus:outline-none"
-              placeholder={isZh ? '粘贴 Gemini API Key' : 'Paste Gemini API key'}
-            />
           </div>
 
           {authError && <div className="text-xs text-red-500">{authError}</div>}
@@ -1584,17 +1636,28 @@ const App: React.FC = () => {
           <div className="space-y-4 pt-4 md:pt-8">
              <button 
               onClick={pickEra}
-              className="w-full text-xl md:text-2xl border-2 border-[#1aff1a] py-4 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+              disabled={!canPlay}
+              className={`w-full text-xl md:text-2xl border-2 border-[#1aff1a] py-4 transition-all font-bold uppercase ${
+                canPlay ? 'hover:bg-[#1aff1a] hover:text-black' : 'opacity-40 cursor-not-allowed'
+              }`}
              >
               {gameState.language === 'en' ? 'Initialize New Simulation' : '初始化新模拟'}
              </button>
              {hasSave && (
                <button 
                 onClick={loadGame}
-                className="w-full text-xl md:text-2xl border-2 border-[#1aff1a]/50 py-4 hover:bg-[#1aff1a]/50 hover:text-black transition-all font-bold uppercase bg-[#1aff1a]/10"
+                disabled={!canPlay}
+                className={`w-full text-xl md:text-2xl border-2 border-[#1aff1a]/50 py-4 transition-all font-bold uppercase bg-[#1aff1a]/10 ${
+                  canPlay ? 'hover:bg-[#1aff1a]/50 hover:text-black' : 'opacity-40 cursor-not-allowed'
+                }`}
                >
                 {gameState.language === 'en' ? 'Continue Last Save' : '继续上次存档'}
                </button>
+             )}
+             {!canPlay && isNormal && (
+               <div className="text-xs opacity-70 uppercase">
+                 {isZh ? '请先在设置中填写模型提供商与 API 信息。' : 'Complete provider/API settings in Settings before playing.'}
+               </div>
              )}
           </div>
         </div>

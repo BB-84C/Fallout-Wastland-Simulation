@@ -17,13 +17,17 @@ const TIER_SETTINGS: Record<UserTier, {
   apRecovery?: ApRecoveryConfig | null;
 }> = {
   admin: { maxAp: ADMIN_MAX_AP, minImageTurns: 1, defaultImageTurns: 1, historyLimit: 100, apRecovery: null },
-  normal: { maxAp: NORMAL_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 20, apRecovery: { amount: 1, intervalMs: HOUR_MS } },
-  guest: { maxAp: GUEST_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 10, apRecovery: null }
+  normal: { maxAp: NORMAL_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 100, apRecovery: { amount: 1, intervalMs: HOUR_MS } },
+  guest: { maxAp: GUEST_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 20, apRecovery: null }
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
   highQualityImages: true,
-  imageEveryTurns: TIER_SETTINGS.normal.defaultImageTurns
+  imageEveryTurns: TIER_SETTINGS.normal.defaultImageTurns,
+  maxHistoryTurns: TIER_SETTINGS.normal.historyLimit,
+  modelProvider: 'gemini',
+  textModel: '',
+  imageModel: ''
 };
 
 export const getTierSettings = (tier: UserTier) => TIER_SETTINGS[tier];
@@ -50,9 +54,19 @@ export const normalizeSettingsForTier = (
     ? minTurnsOverride
     : getMinImageTurnsForTier(tier);
   const fallbackTurns = settings.imageEveryTurns || getDefaultImageTurnsForTier(tier);
+  const rawHistory = settings.maxHistoryTurns;
+  const historyValue = Number.isFinite(rawHistory)
+    ? Math.trunc(rawHistory as number)
+    : DEFAULT_SETTINGS.maxHistoryTurns;
+  const normalizedHistory = historyValue === -1
+    ? -1
+    : historyValue < -1
+      ? -1
+      : Math.max(1, historyValue);
   return {
     ...DEFAULT_SETTINGS,
     ...settings,
-    imageEveryTurns: Math.max(minTurns, Math.floor(fallbackTurns))
+    imageEveryTurns: Math.max(minTurns, Math.floor(fallbackTurns)),
+    maxHistoryTurns: normalizedHistory
   };
 };

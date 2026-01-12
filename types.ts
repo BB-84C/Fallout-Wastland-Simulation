@@ -76,19 +76,17 @@ export interface PlayerCreationResult extends Actor {
 
 export type Language = 'en' | 'zh';
 
-export type TextModelId =
-  | 'gemini-3-pro-preview'
-  | 'gemini-3-flash-preview'
-  | 'gemini-2.5-flash'
-  | 'gemini-2.5-flash-lite';
+export type TextModelId = string;
 
-export type ImageModelId =
-  | 'gemini-3-pro-image-preview'
-  | 'gemini-2.5-flash-image';
+export type ImageModelId = string;
+
+export type ModelProvider = 'openai' | 'gemini' | 'claude' | 'doubao';
 
 export interface GameSettings {
   highQualityImages: boolean;
   imageEveryTurns: number;
+  maxHistoryTurns: number;
+  modelProvider?: ModelProvider;
   textModel?: TextModelId;
   imageModel?: ImageModelId;
 }

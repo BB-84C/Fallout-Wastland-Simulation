@@ -72,19 +72,8 @@ const playerCreationSchema = {
   required: actorSchema.required
 };
 
-const TEXT_MODELS = {
-  adminPrimary: 'gemini-3-pro-preview',
-  adminFallback: 'gemini-3-flash-preview',
-  normal: 'gemini-2.5-flash',
-  guest: 'gemini-2.5-flash-lite'
-};
-
-const IMAGE_MODELS = {
-  adminPrimary: 'gemini-3-pro-image-preview',
-  adminFallback: 'gemini-2.5-flash-image',
-  normal: 'gemini-2.5-flash-image',
-  guest: 'gemini-2.5-flash-image'
-};
+const DEFAULT_TEXT_MODEL = 'gemini-2.5-flash-lite';
+const DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image';
 
 const questSchema = {
   type: Type.ARRAY,
@@ -120,11 +109,6 @@ const describeApiKey = (key?: string) => {
   if (!key) return 'missing';
   const last4 = key.slice(-4);
   return `len=${key.length}, last4=${last4}`;
-};
-
-const isResourceExhausted = (error: unknown) => {
-  const text = error instanceof Error ? error.message : String(error);
-  return text.includes('RESOURCE_EXHAUSTED') || text.includes('"code":429') || text.includes('429');
 };
 
 /**
@@ -189,6 +173,58 @@ async function resizeImageToSquare(base64: string, size: number): Promise<string
   });
 }
 
+const sanitizeJsonText = (text: string) => {
+  let cleaned = text.trim();
+  cleaned = cleaned.replace(/```(?:json)?/gi, '').replace(/```/g, '');
+  cleaned = cleaned.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+  cleaned = cleaned.replace(/[\u0000-\u001F]+/g, ' ');
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    cleaned = cleaned.slice(start, end + 1);
+  }
+  cleaned = cleaned.replace(/,\s*([}\]])/g, '$1');
+  cleaned = cleaned.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+  let fixed = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < cleaned.length; i += 1) {
+    const char = cleaned[i];
+    if (!inString) {
+      if (char === '"') {
+        inString = true;
+      }
+      fixed += char;
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      fixed += char;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      fixed += char;
+      continue;
+    }
+    if (char === '"') {
+      const remainder = cleaned.slice(i + 1);
+      const nextNonSpace = remainder.match(/\S/);
+      const nextChar = nextNonSpace ? nextNonSpace[0] : '';
+      if (nextChar && ![':', ',', '}', ']'].includes(nextChar)) {
+        fixed += '\\"';
+        continue;
+      }
+      inString = false;
+      fixed += char;
+      continue;
+    }
+    fixed += char;
+  }
+  cleaned = fixed;
+  return cleaned;
+};
+
 function safeJsonParse(text: string): any {
   const trimmed = text.trim();
   try {
@@ -198,11 +234,12 @@ function safeJsonParse(text: string): any {
     if (jsonMatch) {
       try {
         return JSON.parse(jsonMatch[0]);
-      } catch (innerE) {
-        throw e;
+      } catch {
+        // fall through to sanitize pass
       }
     }
-    throw e;
+    const repaired = sanitizeJsonText(trimmed);
+    return JSON.parse(repaired);
   }
 }
 
@@ -213,77 +250,30 @@ export async function createPlayerCharacter(
   lang: Language,
   options?: { tier?: UserTier; onProgress?: (message: string) => void; apiKey?: string; textModel?: TextModelId }
 ): Promise<PlayerCreationResult> {
-  const tier = options?.tier ?? 'guest';
-  const isAdmin = tier === 'admin';
-  const textModel = tier === 'admin' ? TEXT_MODELS.adminPrimary : tier === 'normal' ? TEXT_MODELS.normal : TEXT_MODELS.guest;
-  const selectedTextModel = options?.textModel || textModel;
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
   const { key: apiKey, source } = resolveApiKey(options?.apiKey);
   const emit = (message: string) => options?.onProgress?.(message);
   const ai = new GoogleGenAI({ apiKey: apiKey || '' });
   const targetLang = lang === 'zh' ? 'Chinese' : 'English';
   
-  const response = await (async () => {
-    try {
-      emit(`API key: ${source} (${describeApiKey(apiKey)})`);
-      emit(`Requesting character profile from ${selectedTextModel}...`);
-      return await ai.models.generateContent({
-        model: selectedTextModel,
-        contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: playerCreationSchema,
-          systemInstruction: `You are the Vault-Tec Identity Reconstruction System.
-          1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
-          2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
-          3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
-          4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
-          5. PERK SYSTEM: Assign 1-2 starting perks.
-          6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
-          7. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`
-        },
-      });
-    } catch (e) {
-      if (tier === 'normal' && isResourceExhausted(e)) {
-        emit(`Normal model hit quota. Retrying with ${TEXT_MODELS.guest}...`);
-        const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
-        return await fallbackAi.models.generateContent({
-          model: TEXT_MODELS.guest,
-          contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: playerCreationSchema,
-            systemInstruction: `You are the Vault-Tec Identity Reconstruction System.
-            1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
-            2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
-            3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
-            4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
-            5. PERK SYSTEM: Assign 1-2 starting perks.
-            6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
-            7. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`
-          },
-        });
-      }
-      if (!isAdmin) throw e;
-      emit(`Primary model failed. Retrying with ${TEXT_MODELS.adminFallback}...`);
-      const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
-      return await fallbackAi.models.generateContent({
-        model: TEXT_MODELS.adminFallback,
-        contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: playerCreationSchema,
-          systemInstruction: `You are the Vault-Tec Identity Reconstruction System.
-          1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
-          2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
-          3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
-          4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
-          5. PERK SYSTEM: Assign 1-2 starting perks.
-          6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
-          7. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`
-        },
-      });
-    }
-  })();
+  emit(`API key: ${source} (${describeApiKey(apiKey)})`);
+  emit(`Requesting character profile from ${selectedTextModel}...`);
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: playerCreationSchema,
+      systemInstruction: `You are the Vault-Tec Identity Reconstruction System.
+      1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
+      2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
+      3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
+      4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
+      5. PERK SYSTEM: Assign 1-2 starting perks.
+      6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
+      7. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`
+    },
+  });
   
   if (!response.text) throw new Error("No response from Vault-Tec database.");
   emit(`Response received (${response.text.length} chars). Parsing JSON...`);
@@ -315,10 +305,7 @@ export async function getNarrativeResponse(
   const ai = new GoogleGenAI({ apiKey: apiKey || '' });
   const targetLang = lang === 'zh' ? 'Chinese' : 'English';
   const context = history.map(h => `${h.sender.toUpperCase()}: ${h.text}`).join('\n');
-  const tier = options?.tier ?? 'guest';
-  const isAdmin = tier === 'admin';
-  const textModel = tier === 'admin' ? TEXT_MODELS.adminPrimary : tier === 'normal' ? TEXT_MODELS.normal : TEXT_MODELS.guest;
-  const selectedTextModel = options?.textModel || textModel;
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
 
   const prompt = `
     Environment Year: ${year}
@@ -338,169 +325,57 @@ export async function getNarrativeResponse(
        - Use 'questUpdates' to signal changes to the quest log.
   `;
 
-  const response = await (async () => {
-    try {
-      return await ai.models.generateContent({
-        model: selectedTextModel,
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              storyText: { type: Type.STRING },
-              ruleViolation: { type: Type.STRING },
-              timePassedMinutes: { type: Type.NUMBER },
-              questUpdates: questSchema,
-              companionUpdates: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    name: { type: Type.STRING },
-                    ifCompanion: { type: Type.BOOLEAN },
-                    reason: { type: Type.STRING }
-                  },
-                  required: ["name", "ifCompanion"]
-                }
-              },
-              newNpc: actorSchema,
-              updatedPlayer: actorSchema,
-              imagePrompt: { type: Type.STRING }
-            },
-            required: ["storyText", "timePassedMinutes", "imagePrompt"]
-          },
-          systemInstruction: `You are the Fallout Overseer. 
-          1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
-          2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
-          3. QUEST SYSTEM (CRITICAL):
-             - You are responsible for maintaining the quest log via the 'questUpdates' field.
-             - CREATE: If the player is given a task (e.g., "Find the water chip", "Kill the radroaches"), you MUST generate a new quest object in 'questUpdates' with a unique ID.
-             - UPDATE: If the player completes an objective or receives new information that changes the goal, provide the updated quest in 'questUpdates'.
-             - FINISH: When a task is done, set its status to 'completed'.
-             - Never delete quests; only update their status.
-          4. ECONOMY & TRADING: 
-             - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
-          5. PERKS: Incorporate player perks into story outcomes.
-          6. COMPANION SYSTEM:
-             - Based on the interaction history and NPC relationship, decide if any known NPC becomes a companion.
-             - If a companion status changes, add an entry in 'companionUpdates' with the NPC name and ifCompanion=true/false.
-             - Only include updates for NPCs already in Known NPCs or the newly created NPC.
-          7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
-          8. TRANSLATION: Use "Term (Original)" for unlocalized items.
-          9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
-        },
-      });
-    } catch (e) {
-      if (tier === 'normal' && isResourceExhausted(e)) {
-        const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
-        return await fallbackAi.models.generateContent({
-          model: TEXT_MODELS.guest,
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          storyText: { type: Type.STRING },
+          ruleViolation: { type: Type.STRING },
+          timePassedMinutes: { type: Type.NUMBER },
+          questUpdates: questSchema,
+          companionUpdates: {
+            type: Type.ARRAY,
+            items: {
               type: Type.OBJECT,
               properties: {
-                storyText: { type: Type.STRING },
-                ruleViolation: { type: Type.STRING },
-                timePassedMinutes: { type: Type.NUMBER },
-                questUpdates: questSchema,
-                companionUpdates: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      name: { type: Type.STRING },
-                      ifCompanion: { type: Type.BOOLEAN },
-                      reason: { type: Type.STRING }
-                    },
-                    required: ["name", "ifCompanion"]
-                  }
-                },
-                newNpc: actorSchema,
-                updatedPlayer: actorSchema,
-                imagePrompt: { type: Type.STRING }
+                name: { type: Type.STRING },
+                ifCompanion: { type: Type.BOOLEAN },
+                reason: { type: Type.STRING }
               },
-              required: ["storyText", "timePassedMinutes", "imagePrompt"]
-            },
-            systemInstruction: `You are the Fallout Overseer. 
-            1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
-            2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
-            3. QUEST SYSTEM (CRITICAL):
-               - You are responsible for maintaining the quest log via the 'questUpdates' field.
-               - CREATE: If the player is given a task (e.g., "Find the water chip", "Kill the radroaches"), you MUST generate a new quest object in 'questUpdates' with a unique ID.
-               - UPDATE: If the player completes an objective or receives new information that changes the goal, provide the updated quest in 'questUpdates'.
-               - FINISH: When a task is done, set its status to 'completed'.
-               - Never delete quests; only update their status.
-            4. ECONOMY & TRADING: 
-               - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
-            5. PERKS: Incorporate player perks into story outcomes.
-            6. COMPANION SYSTEM:
-               - Based on the interaction history and NPC relationship, decide if any known NPC becomes a companion.
-               - If a companion status changes, add an entry in 'companionUpdates' with the NPC name and ifCompanion=true/false.
-               - Only include updates for NPCs already in Known NPCs or the newly created NPC.
-            7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
-            8. TRANSLATION: Use "Term (Original)" for unlocalized items.
-            9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
+              required: ["name", "ifCompanion"]
+            }
           },
-        });
-      }
-      if (!isAdmin) throw e;
-      const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
-      return await fallbackAi.models.generateContent({
-        model: TEXT_MODELS.adminFallback,
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              storyText: { type: Type.STRING },
-              ruleViolation: { type: Type.STRING },
-              timePassedMinutes: { type: Type.NUMBER },
-              questUpdates: questSchema,
-              companionUpdates: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    name: { type: Type.STRING },
-                    ifCompanion: { type: Type.BOOLEAN },
-                    reason: { type: Type.STRING }
-                  },
-                  required: ["name", "ifCompanion"]
-                }
-              },
-              newNpc: actorSchema,
-              updatedPlayer: actorSchema,
-              imagePrompt: { type: Type.STRING }
-            },
-            required: ["storyText", "timePassedMinutes", "imagePrompt"]
-          },
-          systemInstruction: `You are the Fallout Overseer. 
-          1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
-          2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
-          3. QUEST SYSTEM (CRITICAL):
-             - You are responsible for maintaining the quest log via the 'questUpdates' field.
-             - CREATE: If the player is given a task (e.g., "Find the water chip", "Kill the radroaches"), you MUST generate a new quest object in 'questUpdates' with a unique ID.
-             - UPDATE: If the player completes an objective or receives new information that changes the goal, provide the updated quest in 'questUpdates'.
-             - FINISH: When a task is done, set its status to 'completed'.
-             - Never delete quests; only update their status.
-          4. ECONOMY & TRADING: 
-             - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
-          5. PERKS: Incorporate player perks into story outcomes.
-          6. COMPANION SYSTEM:
-             - Based on the interaction history and NPC relationship, decide if any known NPC becomes a companion.
-             - If a companion status changes, add an entry in 'companionUpdates' with the NPC name and ifCompanion=true/false.
-             - Only include updates for NPCs already in Known NPCs or the newly created NPC.
-          7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
-          8. TRANSLATION: Use "Term (Original)" for unlocalized items.
-          9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
+          newNpc: actorSchema,
+          updatedPlayer: actorSchema,
+          imagePrompt: { type: Type.STRING }
         },
-      });
-    }
-  })();
+        required: ["storyText", "timePassedMinutes", "imagePrompt"]
+      },
+      systemInstruction: `You are the Fallout Overseer. 
+      1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
+      2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
+      3. QUEST SYSTEM (CRITICAL):
+         - You are responsible for maintaining the quest log via the 'questUpdates' field.
+         - CREATE: If the player is given a task (e.g., "Find the water chip", "Kill the radroaches"), you MUST generate a new quest object in 'questUpdates' with a unique ID.
+         - UPDATE: If the player completes an objective or receives new information that changes the goal, provide the updated quest in 'questUpdates'.
+         - FINISH: When a task is done, set its status to 'completed'.
+         - Never delete quests; only update their status.
+      4. ECONOMY & TRADING: 
+         - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
+      5. PERKS: Incorporate player perks into story outcomes.
+      6. COMPANION SYSTEM:
+         - Based on the interaction history and NPC relationship, decide if any known NPC becomes a companion.
+         - If a companion status changes, add an entry in 'companionUpdates' with the NPC name and ifCompanion=true/false.
+         - Only include updates for NPCs already in Known NPCs or the newly created NPC.
+      7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
+      8. TRANSLATION: Use "Term (Original)" for unlocalized items.
+      9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
+    },
+  });
 
   if (!response.text) throw new Error("Connection to the Wasteland lost.");
   return safeJsonParse(response.text);
@@ -510,42 +385,21 @@ export async function generateCompanionAvatar(
   npc: Actor,
   options?: { tier?: UserTier; apiKey?: string; imageModel?: ImageModelId }
 ): Promise<{ url?: string; error?: string } | undefined> {
-  const tier = options?.tier ?? 'guest';
-  const isAdmin = tier === 'admin';
-  const imageModel = tier === 'admin' ? IMAGE_MODELS.adminPrimary : tier === 'normal' ? IMAGE_MODELS.normal : IMAGE_MODELS.guest;
-  const selectedImageModel = options?.imageModel || imageModel;
+  const selectedImageModel = options?.imageModel || DEFAULT_IMAGE_MODEL;
   const { key: apiKey } = resolveApiKey(options?.apiKey);
   const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
 
   try {
     const imageAi = new GoogleGenAI({ apiKey: apiKey || '' });
-    const response = await (async () => {
-      try {
-        return await imageAi.models.generateContent({
-          model: selectedImageModel,
-          contents: {
-            parts: [{ text: prompt }],
-          },
-          config: {
-            imageConfig: { aspectRatio: "1:1" }
-          },
-        });
-      } catch (e) {
-        if (!isAdmin) {
-          return { error: e instanceof Error ? e.message : String(e) };
-        }
-        const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
-        return await fallbackAi.models.generateContent({
-          model: IMAGE_MODELS.adminFallback,
-          contents: {
-            parts: [{ text: prompt }],
-          },
-          config: {
-            imageConfig: { aspectRatio: "1:1" }
-          },
-        });
-      }
-    })();
+    const response = await imageAi.models.generateContent({
+      model: selectedImageModel,
+      contents: {
+        parts: [{ text: prompt }],
+      },
+      config: {
+        imageConfig: { aspectRatio: "1:1" }
+      },
+    });
 
     if ((response as any)?.error) {
       return { error: (response as any).error };
@@ -577,12 +431,8 @@ export async function generateSceneImage(
   options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; imageModel?: ImageModelId; textModel?: TextModelId }
 ): Promise<{url?: string, sources?: GroundingSource[], error?: string} | undefined> {
   const useHighQuality = options?.highQuality !== false;
-  const tier = options?.tier ?? 'guest';
-  const isAdmin = tier === 'admin';
-  const textModel = tier === 'admin' ? TEXT_MODELS.adminPrimary : tier === 'normal' ? TEXT_MODELS.normal : TEXT_MODELS.guest;
-  const selectedTextModel = options?.textModel || textModel;
-  const imageModel = tier === 'admin' ? IMAGE_MODELS.adminPrimary : tier === 'normal' ? IMAGE_MODELS.normal : IMAGE_MODELS.guest;
-  const selectedImageModel = options?.imageModel || imageModel;
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
+  const selectedImageModel = options?.imageModel || DEFAULT_IMAGE_MODEL;
   const { key: apiKey } = resolveApiKey(options?.apiKey);
 
   try {
@@ -606,20 +456,8 @@ export async function generateSceneImage(
               tools: [{ googleSearch: {} }]
             }
           });
-        } catch (e) {
-          if (!isAdmin) return undefined;
-          const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
-          return await fallbackAi.models.generateContent({
-            model: TEXT_MODELS.adminFallback,
-            contents: `Research visual references for this Fallout scene: "${prompt}".
-            1. Extract 3-5 keywords related to Fallout lore, items, or environment.
-            2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
-            3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
-            4. Format your final response as a detailed scene description for a concept artist.`,
-            config: {
-              tools: [{ googleSearch: {} }]
-            }
-          });
+        } catch {
+          return undefined;
         }
       })();
 
@@ -637,34 +475,16 @@ export async function generateSceneImage(
     }
 
     // STAGE 2: Image generation
-    const imageResponse = await (async () => {
-      const imageAi = new GoogleGenAI({ apiKey: apiKey || '' });
-      try {
-        return await imageAi.models.generateContent({
-          model: selectedImageModel,
-          contents: {
-            parts: [{ text: `Cinematic Fallout Concept Art. Environment: ${detailedDescription}. Atmosphere: Desolate, atmospheric, detailed. Style: Digital art, 4k, hyper-realistic wasteland aesthetic.` }],
-          },
-          config: { 
-            imageConfig: { aspectRatio: "16:9" }
-          },
-        });
-      } catch (e) {
-        if (!isAdmin) {
-          return { error: e instanceof Error ? e.message : String(e) };
-        }
-        const fallbackAi = new GoogleGenAI({ apiKey: apiKey || '' });
-        return await fallbackAi.models.generateContent({
-          model: IMAGE_MODELS.adminFallback,
-          contents: {
-            parts: [{ text: `Cinematic Fallout Concept Art. Environment: ${detailedDescription}. Atmosphere: Desolate, atmospheric, detailed. Style: Digital art, 4k, hyper-realistic wasteland aesthetic.` }],
-          },
-          config: { 
-            imageConfig: { aspectRatio: "16:9" }
-          },
-        });
-      }
-    })();
+    const imageAi = new GoogleGenAI({ apiKey: apiKey || '' });
+    const imageResponse = await imageAi.models.generateContent({
+      model: selectedImageModel,
+      contents: {
+        parts: [{ text: `Cinematic Fallout Concept Art. Environment: ${detailedDescription}. Atmosphere: Desolate, atmospheric, detailed. Style: Digital art, 4k, hyper-realistic wasteland aesthetic.` }],
+      },
+      config: { 
+        imageConfig: { aspectRatio: "16:9" }
+      },
+    });
 
     if ((imageResponse as any)?.error) {
       return { error: (imageResponse as any).error };
