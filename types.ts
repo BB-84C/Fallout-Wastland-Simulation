@@ -86,6 +86,8 @@ export interface GameSettings {
   highQualityImages: boolean;
   imageEveryTurns: number;
   maxHistoryTurns: number;
+  useProxy?: boolean;
+  proxyBaseUrl?: string;
   modelProvider?: ModelProvider;
   textModel?: TextModelId;
   imageModel?: ImageModelId;

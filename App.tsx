@@ -25,6 +25,7 @@ import type { ApRecoveryConfig } from './tierSettings';
 const SAVE_KEY_PREFIX = 'fallout_wasteland_save';
 const USERS_DB_KEY = 'fallout_users_db';
 const USER_API_KEY_PREFIX = 'fallout_user_api_key';
+const USER_PROXY_KEY_PREFIX = 'fallout_user_proxy_key';
 const USER_ONBOARD_PREFIX = 'fallout_user_onboarded';
 const RESERVED_ADMIN_USERNAME = 'admin';
 const GUEST_COOLDOWN_KEY = 'fallout_guest_cooldown_until';
@@ -59,11 +60,21 @@ const syncApState = (
 const getSaveKey = (username: string) => `${SAVE_KEY_PREFIX}_${username}`;
 const getUserApiKeyKey = (username: string, provider: ModelProvider) =>
   `${USER_API_KEY_PREFIX}_${username}_${provider}`;
+const getUserProxyKeyKey = (username: string, provider: ModelProvider) =>
+  `${USER_PROXY_KEY_PREFIX}_${username}_${provider}`;
 const getUserOnboardKey = (username: string) => `${USER_ONBOARD_PREFIX}_${username}`;
 
 const loadUserApiKey = (username: string, provider: ModelProvider) => {
   try {
     return localStorage.getItem(getUserApiKeyKey(username, provider)) || '';
+  } catch {
+    return '';
+  }
+};
+
+const loadUserProxyKey = (username: string, provider: ModelProvider) => {
+  try {
+    return localStorage.getItem(getUserProxyKeyKey(username, provider)) || '';
   } catch {
     return '';
   }
@@ -81,6 +92,21 @@ const persistUserApiKey = (username: string, provider: ModelProvider, key: strin
     // Ignore storage errors.
   }
 };
+
+const persistUserProxyKey = (username: string, provider: ModelProvider, key: string) => {
+  try {
+    const trimmed = key.trim();
+    if (!trimmed) {
+      localStorage.removeItem(getUserProxyKeyKey(username, provider));
+      return;
+    }
+    localStorage.setItem(getUserProxyKeyKey(username, provider), trimmed);
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+const normalizeProxyBaseUrl = (value: string) => value.trim().replace(/\/+$/, '');
 
 const isUserOnboarded = (username: string) => {
   try {
@@ -261,7 +287,8 @@ const normalizeSessionSettings = (settings: GameSettings, tier: UserTier, hasKey
   const minTurnsOverride = tier === 'normal' && hasKey ? 1 : undefined;
   const normalized = normalizeSettingsForTier(settings, tier, minTurnsOverride);
   const lockedImages = lockImageTurnsForTier(normalized, tier, hasKey);
-  return lockHistoryTurnsForTier(lockedImages, tier);
+  const normalizedProxyBaseUrl = normalizeProxyBaseUrl(lockedImages.proxyBaseUrl || '');
+  return lockHistoryTurnsForTier({ ...lockedImages, proxyBaseUrl: normalizedProxyBaseUrl }, tier);
 };
 
 const normalizeQuestUpdate = (update: any): Quest | null => {
@@ -502,6 +529,7 @@ type UserSession = {
   apLastUpdated: number;
   settings: GameSettings;
   apiKey?: string;
+  proxyApiKey?: string;
   isTemporary: boolean;
 };
 
@@ -541,7 +569,11 @@ const App: React.FC = () => {
   const isNormal = activeTier === 'normal';
   const isGuest = activeTier === 'guest';
   const hasUserKey = !!currentUser?.apiKey;
-  const normalKeyUnlocked = isNormal && hasUserKey;
+  const hasProxyKey = !!currentUser?.proxyApiKey;
+  const useProxy = isNormal && !!gameState.settings.useProxy;
+  const proxyBaseUrl = normalizeProxyBaseUrl(gameState.settings.proxyBaseUrl || '');
+  const hasAuthKey = useProxy ? hasProxyKey : hasUserKey;
+  const normalKeyUnlocked = isNormal && hasAuthKey;
   const isKeyUnlocked = isAdmin || normalKeyUnlocked;
   const apUnlimited = isKeyUnlocked;
   const maxAp = isKeyUnlocked ? getMaxApForTier('admin') : getMaxApForTier(activeTier);
@@ -564,8 +596,9 @@ const App: React.FC = () => {
   const effectiveImageModel = selectedImageModel;
   const canManualSave = isAdmin || normalKeyUnlocked;
   const canAdjustImageFrequency = isAdmin || normalKeyUnlocked;
+  const hasProxyBase = useProxy ? !!proxyBaseUrl : true;
   const isModelConfigured = isNormal
-    ? !!activeProvider && !!hasUserKey && !!selectedTextModel && !!selectedImageModel
+    ? !!activeProvider && !!hasAuthKey && hasProxyBase && !!selectedTextModel && !!selectedImageModel
     : true;
   const canPlay = isGuest || isAdmin || isModelConfigured;
 
@@ -725,6 +758,15 @@ const App: React.FC = () => {
     }
   }, [currentUser, isNormal, activeProvider]);
 
+  useEffect(() => {
+    if (!currentUser || !isNormal) return;
+    const storedKey = loadUserProxyKey(currentUser.username, activeProvider);
+    const currentKey = currentUser.proxyApiKey || '';
+    if (storedKey !== currentKey) {
+      setCurrentUser(prev => (prev ? { ...prev, proxyApiKey: storedKey || undefined } : prev));
+    }
+  }, [currentUser, isNormal, activeProvider]);
+
   const saveGame = useCallback((notify = true) => {
     if (!currentUser || !canManualSave) return;
     try {
@@ -755,7 +797,10 @@ const App: React.FC = () => {
         ? parsed.knownNpcs.map((npc: Actor) => normalizeActor(npc))
         : [];
       const now = Date.now();
-      const hasKey = currentUser.tier === 'normal' && !!currentUser.apiKey;
+      const proxyEnabled = currentUser.settings.useProxy && currentUser.tier === 'normal';
+      const hasKey = currentUser.tier === 'normal'
+        ? (proxyEnabled ? !!currentUser.proxyApiKey : !!currentUser.apiKey)
+        : false;
       const settings = normalizeSessionSettings(
         currentUser.settings || DEFAULT_SETTINGS,
         activeTier,
@@ -808,11 +853,15 @@ const App: React.FC = () => {
     const baseSettings = record.settings || DEFAULT_SETTINGS;
     const provider = (baseSettings.modelProvider ?? 'gemini') as ModelProvider;
     const storedApiKey = tier === 'normal' ? loadUserApiKey(record.username, provider) : '';
+    const storedProxyKey = tier === 'normal' ? loadUserProxyKey(record.username, provider) : '';
     const sessionApiKey = storedApiKey || undefined;
-    const hasKey = tier === 'normal' && !!sessionApiKey;
+    const sessionProxyKey = storedProxyKey || undefined;
+    const proxyEnabled = tier === 'normal' && !!baseSettings.useProxy;
+    const hasKey = tier === 'normal' && (proxyEnabled ? !!sessionProxyKey : !!sessionApiKey);
     const settings = normalizeSessionSettings(baseSettings, tier, hasKey);
     const hasModels = !!settings.textModel?.trim() && !!settings.imageModel?.trim() && !!settings.modelProvider;
-    const needsSetup = tier === 'normal' && (!isUserOnboarded(record.username) || !hasKey || !hasModels);
+    const hasProxyBase = proxyEnabled ? !!normalizeProxyBaseUrl(settings.proxyBaseUrl || '') : true;
+    const needsSetup = tier === 'normal' && (!isUserOnboarded(record.username) || !hasKey || !hasModels || !hasProxyBase);
     const maxAllowedAp = getMaxApForTier(tier);
     let ap = Math.min(maxAllowedAp, typeof record.ap === 'number' ? record.ap : maxAllowedAp);
     let apLastUpdated = typeof record.apLastUpdated === 'number' && record.apLastUpdated > 0
@@ -831,6 +880,7 @@ const App: React.FC = () => {
       apLastUpdated,
       settings,
       apiKey: sessionApiKey,
+      proxyApiKey: sessionProxyKey,
       isTemporary: false
     });
     setAuthError('');
@@ -882,6 +932,7 @@ const App: React.FC = () => {
       apLastUpdated: now,
       settings: normalizeSessionSettings(DEFAULT_SETTINGS, 'normal', false),
       apiKey: undefined,
+      proxyApiKey: undefined,
       isTemporary: false
     });
     setAuthError('');
@@ -909,6 +960,7 @@ const App: React.FC = () => {
       apLastUpdated: now,
       settings: normalizeSessionSettings(DEFAULT_SETTINGS, 'guest', false),
       apiKey: undefined,
+      proxyApiKey: undefined,
       isTemporary: true
     });
     setGuestCooldownUntil(now + GUEST_COOLDOWN_MS);
@@ -963,7 +1015,7 @@ const App: React.FC = () => {
       setIsSettingsOpen(true);
       return;
     }
-    if (activeProvider === 'gemini' && !hasUserKey && typeof (window as any).aistudio !== 'undefined') {
+    if (activeProvider === 'gemini' && !useProxy && !hasUserKey && typeof (window as any).aistudio !== 'undefined') {
       const hasKey = await (window as any).aistudio.hasSelectedApiKey();
       if (!hasKey) {
         setKeyAlert(true);
@@ -1003,6 +1055,9 @@ const App: React.FC = () => {
         { 
           tier: activeTier,
           apiKey: currentUser?.apiKey,
+          proxyApiKey: currentUser?.proxyApiKey,
+          proxyBaseUrl,
+          useProxy,
           textModel: effectiveTextModel,
           provider: activeProvider,
           onProgress: (message) => {
@@ -1027,12 +1082,12 @@ const App: React.FC = () => {
 
       const startNarration = `${introMsg} ${player.lore}`;
       const avatarPromise = !isGuest && seededCompanions.length > 0
-        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel, provider: activeProvider })))
+        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: activeProvider })))
         : Promise.resolve([]);
       const [imgData, avatarResults] = await Promise.all([
         generateSceneImage(
           `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
-          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel, textModel: effectiveTextModel, provider: activeProvider }
+          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, textModel: effectiveTextModel, provider: activeProvider }
         ),
         avatarPromise
       ]);
@@ -1143,7 +1198,7 @@ const App: React.FC = () => {
 
     const updatedHistory: HistoryEntry[] = [...gameState.history, { sender: 'player', text: actionText }];
     const trimmedHistory = historyLimit ? updatedHistory.slice(-historyLimit) : updatedHistory;
-    const lockedImageTurns = isNormal && !hasUserKey
+    const lockedImageTurns = isNormal && !hasAuthKey
       ? normalDefaultImageTurns
       : (isGuest ? guestFixedImageTurns : null);
     const imageEveryTurns = lockedImageTurns ?? Math.max(minImageTurns, Math.floor(gameState.settings.imageEveryTurns || minImageTurns));
@@ -1173,7 +1228,7 @@ const App: React.FC = () => {
         gameState.quests,
         gameState.knownNpcs,
         gameState.language,
-        { tier: activeTier, apiKey: currentUser?.apiKey, textModel: effectiveTextModel, provider: activeProvider }
+        { tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, textModel: effectiveTextModel, provider: activeProvider }
       );
 
       if (response.ruleViolation) {
@@ -1233,10 +1288,10 @@ const App: React.FC = () => {
       // Generate images based on the configured frequency.
       const visualPrompt = response.imagePrompt || actionText;
       const imagePromise = shouldGenerateImage
-        ? generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel, textModel: effectiveTextModel, provider: activeProvider })
+        ? generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, textModel: effectiveTextModel, provider: activeProvider })
         : Promise.resolve(undefined);
       const avatarPromise = companionsNeedingAvatar.length > 0
-        ? Promise.all(companionsNeedingAvatar.map(npc => generateCompanionAvatar(npc, { tier: activeTier, apiKey: currentUser?.apiKey, imageModel: effectiveImageModel, provider: activeProvider })))
+        ? Promise.all(companionsNeedingAvatar.map(npc => generateCompanionAvatar(npc, { tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: activeProvider })))
         : Promise.resolve([]);
       const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
       const imageLog = shouldGenerateImage && imgData?.error
@@ -1324,7 +1379,8 @@ const App: React.FC = () => {
       }
     }));
     const storedKey = loadUserApiKey(currentUser.username, value);
-    setCurrentUser(prev => (prev ? { ...prev, apiKey: storedKey || undefined } : prev));
+    const storedProxyKey = loadUserProxyKey(currentUser.username, value);
+    setCurrentUser(prev => (prev ? { ...prev, apiKey: storedKey || undefined, proxyApiKey: storedProxyKey || undefined } : prev));
   };
 
   const updateModelApiKey = (value: string) => {
@@ -1332,6 +1388,36 @@ const App: React.FC = () => {
     const trimmed = value.trim();
     persistUserApiKey(currentUser.username, activeProvider, trimmed);
     setCurrentUser(prev => (prev ? { ...prev, apiKey: trimmed || undefined } : prev));
+  };
+
+  const updateProxyEnabled = (checked: boolean) => {
+    if (!isNormal) return;
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        useProxy: checked
+      }
+    }));
+  };
+
+  const updateProxyBaseUrl = (value: string) => {
+    if (!isNormal) return;
+    const normalized = normalizeProxyBaseUrl(value);
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        proxyBaseUrl: normalized
+      }
+    }));
+  };
+
+  const updateProxyApiKey = (value: string) => {
+    if (!currentUser || !isNormal) return;
+    const trimmed = value.trim();
+    persistUserProxyKey(currentUser.username, activeProvider, trimmed);
+    setCurrentUser(prev => (prev ? { ...prev, proxyApiKey: trimmed || undefined } : prev));
   };
 
   const updateTextModelName = (value: string) => {
@@ -1488,12 +1574,12 @@ const App: React.FC = () => {
               {isZh
                 ? (isGuest
                   ? '临时用户不生成回合图像，仅在创建角色时生成一张。'
-                  : (isNormal && !hasUserKey
+                  : (isNormal && !hasAuthKey
                     ? `设置模型与 API 后可调整图像频率；当前固定为 ${normalDefaultImageTurns}。`
                     : '每 N 次交互生成一张图像，可自由调整。'))
                 : (isGuest
                   ? 'Temporary users do not generate turn images; only the creation image is shown.'
-                  : (isNormal && !hasUserKey
+                  : (isNormal && !hasAuthKey
                     ? `Configure provider/API to adjust image frequency; currently fixed at ${normalDefaultImageTurns}.`
                     : 'Generate images every N turns; adjustable.'))}
             </div>
@@ -1514,7 +1600,7 @@ const App: React.FC = () => {
               <div className="text-[10px] opacity-50 mt-2 uppercase">
                 {isGuest
                   ? (isZh ? '临时用户不生成回合图像。' : 'Temporary users do not generate turn images.')
-                  : (isNormal && !hasUserKey
+                  : (isNormal && !hasAuthKey
                     ? (isZh ? `完成模型配置后可调整，当前固定为 ${normalDefaultImageTurns}。` : `Adjustable after setup; currently fixed at ${normalDefaultImageTurns}.`)
                     : (isZh ? '普通用户已完成模型配置。' : 'Normal user setup complete.'))}
               </div>
@@ -1588,6 +1674,51 @@ const App: React.FC = () => {
                   className="mt-3 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
                   placeholder={isZh ? '粘贴 API Key' : 'Paste API key'}
                 />
+              </div>
+
+              <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 space-y-3">
+                <label className="flex items-center gap-2 text-xs uppercase font-bold">
+                  <input
+                    type="checkbox"
+                    checked={!!gameState.settings.useProxy}
+                    onChange={(e) => updateProxyEnabled(e.target.checked)}
+                    className="accent-[#1aff1a]"
+                  />
+                  {isZh ? '使用中转站（API Proxy）' : 'Use API Proxy'}
+                </label>
+                {gameState.settings.useProxy && (
+                  <div className="space-y-3">
+                    <div>
+                      <div className="text-[11px] uppercase opacity-70">
+                        {isZh ? '中转站 Base URL' : 'Proxy Base URL'}
+                      </div>
+                      <input
+                        type="text"
+                        value={gameState.settings.proxyBaseUrl || ''}
+                        onChange={(e) => updateProxyBaseUrl(e.target.value)}
+                        className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                        placeholder="https://example.com/v1"
+                      />
+                    </div>
+                    <div>
+                      <div className="text-[11px] uppercase opacity-70">
+                        {isZh ? '中转站 API Key' : 'Proxy API Key'}
+                      </div>
+                      <input
+                        type="password"
+                        value={currentUser?.proxyApiKey || ''}
+                        onChange={(e) => updateProxyApiKey(e.target.value)}
+                        className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                        placeholder={isZh ? '粘贴中转站 API Key' : 'Paste proxy API key'}
+                      />
+                    </div>
+                    <div className="text-[11px] opacity-70">
+                      {isZh
+                        ? '关于中转站兼容性说明：本应用在使用中转站时，仍按所选模型的官方 API 协议发起请求。若请求失败，通常是中转站不支持该模型的原生接口或高级功能。此类兼容性问题由中转站服务本身导致，并非应用错误。'
+                        : 'Proxy compatibility notice: requests are sent using the official API protocol of the selected provider. Failures usually mean the proxy does not support that native API or advanced features. Such compatibility issues are caused by the proxy service, not the app.'}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>

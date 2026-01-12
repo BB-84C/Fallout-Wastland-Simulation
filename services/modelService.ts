@@ -171,6 +171,36 @@ const requireApiKey = (apiKey: string | undefined, provider: ModelProvider) => {
   return apiKey;
 };
 
+const normalizeBaseUrl = (value?: string) => {
+  const trimmed = value?.trim() || "";
+  if (!trimmed) return "";
+  return trimmed.replace(/\/+$/, "");
+};
+
+const resolveBaseUrl = (provider: ModelProvider, baseUrl?: string) => {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (normalized) return normalized;
+  switch (provider) {
+    case "openai":
+      return OPENAI_BASE_URL;
+    case "claude":
+      return CLAUDE_BASE_URL;
+    case "doubao":
+      return DOUBAO_BASE_URL;
+    case "gemini":
+    default:
+      return "";
+  }
+};
+
+const formatHttpError = async (res: Response, fallback: string) => {
+  const text = await res.text();
+  if (text) {
+    return `${fallback} (HTTP ${res.status}): ${text}`;
+  }
+  return `${fallback} (HTTP ${res.status}).`;
+};
+
 const sanitizeJsonText = (text: string) => {
   let cleaned = text.trim();
   cleaned = cleaned.replace(/```(?:json)?/gi, "").replace(/```/g, "");
@@ -312,8 +342,8 @@ async function resizeImageToSquare(base64: string, size: number): Promise<string
   });
 }
 
-const callOpenAiJson = async (apiKey: string, model: string, system: string, prompt: string) => {
-  const res = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+const callOpenAiJson = async (apiKey: string, baseUrl: string, model: string, system: string, prompt: string) => {
+  const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -330,15 +360,14 @@ const callOpenAiJson = async (apiKey: string, model: string, system: string, pro
     })
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `OpenAI request failed (${res.status}).`);
+    throw new Error(await formatHttpError(res, "OpenAI request failed"));
   }
   const data = await res.json();
   return data?.choices?.[0]?.message?.content || "";
 };
 
-const callClaudeJson = async (apiKey: string, model: string, system: string, prompt: string) => {
-  const res = await fetch(`${CLAUDE_BASE_URL}/messages`, {
+const callClaudeJson = async (apiKey: string, baseUrl: string, model: string, system: string, prompt: string) => {
+  const res = await fetch(`${baseUrl}/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -353,16 +382,15 @@ const callClaudeJson = async (apiKey: string, model: string, system: string, pro
     })
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Claude request failed (${res.status}).`);
+    throw new Error(await formatHttpError(res, "Claude request failed"));
   }
   const data = await res.json();
   const content = data?.content?.find((part: any) => part?.text)?.text;
   return content || "";
 };
 
-const callDoubaoJson = async (apiKey: string, model: string, system: string, prompt: string) => {
-  const res = await fetch(`${DOUBAO_BASE_URL}/chat/completions`, {
+const callDoubaoJson = async (apiKey: string, baseUrl: string, model: string, system: string, prompt: string) => {
+  const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -379,8 +407,7 @@ const callDoubaoJson = async (apiKey: string, model: string, system: string, pro
     })
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Doubao request failed (${res.status}).`);
+    throw new Error(await formatHttpError(res, "Doubao request failed"));
   }
   const data = await res.json();
   return data?.choices?.[0]?.message?.content || "";
@@ -400,14 +427,14 @@ const fetchImageAsBase64 = async (url: string) => {
   });
 };
 
-const generateOpenAiImage = async (apiKey: string, model: string, prompt: string) => {
+const generateOpenAiImage = async (apiKey: string, baseUrl: string, model: string, prompt: string) => {
   const requestBody = {
     model,
     prompt,
     size: "1024x1024",
     response_format: "b64_json"
   };
-  let res = await fetch(`${OPENAI_BASE_URL}/images/generations`, {
+  let res = await fetch(`${baseUrl}/images/generations`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -419,7 +446,7 @@ const generateOpenAiImage = async (apiKey: string, model: string, prompt: string
     const text = await res.text();
     if (text.includes("Unknown parameter: 'response_format'")) {
       const { response_format: _omit, ...retryBody } = requestBody;
-      res = await fetch(`${OPENAI_BASE_URL}/images/generations`, {
+      res = await fetch(`${baseUrl}/images/generations`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -428,11 +455,13 @@ const generateOpenAiImage = async (apiKey: string, model: string, prompt: string
         body: JSON.stringify(retryBody)
       });
       if (!res.ok) {
-        const retryText = await res.text();
-        throw new Error(retryText || `OpenAI image request failed (${res.status}).`);
+        throw new Error(await formatHttpError(res, "OpenAI image request failed"));
       }
     } else {
-      throw new Error(text || `OpenAI image request failed (${res.status}).`);
+      const message = text
+        ? `OpenAI image request failed (HTTP ${res.status}): ${text}`
+        : `OpenAI image request failed (HTTP ${res.status}).`;
+      throw new Error(message);
     }
   }
   const data = await res.json();
@@ -446,8 +475,8 @@ const generateOpenAiImage = async (apiKey: string, model: string, prompt: string
   return undefined;
 };
 
-const generateDoubaoImage = async (apiKey: string, model: string, prompt: string) => {
-  const res = await fetch(`${DOUBAO_BASE_URL}/images/generations`, {
+const generateDoubaoImage = async (apiKey: string, baseUrl: string, model: string, prompt: string) => {
+  const res = await fetch(`${baseUrl}/images/generations`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -461,8 +490,7 @@ const generateDoubaoImage = async (apiKey: string, model: string, prompt: string
     })
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Doubao image request failed (${res.status}).`);
+    throw new Error(await formatHttpError(res, "Doubao image request failed"));
   }
   const data = await res.json();
   return data?.data?.[0]?.b64_json as string | undefined;
@@ -473,9 +501,10 @@ export async function createPlayerCharacter(
   year: number,
   region: string,
   lang: Language,
-  options?: { tier?: UserTier; onProgress?: (message: string) => void; apiKey?: string; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; onProgress?: (message: string) => void; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider }
 ): Promise<PlayerCreationResult> {
   const provider = normalizeProvider(options?.provider);
+  const useProxy = !!options?.useProxy;
   if (provider === "gemini") {
     if (options?.tier === "guest") {
       return createGeminiPlayer(userInput, year, region, lang, {
@@ -485,7 +514,11 @@ export async function createPlayerCharacter(
         textModel: options?.textModel
       });
     }
-    const apiKey = requireApiKey(options?.apiKey, provider);
+    const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+    if (useProxy && !proxyBaseUrl) {
+      throw new Error("Missing proxy base URL.");
+    }
+    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
@@ -494,7 +527,10 @@ export async function createPlayerCharacter(
     const targetLang = lang === "zh" ? "Chinese" : "English";
     const system = buildCharacterSystem(targetLang);
     const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({
+      apiKey,
+      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+    });
     emit(`Requesting character profile from ${model}...`);
     const response = await ai.models.generateContent({
       model,
@@ -514,7 +550,11 @@ export async function createPlayerCharacter(
     return parsed;
   }
 
-  const apiKey = requireApiKey(options?.apiKey, provider);
+  const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
+  if (useProxy && !baseUrl) {
+    throw new Error("Missing proxy base URL.");
+  }
+  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
@@ -525,10 +565,10 @@ export async function createPlayerCharacter(
   const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
 
   const raw = provider === "openai"
-    ? await callOpenAiJson(apiKey, model, system, prompt)
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
     : provider === "claude"
-      ? await callClaudeJson(apiKey, model, system, prompt)
-      : await callDoubaoJson(apiKey, model, system, prompt);
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
 
   return safeJsonParse(raw);
 }
@@ -542,9 +582,10 @@ export async function getNarrativeResponse(
   quests: Quest[],
   knownNpcs: Actor[],
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider }
 ): Promise<NarratorResponse> {
   const provider = normalizeProvider(options?.provider);
+  const useProxy = !!options?.useProxy;
   if (provider === "gemini") {
     if (options?.tier === "guest") {
       return getGeminiNarration(player, history, userInput, year, location, quests, knownNpcs, lang, {
@@ -553,7 +594,11 @@ export async function getNarrativeResponse(
         textModel: options?.textModel
       });
     }
-    const apiKey = requireApiKey(options?.apiKey, provider);
+    const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+    if (useProxy && !proxyBaseUrl) {
+      throw new Error("Missing proxy base URL.");
+    }
+    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
@@ -561,7 +606,10 @@ export async function getNarrativeResponse(
     const targetLang = lang === "zh" ? "Chinese" : "English";
     const system = buildNarratorSystem(targetLang, year, location);
     const prompt = buildNarratorPrompt(player, history, userInput, year, location, quests, knownNpcs);
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({
+      apiKey,
+      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+    });
     const response = await ai.models.generateContent({
       model,
       contents: prompt,
@@ -602,7 +650,11 @@ export async function getNarrativeResponse(
     return parseNarrator(parsed, userInput);
   }
 
-  const apiKey = requireApiKey(options?.apiKey, provider);
+  const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
+  if (useProxy && !baseUrl) {
+    throw new Error("Missing proxy base URL.");
+  }
+  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
@@ -613,10 +665,10 @@ export async function getNarrativeResponse(
   const prompt = buildNarratorPrompt(player, history, userInput, year, location, quests, knownNpcs);
 
   const raw = provider === "openai"
-    ? await callOpenAiJson(apiKey, model, system, prompt)
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
     : provider === "claude"
-      ? await callClaudeJson(apiKey, model, system, prompt)
-      : await callDoubaoJson(apiKey, model, system, prompt);
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
 
   const parsed = safeJsonParse(raw);
   return parseNarrator(parsed, userInput);
@@ -624,9 +676,10 @@ export async function getNarrativeResponse(
 
 export async function generateCompanionAvatar(
   npc: Actor,
-  options?: { tier?: UserTier; apiKey?: string; imageModel?: ImageModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; provider?: ModelProvider }
 ): Promise<{ url?: string; error?: string } | undefined> {
   const provider = normalizeProvider(options?.provider);
+  const useProxy = !!options?.useProxy;
   if (provider === "gemini") {
     if (options?.tier === "guest") {
       return generateGeminiAvatar(npc, {
@@ -635,14 +688,21 @@ export async function generateCompanionAvatar(
         imageModel: options?.imageModel
       });
     }
-    const apiKey = requireApiKey(options?.apiKey, provider);
+    const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+    if (useProxy && !proxyBaseUrl) {
+      return { error: "Missing proxy base URL." };
+    }
+    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
     const model = options?.imageModel || "";
     if (!model) {
       return { error: "Missing image model name." };
     }
     const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
     try {
-      const imageAi = new GoogleGenAI({ apiKey });
+      const imageAi = new GoogleGenAI({
+        apiKey,
+        ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+      });
       const response = await imageAi.models.generateContent({
         model,
         contents: {
@@ -670,7 +730,11 @@ export async function generateCompanionAvatar(
     return { error: "Claude image generation is not supported." };
   }
 
-  const apiKey = requireApiKey(options?.apiKey, provider);
+  const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
+  if (useProxy && !baseUrl) {
+    return { error: "Missing proxy base URL." };
+  }
+  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
   const model = options?.imageModel || "";
   if (!model) {
     return { error: "Missing image model name." };
@@ -679,8 +743,8 @@ export async function generateCompanionAvatar(
   const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
   try {
     const base64 = provider === "openai"
-      ? await generateOpenAiImage(apiKey, model, prompt)
-      : await generateDoubaoImage(apiKey, model, prompt);
+      ? await generateOpenAiImage(apiKey, baseUrl, model, prompt)
+      : await generateDoubaoImage(apiKey, baseUrl, model, prompt);
     if (!base64) {
       return { error: "No image data returned from the model." };
     }
@@ -693,9 +757,10 @@ export async function generateCompanionAvatar(
 
 export async function generateSceneImage(
   prompt: string,
-  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider }
 ): Promise<{ url?: string; sources?: GroundingSource[]; error?: string } | undefined> {
   const provider = normalizeProvider(options?.provider);
+  const useProxy = !!options?.useProxy;
   if (provider === "gemini") {
     if (options?.tier === "guest") {
       return generateGeminiScene(prompt, {
@@ -706,7 +771,11 @@ export async function generateSceneImage(
         textModel: options?.textModel
       });
     }
-    const apiKey = requireApiKey(options?.apiKey, provider);
+    const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+    if (useProxy && !proxyBaseUrl) {
+      return { error: "Missing proxy base URL." };
+    }
+    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
     const imageModel = options?.imageModel || "";
     if (!imageModel) {
       return { error: "Missing image model name." };
@@ -717,7 +786,10 @@ export async function generateSceneImage(
       let detailedDescription = prompt;
       let groundingSources: GroundingSource[] = [];
       if (useHighQuality && textModel) {
-        const researchAi = new GoogleGenAI({ apiKey });
+        const researchAi = new GoogleGenAI({
+          apiKey,
+          ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+        });
         try {
           const researchResponse = await researchAi.models.generateContent({
             model: textModel,
@@ -744,7 +816,10 @@ export async function generateSceneImage(
         }
       }
       const finalPrompt = buildImagePrompt(detailedDescription, useHighQuality);
-      const imageAi = new GoogleGenAI({ apiKey });
+      const imageAi = new GoogleGenAI({
+        apiKey,
+        ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+      });
       const imageResponse = await imageAi.models.generateContent({
         model: imageModel,
         contents: {
@@ -772,7 +847,11 @@ export async function generateSceneImage(
     return { error: "Claude image generation is not supported." };
   }
 
-  const apiKey = requireApiKey(options?.apiKey, provider);
+  const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
+  if (useProxy && !baseUrl) {
+    return { error: "Missing proxy base URL." };
+  }
+  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
   const model = options?.imageModel || "";
   if (!model) {
     return { error: "Missing image model name." };
@@ -780,8 +859,8 @@ export async function generateSceneImage(
   try {
     const finalPrompt = buildImagePrompt(prompt, options?.highQuality !== false);
     const base64 = provider === "openai"
-      ? await generateOpenAiImage(apiKey, model, finalPrompt)
-      : await generateDoubaoImage(apiKey, model, finalPrompt);
+      ? await generateOpenAiImage(apiKey, baseUrl, model, finalPrompt)
+      : await generateDoubaoImage(apiKey, baseUrl, model, finalPrompt);
     if (!base64) {
       return { error: "No image data returned from the model." };
     }

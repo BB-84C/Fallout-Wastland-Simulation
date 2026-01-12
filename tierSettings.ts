@@ -25,6 +25,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   highQualityImages: true,
   imageEveryTurns: TIER_SETTINGS.normal.defaultImageTurns,
   maxHistoryTurns: TIER_SETTINGS.normal.historyLimit,
+  useProxy: false,
+  proxyBaseUrl: '',
   modelProvider: 'gemini',
   textModel: '',
   imageModel: ''
