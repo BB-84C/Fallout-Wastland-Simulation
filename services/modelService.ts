@@ -114,6 +114,7 @@ ${actorSchemaHint}`;
 
 const buildNarratorSystem = (targetLang: string, year: number, location: string) => `You are the Fallout Overseer.
 1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
+1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing narration. Keep the narration immersive.
 2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
 3. QUEST SYSTEM (CRITICAL):
    - You are responsible for maintaining the quest log via the 'questUpdates' field.
@@ -323,7 +324,7 @@ const callOpenAiJson = async (apiKey: string, model: string, system: string, pro
         { role: "user", content: prompt }
       ],
       response_format: { type: "json_object" },
-      max_tokens: 2048
+      max_completion_tokens: 2048
     })
   });
   if (!res.ok) {
@@ -383,26 +384,64 @@ const callDoubaoJson = async (apiKey: string, model: string, system: string, pro
   return data?.choices?.[0]?.message?.content || "";
 };
 
+const fetchImageAsBase64 = async (url: string) => {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch image (${res.status}).`);
+  }
+  const blob = await res.blob();
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("Failed to read image data."));
+    reader.readAsDataURL(blob);
+  });
+};
+
 const generateOpenAiImage = async (apiKey: string, model: string, prompt: string) => {
-  const res = await fetch(`${OPENAI_BASE_URL}/images/generations`, {
+  const requestBody = {
+    model,
+    prompt,
+    size: "1024x1024",
+    response_format: "b64_json"
+  };
+  let res = await fetch(`${OPENAI_BASE_URL}/images/generations`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model,
-      prompt,
-      size: "1024x1024",
-      response_format: "b64_json"
-    })
+    body: JSON.stringify(requestBody)
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || `OpenAI image request failed (${res.status}).`);
+    if (text.includes("Unknown parameter: 'response_format'")) {
+      const { response_format: _omit, ...retryBody } = requestBody;
+      res = await fetch(`${OPENAI_BASE_URL}/images/generations`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(retryBody)
+      });
+      if (!res.ok) {
+        const retryText = await res.text();
+        throw new Error(retryText || `OpenAI image request failed (${res.status}).`);
+      }
+    } else {
+      throw new Error(text || `OpenAI image request failed (${res.status}).`);
+    }
   }
   const data = await res.json();
-  return data?.data?.[0]?.b64_json as string | undefined;
+  const b64 = data?.data?.[0]?.b64_json as string | undefined;
+  if (b64) return b64;
+  const url = data?.data?.[0]?.url as string | undefined;
+  if (url) {
+    const dataUrl = await fetchImageAsBase64(url);
+    return dataUrl.replace(/^data:image\/png;base64,/, "").replace(/^data:image\/jpeg;base64,/, "");
+  }
+  return undefined;
 };
 
 const generateDoubaoImage = async (apiKey: string, model: string, prompt: string) => {

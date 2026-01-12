@@ -150,6 +150,36 @@ const normalizeSessionSettings = (settings: GameSettings, tier: UserTier, hasKey
   return lockHistoryTurnsForTier(lockedImages, tier);
 };
 
+const normalizeQuestUpdate = (update: any): Quest | null => {
+  if (!update || typeof update !== 'object') return null;
+  const name = typeof update.name === 'string'
+    ? update.name
+    : (typeof update.title === 'string' ? update.title : '');
+  const objective = typeof update.objective === 'string'
+    ? update.objective
+    : Array.isArray(update.objectives)
+      ? update.objectives.filter((item: any) => typeof item === 'string').join('\n')
+      : (typeof update.notes === 'string' ? update.notes : '');
+  const rawStatus = typeof update.status === 'string' ? update.status : '';
+  const status = rawStatus === 'active' || rawStatus === 'completed' || rawStatus === 'failed'
+    ? rawStatus
+    : 'active';
+  const id = typeof update.id === 'string'
+    ? update.id
+    : (name ? `q-${name.toLowerCase().replace(/\s+/g, '-')}` : '');
+  if (!id || !name) return null;
+  const hiddenProgress = typeof update.hiddenProgress === 'string'
+    ? update.hiddenProgress
+    : (typeof update.notes === 'string' ? update.notes : '');
+  return {
+    id,
+    name,
+    objective,
+    status,
+    hiddenProgress
+  };
+};
+
 const getCreationPhaseText = (phase: 'request' | 'image' | 'finalize', isZh: boolean) => {
   switch (phase) {
     case 'request':
@@ -1045,15 +1075,23 @@ const App: React.FC = () => {
       const mergedQuests = [...gameState.quests];
       if (response.questUpdates) {
         response.questUpdates.forEach(update => {
-          const index = mergedQuests.findIndex(q => q.id === update.id || q.name === update.name);
+          const normalized = normalizeQuestUpdate(update);
+          if (!normalized) return;
+          const index = mergedQuests.findIndex(q => q.id === normalized.id || q.name === normalized.name);
           if (index > -1) {
             const oldQuest = mergedQuests[index];
-            if (update.status === 'completed' && oldQuest.status === 'active') {
-              response.storyText += `\n\n[QUEST FINISHED: ${update.name}]\n${update.hiddenProgress}`;
+            if (normalized.status === 'completed' && oldQuest.status === 'active') {
+              response.storyText += `\n\n[QUEST FINISHED: ${normalized.name}]\n${normalized.hiddenProgress}`;
             }
-            mergedQuests[index] = update;
+            mergedQuests[index] = {
+              ...oldQuest,
+              ...normalized,
+              name: normalized.name || oldQuest.name,
+              objective: normalized.objective || oldQuest.objective,
+              hiddenProgress: normalized.hiddenProgress || oldQuest.hiddenProgress
+            };
           } else {
-            mergedQuests.push(update);
+            mergedQuests.push(normalized);
           }
         });
       }
