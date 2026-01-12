@@ -84,6 +84,7 @@ export type ModelProvider = 'openai' | 'gemini' | 'claude' | 'doubao';
 
 export interface GameSettings {
   highQualityImages: boolean;
+  imagesEnabled?: boolean;
   imageEveryTurns: number;
   maxHistoryTurns: number;
   useProxy?: boolean;

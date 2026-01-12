@@ -19,6 +19,7 @@ interface StatBarProps {
   apRecovery?: ApRecoveryConfig | null;
   onLanguageToggle: (lang: Language) => void;
   onSave: () => void;
+  onExport: (format: 'log-md' | 'log-pdf' | 'save-json') => void;
   showSave: boolean;
   onClose: () => void;
 }
@@ -96,11 +97,13 @@ const StatBar: React.FC<StatBarProps> = ({
   apRecovery,
   onLanguageToggle,
   onSave,
+  onExport,
   showSave,
   onClose
 }) => {
   const [activeTab, setActiveTab] = useState<Tab>('STAT');
   const [expandedCompanion, setExpandedCompanion] = useState<string | null>(null);
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   const dateStr = new Date(time).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
     month: 'short',
@@ -423,6 +426,36 @@ const StatBar: React.FC<StatBarProps> = ({
                 {language === 'en' ? 'SAVE' : '保存'}
               </button>
             )}
+            <div className="relative">
+              <button 
+                onClick={() => setShowExportMenu(prev => !prev)}
+                className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+              >
+                {language === 'en' ? 'EXPORT' : '导出'}
+              </button>
+              {showExportMenu && (
+                <div className="absolute right-0 mt-1 w-24 border border-[#1aff1a]/40 bg-black/95 z-10">
+                  <button
+                    onClick={() => { onExport('log-md'); setShowExportMenu(false); }}
+                    className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                  >
+                    LOG MD
+                  </button>
+                  <button
+                    onClick={() => { onExport('log-pdf'); setShowExportMenu(false); }}
+                    className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                  >
+                    LOG PDF
+                  </button>
+                  <button
+                    onClick={() => { onExport('save-json'); setShowExportMenu(false); }}
+                    className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                  >
+                    SAVE JSON
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
         

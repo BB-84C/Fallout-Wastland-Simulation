@@ -23,6 +23,7 @@ const TIER_SETTINGS: Record<UserTier, {
 
 export const DEFAULT_SETTINGS: GameSettings = {
   highQualityImages: true,
+  imagesEnabled: true,
   imageEveryTurns: TIER_SETTINGS.normal.defaultImageTurns,
   maxHistoryTurns: TIER_SETTINGS.normal.historyLimit,
   useProxy: false,

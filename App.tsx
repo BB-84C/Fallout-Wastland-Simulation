@@ -340,6 +340,100 @@ const getCreationPhaseText = (phase: 'request' | 'image' | 'finalize', isZh: boo
   }
 };
 
+const formatExportLabel = (sender: HistoryEntry['sender'], language: Language) => {
+  if (sender === 'player') {
+    return language === 'zh' ? '用户记录' : 'USER LOG';
+  }
+  return language === 'zh' ? '系统叙事' : 'SYSTEM NARRATION';
+};
+
+const buildExportMarkdown = (history: HistoryEntry[], language: Language) => {
+  const blocks: string[] = [];
+  history.forEach(entry => {
+    blocks.push(`## ${formatExportLabel(entry.sender, language)}`);
+    blocks.push(entry.text);
+    if (entry.imageUrl) {
+      blocks.push('');
+      blocks.push(`![Scene](${entry.imageUrl})`);
+    }
+    blocks.push('');
+  });
+  return blocks.join('\n').trim() + '\n';
+};
+
+const buildSaveExportPayload = (state: GameState, username?: string | null) => ({
+  version: 1,
+  username: username ?? null,
+  savedAt: new Date().toISOString(),
+  gameState: state
+});
+
+const extractImportedSave = (data: any): { gameState: GameState; username?: string | null } | null => {
+  if (!data || typeof data !== 'object') return null;
+  if (data.gameState && typeof data.gameState === 'object') {
+    return { gameState: data.gameState as GameState, username: typeof data.username === 'string' ? data.username : null };
+  }
+  if (Array.isArray((data as GameState).history) && (data as GameState).settings) {
+    return { gameState: data as GameState, username: typeof (data as any).username === 'string' ? (data as any).username : null };
+  }
+  return null;
+};
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const escapeHtmlAttr = (value: string) => escapeHtml(value);
+
+const buildExportHtml = (history: HistoryEntry[], language: Language) => {
+  const entries = history.map(entry => {
+    const label = formatExportLabel(entry.sender, language);
+    const text = escapeHtml(entry.text).replace(/\n/g, '<br />');
+    const image = entry.imageUrl
+      ? `<div class="image"><img src="${escapeHtmlAttr(entry.imageUrl)}" alt="Scene" /></div>`
+      : '';
+    return `
+      <section class="entry">
+        <div class="label">${label}</div>
+        <div class="text">${text}</div>
+        ${image}
+      </section>
+    `;
+  }).join('\n');
+  return `<!doctype html>
+<html lang="${language}">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fallout Terminal Log</title>
+    <style>
+      body { font-family: "Segoe UI", Arial, sans-serif; color: #111; margin: 24px; }
+      .entry { margin-bottom: 24px; }
+      .label { font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: #1a7f37; margin-bottom: 6px; }
+      .text { font-size: 14px; line-height: 1.6; white-space: normal; }
+      .image { margin-top: 10px; }
+      .image img { max-width: 100%; height: auto; display: block; }
+    </style>
+  </head>
+  <body>
+    ${entries}
+  </body>
+</html>`;
+};
+
+const downloadTextFile = (content: string, filename: string, mimeType: string) => {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
 const formatCreationProgress = (message: string, isZh: boolean, showDebug: boolean) => {
   if (message.startsWith('Requesting character profile')) {
     return getCreationPhaseText('request', isZh);
@@ -592,6 +686,7 @@ const App: React.FC = () => {
     : (gameState.settings.modelProvider || 'gemini');
   const selectedTextModel = gameState.settings.textModel?.trim() || undefined;
   const selectedImageModel = gameState.settings.imageModel?.trim() || undefined;
+  const imagesEnabled = gameState.settings.imagesEnabled !== false;
   const effectiveTextModel = selectedTextModel;
   const effectiveImageModel = selectedImageModel;
   const canManualSave = isAdmin || normalKeyUnlocked;
@@ -786,6 +881,86 @@ const App: React.FC = () => {
       }
     }
   }, [gameState, currentUser, canManualSave]);
+
+  const exportData = (format: 'log-md' | 'log-pdf' | 'save-json') => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    if (format === 'save-json') {
+      const payload = buildSaveExportPayload(gameState, currentUser?.username);
+      const content = JSON.stringify(payload, null, 2);
+      downloadTextFile(content, `fallout-save-${timestamp}.json`, 'application/json;charset=utf-8');
+      return;
+    }
+    if (!gameState.history.length) {
+      alert(isZh ? '暂无终端记录可导出。' : 'No terminal history to export.');
+      return;
+    }
+    if (format === 'log-md') {
+      const content = buildExportMarkdown(gameState.history, gameState.language);
+      downloadTextFile(content, `fallout-terminal-${timestamp}.md`, 'text/markdown;charset=utf-8');
+      return;
+    }
+    const html = buildExportHtml(gameState.history, gameState.language);
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) {
+      alert(isZh ? '无法打开导出窗口，请检查浏览器拦截。' : 'Unable to open export window. Please check popup settings.');
+      return;
+    }
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    const triggerPrint = () => {
+      printWindow.focus();
+      printWindow.print();
+    };
+    printWindow.addEventListener('load', () => {
+      setTimeout(triggerPrint, 200);
+    });
+    printWindow.onafterprint = () => {
+      printWindow.close();
+    };
+  };
+
+  const readFileText = (file: File) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('File read failed.'));
+    reader.readAsText(file);
+  });
+
+  const importSave = (targetUsername?: string, onSuccess?: () => void) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        const raw = await readFileText(file);
+        const parsed = JSON.parse(raw);
+        const extracted = extractImportedSave(parsed);
+        if (!extracted) {
+          alert(isZh ? '导入失败：文件格式不正确。' : 'Import failed: invalid save format.');
+          return;
+        }
+        const fallbackPrompt = isZh ? '请输入存档用户名：' : 'Enter username for this save:';
+        const username = (targetUsername || extracted.username || prompt(fallbackPrompt) || '').trim();
+        if (!username) {
+          alert(isZh ? '导入失败：需要用户名。' : 'Import failed: username required.');
+          return;
+        }
+        localStorage.setItem(getSaveKey(username), JSON.stringify(extracted.gameState));
+        if (currentUser && currentUser.username === username) {
+          setHasSave(true);
+        }
+        alert(isZh ? '存档导入成功。' : 'Save imported.');
+        onSuccess?.();
+      } catch (err) {
+        console.error(err);
+        alert(isZh ? '导入失败：无法读取存档。' : 'Import failed: unable to read save.');
+      }
+    };
+    input.click();
+  };
 
   const loadGame = useCallback(() => {
     if (!currentUser || isGuest || (isNormal && !isModelConfigured)) return;
@@ -1074,23 +1249,27 @@ const App: React.FC = () => {
         ifCompanion: true
       }));
 
-      setCreationPhase(getCreationPhaseText('image', isZh));
+      const allowImages = imagesEnabled;
+      const allowAvatars = imagesEnabled && !isGuest;
+      if (allowImages) {
+        setCreationPhase(getCreationPhaseText('image', isZh));
+      }
       
       const introMsg = gameState.language === 'en' 
         ? `Simulation Initialized. Locating profile... Success. Welcome, ${player.name}.`
         : `模拟初始化。正在定位档案... 成功。欢迎，${player.name}。`;
 
       const startNarration = `${introMsg} ${player.lore}`;
-      const avatarPromise = !isGuest && seededCompanions.length > 0
+      const avatarPromise = allowAvatars && seededCompanions.length > 0
         ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: activeProvider })))
         : Promise.resolve([]);
-      const [imgData, avatarResults] = await Promise.all([
-        generateSceneImage(
+      const imagePromise = allowImages
+        ? generateSceneImage(
           `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
           { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, textModel: effectiveTextModel, provider: activeProvider }
-        ),
-        avatarPromise
-      ]);
+        )
+        : Promise.resolve(undefined);
+      const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
 
       let initialKnownNpcs = seededCompanions;
       if (avatarResults.length > 0) {
@@ -1203,7 +1382,7 @@ const App: React.FC = () => {
       : (isGuest ? guestFixedImageTurns : null);
     const imageEveryTurns = lockedImageTurns ?? Math.max(minImageTurns, Math.floor(gameState.settings.imageEveryTurns || minImageTurns));
     const nextTurn = gameState.turnCount + 1;
-    const shouldGenerateImage = !isGuest && nextTurn % imageEveryTurns === 0;
+    const shouldGenerateImage = imagesEnabled && !isGuest && nextTurn % imageEveryTurns === 0;
     const nextAp = apUnlimited ? currentAp : Math.max(0, currentAp - 1);
     const nextApLastUpdated = apRecovery
       ? (currentAp >= maxAp ? now : currentApLastUpdated)
@@ -1281,7 +1460,7 @@ const App: React.FC = () => {
       }
       nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, response.companionUpdates);
 
-      const companionsNeedingAvatar = isGuest
+      const companionsNeedingAvatar = !imagesEnabled || isGuest
         ? []
         : nextKnownNpcs.filter(npc => npc.ifCompanion && !npc.avatarUrl);
 
@@ -1360,11 +1539,22 @@ const App: React.FC = () => {
   };
 
   const toggleHighQualityImages = () => {
+    if (!imagesEnabled) return;
     setGameState(prev => ({
       ...prev,
       settings: {
         ...prev.settings,
         highQualityImages: !prev.settings.highQualityImages
+      }
+    }));
+  };
+
+  const toggleImageGeneration = () => {
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        imagesEnabled: prev.settings.imagesEnabled === false
       }
     }));
   };
@@ -1443,6 +1633,7 @@ const App: React.FC = () => {
   };
 
   const updateImageFrequency = (value: string) => {
+    if (!imagesEnabled) return;
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
     if (!canAdjustImageFrequency) return;
@@ -1545,6 +1736,31 @@ const App: React.FC = () => {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-sm font-bold uppercase">
+                  {isZh ? '图像生成' : 'Image generation'}
+                </div>
+                <div className="text-xs opacity-70 mt-1">
+                  {isZh
+                    ? '关闭后不会生成场景图像或同伴头像。'
+                    : 'When off, no scene images or companion avatars will be generated.'}
+                </div>
+              </div>
+              <button
+                onClick={toggleImageGeneration}
+                className={`text-xs px-3 py-1 border font-bold uppercase transition-colors ${
+                  imagesEnabled
+                    ? 'bg-[#1aff1a] text-black border-[#1aff1a]'
+                    : 'border-[#1aff1a]/50 text-[#1aff1a] hover:bg-[#1aff1a]/20'
+                }`}
+              >
+                {imagesEnabled ? 'ON' : 'OFF'}
+              </button>
+            </div>
+          </div>
+
+          <div className={`border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5 ${!imagesEnabled ? 'opacity-50' : ''}`}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-bold uppercase">
                   {isZh ? '高质量剧情一致图像生成' : 'High-quality lore-accurate image generation'}
                 </div>
                 <div className="text-xs opacity-70 mt-1">
@@ -1555,33 +1771,38 @@ const App: React.FC = () => {
               </div>
               <button
                 onClick={toggleHighQualityImages}
+                disabled={!imagesEnabled}
                 className={`text-xs px-3 py-1 border font-bold uppercase transition-colors ${
                   gameState.settings.highQualityImages
                     ? 'bg-[#1aff1a] text-black border-[#1aff1a]'
                     : 'border-[#1aff1a]/50 text-[#1aff1a] hover:bg-[#1aff1a]/20'
-                }`}
+                } ${!imagesEnabled ? 'opacity-40 cursor-not-allowed' : ''}`}
               >
                 {gameState.settings.highQualityImages ? 'ON' : 'OFF'}
               </button>
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
+          <div className={`border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5 ${!imagesEnabled ? 'opacity-50' : ''}`}>
             <div className="text-sm font-bold uppercase">
               {isZh ? '图像频率' : 'Image frequency'}
             </div>
             <div className="text-xs opacity-70 mt-1">
               {isZh
-                ? (isGuest
-                  ? '临时用户不生成回合图像，仅在创建角色时生成一张。'
-                  : (isNormal && !hasAuthKey
-                    ? `设置模型与 API 后可调整图像频率；当前固定为 ${normalDefaultImageTurns}。`
-                    : '每 N 次交互生成一张图像，可自由调整。'))
-                : (isGuest
-                  ? 'Temporary users do not generate turn images; only the creation image is shown.'
-                  : (isNormal && !hasAuthKey
-                    ? `Configure provider/API to adjust image frequency; currently fixed at ${normalDefaultImageTurns}.`
-                    : 'Generate images every N turns; adjustable.'))}
+                ? (!imagesEnabled
+                  ? '图像生成已关闭。'
+                  : (isGuest
+                    ? '临时用户不生成回合图像，仅在创建角色时生成一张。'
+                    : (isNormal && !hasAuthKey
+                      ? `设置模型与 API 后可调整图像频率；当前固定为 ${normalDefaultImageTurns}。`
+                      : '每 N 次交互生成一张图像，可自由调整。')))
+                : (!imagesEnabled
+                  ? 'Image generation is disabled.'
+                  : (isGuest
+                    ? 'Temporary users do not generate turn images; only the creation image is shown.'
+                    : (isNormal && !hasAuthKey
+                      ? `Configure provider/API to adjust image frequency; currently fixed at ${normalDefaultImageTurns}.`
+                      : 'Generate images every N turns; adjustable.')))}
             </div>
             <div className="mt-3 flex items-center space-x-3">
               <input
@@ -1589,7 +1810,7 @@ const App: React.FC = () => {
                 min={minImageTurns}
                 value={gameState.settings.imageEveryTurns}
                 onChange={(e) => updateImageFrequency(e.target.value)}
-                disabled={!canAdjustImageFrequency}
+                disabled={!canAdjustImageFrequency || !imagesEnabled}
                 className="w-20 bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-sm focus:outline-none disabled:opacity-40"
               />
               <span className="text-[10px] uppercase opacity-60">
@@ -1600,9 +1821,11 @@ const App: React.FC = () => {
               <div className="text-[10px] opacity-50 mt-2 uppercase">
                 {isGuest
                   ? (isZh ? '临时用户不生成回合图像。' : 'Temporary users do not generate turn images.')
-                  : (isNormal && !hasAuthKey
-                    ? (isZh ? `完成模型配置后可调整，当前固定为 ${normalDefaultImageTurns}。` : `Adjustable after setup; currently fixed at ${normalDefaultImageTurns}.`)
-                    : (isZh ? '普通用户已完成模型配置。' : 'Normal user setup complete.'))}
+                  : (!imagesEnabled
+                    ? (isZh ? '图像生成已关闭。' : 'Image generation is disabled.')
+                    : (isNormal && !hasAuthKey
+                      ? (isZh ? `完成模型配置后可调整，当前固定为 ${normalDefaultImageTurns}。` : `Adjustable after setup; currently fixed at ${normalDefaultImageTurns}.`)
+                      : (isZh ? '普通用户已完成模型配置。' : 'Normal user setup complete.')))}
               </div>
             )}
           </div>
@@ -2004,6 +2227,12 @@ const App: React.FC = () => {
             >
               {isZh ? '打赏' : 'Tip/Donate'}
             </button>
+            <button
+              onClick={() => importSave()}
+              className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+            >
+              {isZh ? '导入存档' : 'Import Save'}
+            </button>
           </div>
 
           {!usersLoaded && (
@@ -2138,6 +2367,13 @@ const App: React.FC = () => {
             disabled={gameState.isThinking}
             placeholder={gameState.language === 'en' ? "I am a vault dweller who..." : "我是一名来自避难所的..."}
           />
+          <button
+            onClick={() => importSave(currentUser?.username, () => setView('start'))}
+            disabled={gameState.isThinking}
+            className="mt-3 w-full text-sm border border-[#1aff1a]/50 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase disabled:opacity-40"
+          >
+            {isZh ? '导入存档' : 'Import Save'}
+          </button>
           <button 
             onClick={handleCharacterCreation}
             disabled={gameState.isThinking || !charDescription.trim()}
@@ -2254,6 +2490,7 @@ const App: React.FC = () => {
             apRecovery={apRecovery}
             onLanguageToggle={toggleLanguage}
             onSave={saveGame}
+            onExport={exportData}
             showSave={canManualSave}
             onClose={() => setIsSidebarOpen(false)}
           />
