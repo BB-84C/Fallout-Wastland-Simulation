@@ -74,6 +74,7 @@ const playerCreationSchema = {
 
 const DEFAULT_TEXT_MODEL = 'gemini-2.5-flash-lite';
 const DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image';
+const HARDCODED_GUEST_API_KEY = 'AIzaSyB71sniT0q7RrXq57S8899tfhSEq_u8jr4';
 
 const questSchema = {
   type: Type.ARRAY,
@@ -93,6 +94,9 @@ const questSchema = {
 const resolveApiKey = (overrideKey?: string) => {
   if (overrideKey) {
     return { key: overrideKey, source: 'user' };
+  }
+  if (HARDCODED_GUEST_API_KEY) {
+    return { key: HARDCODED_GUEST_API_KEY, source: 'hardcoded' };
   }
   const viteKey = (import.meta as any)?.env?.VITE_API_KEY;
   const envKey = typeof process !== 'undefined' ? (process as any)?.env?.API_KEY : undefined;

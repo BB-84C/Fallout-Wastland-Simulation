@@ -1,11 +1,14 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider } from './types';
-import { FALLOUT_ERA_STARTS } from './constants';
+import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
 import StatBar from './components/StatBar';
 import { createPlayerCharacter, getNarrativeResponse, generateSceneImage, generateCompanionAvatar } from './services/modelService';
+import wechatQr from './assets/wech.png';
+import alipayQr from './assets/zhif.png';
+import venmoQr from './assets/venm.png';
 import {
   NORMAL_MAX_AP,
   GUEST_MAX_AP,
@@ -24,6 +27,8 @@ const USERS_DB_KEY = 'fallout_users_db';
 const USER_API_KEY_PREFIX = 'fallout_user_api_key';
 const USER_ONBOARD_PREFIX = 'fallout_user_onboarded';
 const RESERVED_ADMIN_USERNAME = 'admin';
+const GUEST_COOLDOWN_KEY = 'fallout_guest_cooldown_until';
+const GUEST_COOLDOWN_MS = 30 * 60 * 1000;
 const MODEL_PROVIDER_OPTIONS: { value: ModelProvider; label: string }[] = [
   { value: 'openai', label: 'OpenAI' },
   { value: 'gemini', label: 'Gemini' },
@@ -88,6 +93,25 @@ const isUserOnboarded = (username: string) => {
 const markUserOnboarded = (username: string) => {
   try {
     localStorage.setItem(getUserOnboardKey(username), '1');
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+const getGuestCooldownRemainingMs = () => {
+  try {
+    const raw = localStorage.getItem(GUEST_COOLDOWN_KEY);
+    const until = raw ? Number(raw) : 0;
+    if (!Number.isFinite(until)) return 0;
+    return Math.max(0, until - Date.now());
+  } catch {
+    return 0;
+  }
+};
+
+const setGuestCooldownUntil = (until: number) => {
+  try {
+    localStorage.setItem(GUEST_COOLDOWN_KEY, String(until));
   } catch {
     // Ignore storage errors.
   }
@@ -187,7 +211,12 @@ const formatRecoveryInterval = (minutes: number, isZh: boolean) => {
   return isZh ? `${minutes} 分钟` : `${minutes} minute${minutes === 1 ? '' : 's'}`;
 };
 
-const createInitialGameState = (settings: GameSettings, ap: number, apLastUpdated: number): GameState => ({
+const createInitialGameState = (
+  settings: GameSettings,
+  ap: number,
+  apLastUpdated: number,
+  language: Language = 'en'
+): GameState => ({
   player: null,
   currentYear: 2281,
   location: 'Mojave Wasteland',
@@ -196,7 +225,7 @@ const createInitialGameState = (settings: GameSettings, ap: number, apLastUpdate
   knownNpcs: [],
   quests: [],
   isThinking: false,
-  language: 'en',
+  language,
   settings,
   ap,
   apLastUpdated,
@@ -268,18 +297,37 @@ const mergeUsersDb = (
   return merged;
 };
 
-const mergeNpc = (existing: Actor, incoming: Actor): Actor => ({
-  ...existing,
-  ...incoming,
-  ifCompanion: incoming.ifCompanion ?? existing.ifCompanion,
-  avatarUrl: existing.avatarUrl ?? incoming.avatarUrl
+const normalizeActor = (actor: Actor): Actor => ({
+  ...actor,
+  special: actor.special ?? DEFAULT_SPECIAL,
+  skills: actor.skills ?? {},
+  perks: Array.isArray(actor.perks) ? actor.perks : [],
+  inventory: Array.isArray(actor.inventory) ? actor.inventory : []
 });
+
+const mergeActor = (base: Actor, update: Actor): Actor => ({
+  ...base,
+  ...update,
+  special: update.special ?? base.special,
+  skills: update.skills ?? base.skills,
+  perks: Array.isArray(update.perks) ? update.perks : base.perks,
+  inventory: Array.isArray(update.inventory) ? update.inventory : base.inventory
+});
+
+const mergeNpc = (existing: Actor, incoming: Actor): Actor => {
+  const merged = mergeActor(existing, incoming);
+  return {
+    ...merged,
+    ifCompanion: incoming.ifCompanion ?? existing.ifCompanion,
+    avatarUrl: existing.avatarUrl ?? incoming.avatarUrl
+  };
+};
 
 const upsertNpc = (list: Actor[], npc: Actor): Actor[] => {
   const index = list.findIndex(entry => entry.name === npc.name);
   const nextNpc = { ...npc, ifCompanion: npc.ifCompanion ?? false };
   if (index === -1) {
-    return [...list, nextNpc];
+    return [...list, normalizeActor(nextNpc)];
   }
   const next = [...list];
   next[index] = mergeNpc(next[index], nextNpc);
@@ -309,7 +357,7 @@ type UserSession = {
 const App: React.FC = () => {
   const [view, setView] = useState<'auth' | 'start' | 'creation' | 'playing'>('auth');
   const [gameState, setGameState] = useState<GameState>(
-    createInitialGameState(DEFAULT_SETTINGS, NORMAL_MAX_AP, Date.now())
+    createInitialGameState(DEFAULT_SETTINGS, NORMAL_MAX_AP, Date.now(), 'en')
   );
   const [userInput, setUserInput] = useState('');
   const [charDescription, setCharDescription] = useState('');
@@ -318,6 +366,7 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isTipOpen, setIsTipOpen] = useState(false);
   const [usersDb, setUsersDb] = useState<Record<string, UserRecord>>({});
   const [usersLoaded, setUsersLoaded] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
@@ -550,6 +599,10 @@ const App: React.FC = () => {
     const saved = localStorage.getItem(getSaveKey(currentUser.username));
     if (saved) {
       const parsed = JSON.parse(saved);
+      const parsedPlayer = parsed?.player ? normalizeActor(parsed.player) : null;
+      const parsedKnownNpcs = Array.isArray(parsed?.knownNpcs)
+        ? parsed.knownNpcs.map((npc: Actor) => normalizeActor(npc))
+        : [];
       const now = Date.now();
       const hasKey = currentUser.tier === 'normal' && !!currentUser.apiKey;
       const settings = normalizeSessionSettings(
@@ -569,6 +622,8 @@ const App: React.FC = () => {
       setGameState(prev => ({
         ...prev,
         ...parsed,
+        player: parsedPlayer,
+        knownNpcs: parsedKnownNpcs,
         settings,
         ap: clampedAp,
         apLastUpdated,
@@ -580,7 +635,7 @@ const App: React.FC = () => {
 
   const applySession = (session: UserSession) => {
     setCurrentUser(session);
-    setGameState(createInitialGameState(session.settings, session.ap, session.apLastUpdated));
+    setGameState(createInitialGameState(session.settings, session.ap, session.apLastUpdated, gameState.language));
     setHasSave(false);
     lastHistoryLength.current = 0;
     setShowGuestNotice(false);
@@ -687,6 +742,14 @@ const App: React.FC = () => {
   };
 
   const handleSkipLogin = () => {
+    const remainingMs = getGuestCooldownRemainingMs();
+    if (remainingMs > 0) {
+      const minutesLeft = Math.ceil(remainingMs / 60000);
+      setAuthError(isZh
+        ? `临时用户冷却中，请 ${minutesLeft} 分钟后再试。`
+        : `Guest cooldown active. Try again in ${minutesLeft} minute(s).`);
+      return;
+    }
     const now = Date.now();
     applySession({
       username: 'temporary',
@@ -697,6 +760,7 @@ const App: React.FC = () => {
       apiKey: undefined,
       isTemporary: true
     });
+    setGuestCooldownUntil(now + GUEST_COOLDOWN_MS);
     setView('start');
     setShowGuestNotice(true);
   };
@@ -798,7 +862,8 @@ const App: React.FC = () => {
       );
 
       const { companions: initialCompanions, ...player } = creation as PlayerCreationResult;
-      const seededCompanions = (initialCompanions ?? []).map(companion => ({
+      const normalizedPlayer = normalizeActor(player as Actor);
+      const seededCompanions = (initialCompanions ?? []).map(companion => normalizeActor({
         ...companion,
         ifCompanion: true
       }));
@@ -843,7 +908,7 @@ const App: React.FC = () => {
       
       setGameState(prev => ({
         ...prev,
-        player,
+        player: normalizedPlayer,
         knownNpcs: initialKnownNpcs,
         isThinking: false,
         history: [{ 
@@ -1035,6 +1100,7 @@ const App: React.FC = () => {
           });
         }
       }
+      nextKnownNpcs = nextKnownNpcs.map(npc => normalizeActor(npc));
 
       setGameState(prev => ({
         ...prev,
@@ -1044,7 +1110,9 @@ const App: React.FC = () => {
         knownNpcs: nextKnownNpcs,
         ap: nextAp,
         apLastUpdated: nextApLastUpdated,
-        player: response.updatedPlayer || prev.player, 
+        player: response.updatedPlayer
+          ? (prev.player ? mergeActor(prev.player, response.updatedPlayer) : normalizeActor(response.updatedPlayer))
+          : prev.player, 
         history: [...updatedHistory, { 
           sender: 'narrator', 
           text: `${response.storyText}${imageLog}`, 
@@ -1161,8 +1229,8 @@ const App: React.FC = () => {
   const displayLocation = localizeLocation(gameState.location, gameState.language);
   const displayYear = formatYear(gameState.currentYear, gameState.language);
   const usersEditorModal = isUsersEditorOpen && (
-    <div className="fixed top-0 left-0 w-full h-full z-[3100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-      <div className="max-w-3xl w-full pip-boy-border p-6 md:p-8 bg-black">
+    <div className="fixed top-0 left-0 w-full h-full z-[3100] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-3xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-2xl font-bold uppercase">USERS.JSON</h3>
           <button
@@ -1209,8 +1277,8 @@ const App: React.FC = () => {
     </div>
   );
   const settingsModal = isSettingsOpen && (
-    <div className="fixed top-0 left-0 w-full h-full z-[3000] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-      <div className="max-w-xl w-full pip-boy-border p-6 md:p-8 bg-black">
+    <div className="fixed top-0 left-0 w-full h-full z-[3000] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-2xl font-bold uppercase">{isZh ? '设置' : 'Settings'}</h3>
           <button 
@@ -1220,7 +1288,14 @@ const App: React.FC = () => {
             {isZh ? '关闭' : 'Close'}
           </button>
         </div>
-        <div className="space-y-6">
+          <div className="space-y-6">
+            {isNormal && (
+              <div className="text-xs border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5">
+                {isZh
+                  ? 'API Key 仅保存在本地浏览器，不会上传到服务器。'
+                  : 'API keys are stored only in this browser and never uploaded to the server.'}
+              </div>
+            )}
           <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -1401,8 +1476,8 @@ const App: React.FC = () => {
     </div>
   );
   const helpModal = isHelpOpen && (
-    <div className="fixed top-0 left-0 w-full h-full z-[3000] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-      <div className="max-w-2xl w-full pip-boy-border p-6 md:p-8 bg-black">
+    <div className="fixed top-0 left-0 w-full h-full z-[3000] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-2xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-2xl font-bold uppercase">{isZh ? '帮助' : 'HELP'}</h3>
           <button 
@@ -1472,9 +1547,64 @@ const App: React.FC = () => {
       </div>
     </div>
   );
+  const tipModal = isTipOpen && (
+    <div className="fixed top-0 left-0 w-full h-full z-[3000] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-10 bg-black">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-2xl font-bold uppercase">{isZh ? '打赏' : 'Tip / Donate'}</h3>
+          <button 
+            onClick={() => setIsTipOpen(false)}
+            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+          >
+            {isZh ? '关闭' : 'Close'}
+          </button>
+        </div>
+        <div className="text-sm opacity-80 mb-4">
+          {isZh
+            ? '感谢您游玩辐射：RPG模拟，本游戏将尽可能地保持开放和免费，于此同时，如果您对游玩体验感到满意，并决定赞助我本人，本人将感激不尽。支持与打赏将帮助支付访客模式的 API 与服务器成本。使用美元（USD）最方便，因为成本按美元计费。谢谢你的支持！如果你有需要联系我，请加qq群757944721'
+            : 'Thanks for playing Fallout: RPG Simulation. The game will stay open and free as much as possible. If you enjoy the experience and decide to support me, I would be truly grateful. Your support helps cover guest API usage and server costs. USD is most convenient since costs are billed in USD. Thank you! If you want to contact me, please join QQ group 757944721. Or email me at hustphysicscheng@gmial.com'}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 text-center">
+            <img
+              src={wechatQr}
+              alt="WeChat QR"
+              className="w-full h-auto"
+              style={{ filter: 'brightness(0.85) contrast(1.2) sepia(1) hue-rotate(70deg) saturate(2)' }}
+            />
+            <div className="text-xs mt-2">
+              {isZh ? '微信 (人民币)' : 'WeChat (CNY)'}
+            </div>
+          </div>
+          <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 text-center">
+            <img
+              src={alipayQr}
+              alt="Alipay QR"
+              className="w-full h-auto"
+              style={{ filter: 'brightness(0.85) contrast(1.2) sepia(1) hue-rotate(70deg) saturate(2)' }}
+            />
+            <div className="text-xs mt-2">
+              {isZh ? '支付宝 (人民币)' : 'Alipay (CNY)'}
+            </div>
+          </div>
+          <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 text-center">
+            <img
+              src={venmoQr}
+              alt="Venmo QR"
+              className="w-full h-auto"
+              style={{ filter: 'brightness(0.85) contrast(1.2) sepia(1) hue-rotate(70deg) saturate(2)' }}
+            />
+            <div className="text-xs mt-2">
+              {isZh ? 'Venmo (美元)' : 'Venmo (USD)'}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
   const guestNotice = showGuestNotice && (
-    <div className="fixed top-0 left-0 w-full h-full z-[2500] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-      <div className="max-w-md w-full pip-boy-border p-6 bg-black">
+    <div className="fixed top-0 left-0 w-full h-full z-[2500] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-md w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 bg-black">
         <h3 className="text-xl font-bold uppercase mb-3">
           {isZh ? '临时用户提示' : 'Temporary User Notice'}
         </h3>
@@ -1484,6 +1614,7 @@ const App: React.FC = () => {
             ? `限制：仅 gemini-2.5-flash-lite / gemini-2.5-flash-image，AP 上限 ${guestMaxAp}，不恢复，不保存，回合不生成图像（仅创建时有）。`
             : `Limits: gemini-2.5-flash-lite / gemini-2.5-flash-image only, AP max ${guestMaxAp}, no recovery, no saves, no turn images (creation image only).`}
           </div>
+          <div>{isZh ? '临时用户开始游玩后需等待 30 分钟才能再次进入。' : 'Guest mode has a 30-minute cooldown after starting.'}</div>
         </div>
         <button
           onClick={() => setShowGuestNotice(false)}
@@ -1499,6 +1630,7 @@ const App: React.FC = () => {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center">
         {usersEditorModal}
+        {tipModal}
         <div className="max-w-xl w-full space-y-6 pip-boy-border p-6 md:p-10 bg-black/70 shadow-2xl relative">
           <div className="absolute top-4 right-4 flex space-x-2">
             <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
@@ -1530,12 +1662,6 @@ const App: React.FC = () => {
             >
               {isZh ? '注册' : 'Register'}
             </button>
-          </div>
-
-          <div className="text-[11px] border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 text-left">
-            {isZh
-              ? '需要注册请联系：hustphysicscheng@gmail.com 或加入 QQ 群 757944721。'
-              : 'To register, contact: hustphysicscheng@gmail.com or join QQ group 757944721.'}
           </div>
 
           <div className="space-y-3 text-left">
@@ -1581,6 +1707,12 @@ const App: React.FC = () => {
               className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
             >
               {isZh ? '先试试？跳过登录' : 'Want to try first? Skip login'}
+            </button>
+            <button
+              onClick={() => setIsTipOpen(true)}
+              className="w-full text-xs border border-[#1aff1a]/50 py-2 hover:bg-[#1aff1a] hover:text-black transition-all uppercase"
+            >
+              {isZh ? '打赏' : 'Tip/Donate'}
             </button>
           </div>
 
@@ -1671,8 +1803,8 @@ const App: React.FC = () => {
         {guestNotice}
         {usersEditorModal}
         {keyAlert && (
-          <div className="fixed top-0 left-0 w-full h-full z-[2000] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-            <div className="max-w-md w-full pip-boy-border p-8 bg-black">
+          <div className="fixed top-0 left-0 w-full h-full z-[2000] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+            <div className="max-w-md w-full max-h-[90vh] overflow-y-auto pip-boy-border p-8 bg-black">
               <h3 className="text-2xl font-bold mb-4">API KEY REQUIRED</h3>
               <p className="mb-6 opacity-80 leading-relaxed">
                 For high-quality image generation and real-time visual referencing, you must select a paid API key.
