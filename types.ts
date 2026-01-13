@@ -72,6 +72,7 @@ export interface Actor {
 
 export interface PlayerCreationResult extends Actor {
   companions?: Actor[];
+  tokenUsage?: TokenUsage;
 }
 
 export type Language = 'en' | 'zh';
@@ -131,6 +132,12 @@ export interface HistoryEntry {
   groundingSources?: GroundingSource[];
 }
 
+export interface TokenUsage {
+  sent: number;
+  received: number;
+  total: number;
+}
+
 export interface GameState {
   player: Actor | null;
   currentYear: number;
@@ -145,12 +152,14 @@ export interface GameState {
   ap: number;
   apLastUpdated: number;
   turnCount: number;
+  tokenUsage: TokenUsage;
 }
 
 export interface NarratorResponse {
   storyText: string;
   ruleViolation: string | null;
   timePassedMinutes: number;
+  tokenUsage?: TokenUsage;
   questUpdates?: Quest[];
   companionUpdates?: CompanionUpdate[];
   newNpc?: Actor;

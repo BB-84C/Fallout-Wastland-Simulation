@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { Actor, Language, Quest, SpecialAttr, Skill } from '../types';
+import { Actor, Language, Quest, SpecialAttr, Skill, TokenUsage } from '../types';
 import { localizeLocation } from '../localization';
 import type { ApRecoveryConfig } from '../tierSettings';
 
@@ -17,6 +17,7 @@ interface StatBarProps {
   apUnlimited: boolean;
   showApRecovery: boolean;
   apRecovery?: ApRecoveryConfig | null;
+  tokenUsage: TokenUsage;
   onLanguageToggle: (lang: Language) => void;
   onSave: () => void;
   onExport: (format: 'log-md' | 'log-pdf' | 'save-json') => void;
@@ -95,6 +96,7 @@ const StatBar: React.FC<StatBarProps> = ({
   apUnlimited,
   showApRecovery,
   apRecovery,
+  tokenUsage,
   onLanguageToggle,
   onSave,
   onExport,
@@ -485,6 +487,13 @@ const StatBar: React.FC<StatBarProps> = ({
       {/* Content Area */}
       <div className="flex-1 overflow-y-auto p-4 no-scrollbar">
         {renderTabContent()}
+      </div>
+
+      <div className="p-2 border-t border-[#1aff1a]/20 text-[9px] uppercase tracking-widest flex justify-between items-center bg-[#1aff1a]/5">
+        <span>{language === 'en' ? 'TOKENS' : '令牌'}</span>
+        <span className="opacity-70">
+          {(language === 'en' ? 'SEND' : '发送')} {tokenUsage.sent.toLocaleString()} · {(language === 'en' ? 'RECV' : '接收')} {tokenUsage.received.toLocaleString()} · {(language === 'en' ? 'TOTAL' : '总计')} {tokenUsage.total.toLocaleString()}
+        </span>
       </div>
 
       {/* Bottom Footer Info */}

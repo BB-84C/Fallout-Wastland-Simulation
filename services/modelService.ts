@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, ModelProvider, SpecialAttr, Skill } from "../types";
+import { Actor, NarratorResponse, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, ModelProvider, SpecialAttr, Skill, TokenUsage } from "../types";
 import {
   createPlayerCharacter as createGeminiPlayer,
   getNarrativeResponse as getGeminiNarration,
@@ -10,6 +10,39 @@ import {
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const CLAUDE_BASE_URL = "https://api.anthropic.com/v1";
 const DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
+
+const estimateTokens = (text: string) => {
+  if (!text) return 0;
+  const cjkMatches = text.match(/[\u4E00-\u9FFF\u3400-\u4DBF]/g);
+  const cjkCount = cjkMatches ? cjkMatches.length : 0;
+  const nonCjkCount = Math.max(0, text.length - cjkCount);
+  return cjkCount + Math.ceil(nonCjkCount / 4);
+};
+
+const normalizeTokenUsage = (
+  usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined,
+  inputText: string,
+  outputText: string
+): TokenUsage => {
+  const promptTokens = usage?.promptTokens ?? 0;
+  const completionTokens = usage?.completionTokens ?? 0;
+  const totalTokens = usage?.totalTokens ?? 0;
+  if (promptTokens > 0 || completionTokens > 0 || totalTokens > 0) {
+    const total = totalTokens || promptTokens + completionTokens;
+    return {
+      sent: Math.max(0, Math.floor(promptTokens)),
+      received: Math.max(0, Math.floor(completionTokens)),
+      total: Math.max(0, Math.floor(total))
+    };
+  }
+  const estimatedPrompt = estimateTokens(inputText);
+  const estimatedCompletion = estimateTokens(outputText);
+  return {
+    sent: estimatedPrompt,
+    received: estimatedCompletion,
+    total: estimatedPrompt + estimatedCompletion
+  };
+};
 
 const actorSchemaHint = `Return JSON with keys:
 name, age, gender, faction, special, skills, perks, inventory, lore, health, maxHealth, karma, caps, ifCompanion (optional), avatarUrl (optional).
@@ -363,7 +396,14 @@ const callOpenAiJson = async (apiKey: string, baseUrl: string, model: string, sy
     throw new Error(await formatHttpError(res, "OpenAI request failed"));
   }
   const data = await res.json();
-  return data?.choices?.[0]?.message?.content || "";
+  const content = data?.choices?.[0]?.message?.content || "";
+  const usage = data?.usage;
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: usage?.prompt_tokens,
+    completionTokens: usage?.completion_tokens,
+    totalTokens: usage?.total_tokens
+  }, `${system}\n${prompt}`, content);
+  return { content, tokenUsage };
 };
 
 const callClaudeJson = async (apiKey: string, baseUrl: string, model: string, system: string, prompt: string) => {
@@ -386,7 +426,13 @@ const callClaudeJson = async (apiKey: string, baseUrl: string, model: string, sy
   }
   const data = await res.json();
   const content = data?.content?.find((part: any) => part?.text)?.text;
-  return content || "";
+  const usage = data?.usage;
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: usage?.input_tokens,
+    completionTokens: usage?.output_tokens,
+    totalTokens: usage?.input_tokens && usage?.output_tokens ? usage.input_tokens + usage.output_tokens : undefined
+  }, `${system}\n${prompt}`, content || "");
+  return { content: content || "", tokenUsage };
 };
 
 const callDoubaoJson = async (apiKey: string, baseUrl: string, model: string, system: string, prompt: string) => {
@@ -410,7 +456,14 @@ const callDoubaoJson = async (apiKey: string, baseUrl: string, model: string, sy
     throw new Error(await formatHttpError(res, "Doubao request failed"));
   }
   const data = await res.json();
-  return data?.choices?.[0]?.message?.content || "";
+  const content = data?.choices?.[0]?.message?.content || "";
+  const usage = data?.usage;
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: usage?.prompt_tokens,
+    completionTokens: usage?.completion_tokens,
+    totalTokens: usage?.total_tokens
+  }, `${system}\n${prompt}`, content);
+  return { content, tokenUsage };
 };
 
 const fetchImageAsBase64 = async (url: string) => {
@@ -545,7 +598,15 @@ export async function createPlayerCharacter(
       throw new Error("No response from Vault-Tec database.");
     }
     emit(`Response received (${response.text.length} chars). Parsing JSON...`);
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: response.usageMetadata?.promptTokenCount,
+      completionTokens: response.usageMetadata?.candidatesTokenCount,
+      totalTokens: response.usageMetadata?.totalTokenCount
+    }, `${system}\n${prompt}`, response.text);
     const parsed = safeJsonParse(response.text);
+    if (parsed && typeof parsed === "object") {
+      parsed.tokenUsage = tokenUsage;
+    }
     emit("Character JSON parsed successfully.");
     return parsed;
   }
@@ -564,13 +625,17 @@ export async function createPlayerCharacter(
   const system = buildCharacterSystem(targetLang);
   const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
 
-  const raw = provider === "openai"
+  const result = provider === "openai"
     ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
 
-  return safeJsonParse(raw);
+  const parsed = safeJsonParse(result.content);
+  if (parsed && typeof parsed === "object") {
+    parsed.tokenUsage = result.tokenUsage;
+  }
+  return parsed;
 }
 
 export async function getNarrativeResponse(
@@ -646,8 +711,15 @@ export async function getNarrativeResponse(
     if (!response.text) {
       throw new Error("Connection to the Wasteland lost.");
     }
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: response.usageMetadata?.promptTokenCount,
+      completionTokens: response.usageMetadata?.candidatesTokenCount,
+      totalTokens: response.usageMetadata?.totalTokenCount
+    }, `${system}\n${prompt}`, response.text);
     const parsed = safeJsonParse(response.text);
-    return parseNarrator(parsed, userInput);
+    const result = parseNarrator(parsed, userInput);
+    result.tokenUsage = tokenUsage;
+    return result;
   }
 
   const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
@@ -664,14 +736,16 @@ export async function getNarrativeResponse(
   const system = buildNarratorSystem(targetLang, year, location);
   const prompt = buildNarratorPrompt(player, history, userInput, year, location, quests, knownNpcs);
 
-  const raw = provider === "openai"
+  const result = provider === "openai"
     ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
 
-  const parsed = safeJsonParse(raw);
-  return parseNarrator(parsed, userInput);
+  const parsed = safeJsonParse(result.content);
+  const response = parseNarrator(parsed, userInput);
+  response.tokenUsage = result.tokenUsage;
+  return response;
 }
 
 export async function generateCompanionAvatar(

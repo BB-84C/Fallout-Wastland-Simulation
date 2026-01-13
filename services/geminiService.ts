@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId } from "../types";
+import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, TokenUsage } from "../types";
 
 const actorSchema = {
   type: Type.OBJECT,
@@ -75,6 +75,39 @@ const playerCreationSchema = {
 const DEFAULT_TEXT_MODEL = 'gemini-2.5-flash-lite';
 const DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image';
 const HARDCODED_GUEST_API_KEY = 'AIzaSyB71sniT0q7RrXq57S8899tfhSEq_u8jr4';
+
+const estimateTokens = (text: string) => {
+  if (!text) return 0;
+  const cjkMatches = text.match(/[\u4E00-\u9FFF\u3400-\u4DBF]/g);
+  const cjkCount = cjkMatches ? cjkMatches.length : 0;
+  const nonCjkCount = Math.max(0, text.length - cjkCount);
+  return cjkCount + Math.ceil(nonCjkCount / 4);
+};
+
+const normalizeTokenUsage = (
+  usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined,
+  inputText: string,
+  outputText: string
+): TokenUsage => {
+  const promptTokens = usage?.promptTokens ?? 0;
+  const completionTokens = usage?.completionTokens ?? 0;
+  const totalTokens = usage?.totalTokens ?? 0;
+  if (promptTokens > 0 || completionTokens > 0 || totalTokens > 0) {
+    const total = totalTokens || promptTokens + completionTokens;
+    return {
+      sent: Math.max(0, Math.floor(promptTokens)),
+      received: Math.max(0, Math.floor(completionTokens)),
+      total: Math.max(0, Math.floor(total))
+    };
+  }
+  const estimatedPrompt = estimateTokens(inputText);
+  const estimatedCompletion = estimateTokens(outputText);
+  return {
+    sent: estimatedPrompt,
+    received: estimatedCompletion,
+    total: estimatedPrompt + estimatedCompletion
+  };
+};
 
 const questSchema = {
   type: Type.ARRAY,
@@ -259,16 +292,7 @@ export async function createPlayerCharacter(
   const emit = (message: string) => options?.onProgress?.(message);
   const ai = new GoogleGenAI({ apiKey: apiKey || '' });
   const targetLang = lang === 'zh' ? 'Chinese' : 'English';
-  
-  emit(`API key: ${source} (${describeApiKey(apiKey)})`);
-  emit(`Requesting character profile from ${selectedTextModel}...`);
-  const response = await ai.models.generateContent({
-    model: selectedTextModel,
-    contents: `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: playerCreationSchema,
-      systemInstruction: `You are the Vault-Tec Identity Reconstruction System.
+  const systemInstruction = `You are the Vault-Tec Identity Reconstruction System.
       1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
       2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
       3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
@@ -276,7 +300,18 @@ export async function createPlayerCharacter(
           5. PERK SYSTEM: Assign 1-2 starting perks.
           6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
           7. SKILLS: The skills object must include all skills with numeric values (do not omit any skill).
-          8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`
+          8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`;
+  const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
+
+  emit(`API key: ${source} (${describeApiKey(apiKey)})`);
+  emit(`Requesting character profile from ${selectedTextModel}...`);
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: playerCreationSchema,
+      systemInstruction
         },
       });
   
@@ -284,6 +319,14 @@ export async function createPlayerCharacter(
   emit(`Response received (${response.text.length} chars). Parsing JSON...`);
   try {
     const parsed = safeJsonParse(response.text);
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: response.usageMetadata?.promptTokenCount,
+      completionTokens: response.usageMetadata?.candidatesTokenCount,
+      totalTokens: response.usageMetadata?.totalTokenCount
+    }, `${systemInstruction}\n${prompt}`, response.text);
+    if (parsed && typeof parsed === 'object') {
+      parsed.tokenUsage = tokenUsage;
+    }
     emit('Character JSON parsed successfully.');
     return parsed;
   } catch (e) {
@@ -329,6 +372,26 @@ export async function getNarrativeResponse(
        - If an objective is met, update the 'status' to 'completed' in 'questUpdates'.
        - Use 'questUpdates' to signal changes to the quest log.
   `;
+  const systemInstruction = `You are the Fallout Overseer. 
+          1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
+          1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing narration. Keep the narration immersive.
+          2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
+      3. QUEST SYSTEM (CRITICAL):
+         - You are responsible for maintaining the quest log via the 'questUpdates' field.
+         - CREATE: If the player is given a task (e.g., "Find the water chip", "Kill the radroaches"), you MUST generate a new quest object in 'questUpdates' with a unique ID.
+         - UPDATE: If the player completes an objective or receives new information that changes the goal, provide the updated quest in 'questUpdates'.
+         - FINISH: When a task is done, set its status to 'completed'.
+         - Never delete quests; only update their status.
+      4. ECONOMY & TRADING: 
+         - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
+      5. PERKS: Incorporate player perks into story outcomes.
+      6. COMPANION SYSTEM:
+         - Based on the interaction history and NPC relationship, decide if any known NPC becomes a companion.
+         - If a companion status changes, add an entry in 'companionUpdates' with the NPC name and ifCompanion=true/false.
+         - Only include updates for NPCs already in Known NPCs or the newly created NPC.
+      7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
+      8. TRANSLATION: Use "Term (Original)" for unlocalized items.
+      9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`;
 
   const response = await ai.models.generateContent({
     model: selectedTextModel,
@@ -360,31 +423,21 @@ export async function getNarrativeResponse(
         },
         required: ["storyText", "timePassedMinutes", "imagePrompt"]
       },
-          systemInstruction: `You are the Fallout Overseer. 
-          1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
-          1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing narration. Keep the narration immersive.
-          2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
-      3. QUEST SYSTEM (CRITICAL):
-         - You are responsible for maintaining the quest log via the 'questUpdates' field.
-         - CREATE: If the player is given a task (e.g., "Find the water chip", "Kill the radroaches"), you MUST generate a new quest object in 'questUpdates' with a unique ID.
-         - UPDATE: If the player completes an objective or receives new information that changes the goal, provide the updated quest in 'questUpdates'.
-         - FINISH: When a task is done, set its status to 'completed'.
-         - Never delete quests; only update their status.
-      4. ECONOMY & TRADING: 
-         - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
-      5. PERKS: Incorporate player perks into story outcomes.
-      6. COMPANION SYSTEM:
-         - Based on the interaction history and NPC relationship, decide if any known NPC becomes a companion.
-         - If a companion status changes, add an entry in 'companionUpdates' with the NPC name and ifCompanion=true/false.
-         - Only include updates for NPCs already in Known NPCs or the newly created NPC.
-      7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
-      8. TRANSLATION: Use "Term (Original)" for unlocalized items.
-      9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`
+          systemInstruction
     },
   });
 
   if (!response.text) throw new Error("Connection to the Wasteland lost.");
-  return safeJsonParse(response.text);
+  const parsed = safeJsonParse(response.text);
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: response.usageMetadata?.promptTokenCount,
+    completionTokens: response.usageMetadata?.candidatesTokenCount,
+    totalTokens: response.usageMetadata?.totalTokenCount
+  }, `${systemInstruction}\n${prompt}`, response.text);
+  if (parsed && typeof parsed === 'object') {
+    parsed.tokenUsage = tokenUsage;
+  }
+  return parsed;
 }
 
 export async function generateCompanionAvatar(

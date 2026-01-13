@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage } from './types';
 import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
@@ -291,6 +291,24 @@ const normalizeSessionSettings = (settings: GameSettings, tier: UserTier, hasKey
   return lockHistoryTurnsForTier({ ...lockedImages, proxyBaseUrl: normalizedProxyBaseUrl }, tier);
 };
 
+const normalizeTokenUsage = (usage?: TokenUsage | null): TokenUsage => {
+  if (!usage) return { sent: 0, received: 0, total: 0 };
+  const sent = Number.isFinite(usage.sent) ? usage.sent : 0;
+  const received = Number.isFinite(usage.received) ? usage.received : 0;
+  const total = Number.isFinite(usage.total) ? usage.total : sent + received;
+  return { sent, received, total };
+};
+
+const mergeTokenUsage = (base: TokenUsage, delta?: TokenUsage | null): TokenUsage => {
+  if (!delta) return base;
+  const normalizedDelta = normalizeTokenUsage(delta);
+  return {
+    sent: base.sent + normalizedDelta.sent,
+    received: base.received + normalizedDelta.received,
+    total: base.total + normalizedDelta.total
+  };
+};
+
 const normalizeQuestUpdate = (update: any): Quest | null => {
   if (!update || typeof update !== 'object') return null;
   const name = typeof update.name === 'string'
@@ -495,6 +513,7 @@ const createInitialGameState = (
   ap,
   apLastUpdated,
   turnCount: 0,
+  tokenUsage: { sent: 0, received: 0, total: 0 },
 });
 
 const stripAdminUser = (db: Record<string, UserRecord>) => {
@@ -999,6 +1018,7 @@ const App: React.FC = () => {
         ap: clampedAp,
         apLastUpdated,
         turnCount: typeof parsed.turnCount === 'number' ? parsed.turnCount : 0,
+        tokenUsage: normalizeTokenUsage(parsed?.tokenUsage),
       }));
       setView('playing');
     }
@@ -1242,7 +1262,7 @@ const App: React.FC = () => {
         }
       );
 
-      const { companions: initialCompanions, ...player } = creation as PlayerCreationResult;
+      const { companions: initialCompanions, tokenUsage: creationUsage, ...player } = creation as PlayerCreationResult;
       const normalizedPlayer = normalizeActor(player as Actor);
       const seededCompanions = (initialCompanions ?? []).map(companion => normalizeActor({
         ...companion,
@@ -1296,6 +1316,7 @@ const App: React.FC = () => {
         player: normalizedPlayer,
         knownNpcs: initialKnownNpcs,
         isThinking: false,
+        tokenUsage: mergeTokenUsage(prev.tokenUsage, creationUsage),
         history: [{ 
           sender: 'narrator', 
           text: startNarration, 
@@ -1410,12 +1431,14 @@ const App: React.FC = () => {
         { tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, textModel: effectiveTextModel, provider: activeProvider }
       );
 
+      const tokenDelta = response.tokenUsage;
       if (response.ruleViolation) {
         setGameState(prev => ({
           ...prev,
           isThinking: false,
           ap: currentAp,
           apLastUpdated: currentApLastUpdated,
+          tokenUsage: mergeTokenUsage(prev.tokenUsage, tokenDelta),
           history: [...updatedHistory, { 
             sender: 'narrator', 
             text: `[RULE ERROR / 规则错误] ${response.ruleViolation}` 
@@ -1503,6 +1526,7 @@ const App: React.FC = () => {
         knownNpcs: nextKnownNpcs,
         ap: nextAp,
         apLastUpdated: nextApLastUpdated,
+        tokenUsage: mergeTokenUsage(prev.tokenUsage, tokenDelta),
         player: response.updatedPlayer
           ? (prev.player ? mergeActor(prev.player, response.updatedPlayer) : normalizeActor(response.updatedPlayer))
           : prev.player, 
@@ -2488,6 +2512,7 @@ const App: React.FC = () => {
             apUnlimited={apUnlimited}
             showApRecovery={!!apRecovery}
             apRecovery={apRecovery}
+            tokenUsage={gameState.tokenUsage}
             onLanguageToggle={toggleLanguage}
             onSave={saveGame}
             onExport={exportData}
