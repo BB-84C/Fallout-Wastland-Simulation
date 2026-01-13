@@ -2176,6 +2176,11 @@ const App: React.FC = () => {
           <h1 className="text-3xl md:text-4xl font-bold glow-text uppercase">
             {isZh ? '访问验证' : 'Access Verification'}
           </h1>
+          <div className="text-base md:text-lg font-bold text-yellow-300 uppercase tracking-wide">
+            {isZh
+              ? '如果你为访问本网站支付过费用，你被诈骗了！本网站永远免费。'
+              : 'If you paid to get this website, you got scammed! This website is always free to access.'}
+          </div>
           <p className="text-sm opacity-70">
             {isZh ? '登录或注册以保存设置与进度。' : 'Log in or register to keep settings and progress.'}
           </p>

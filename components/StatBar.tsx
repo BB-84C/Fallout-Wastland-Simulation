@@ -441,20 +441,25 @@ const StatBar: React.FC<StatBarProps> = ({
                     onClick={() => { onExport('log-md'); setShowExportMenu(false); }}
                     className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
                   >
-                    LOG MD
+                    {language === 'en' ? 'LOG MD' : '终端 MD'}
                   </button>
                   <button
                     onClick={() => { onExport('log-pdf'); setShowExportMenu(false); }}
                     className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
                   >
-                    LOG PDF
+                    {language === 'en' ? 'LOG PDF' : '终端 PDF'}
                   </button>
                   <button
                     onClick={() => { onExport('save-json'); setShowExportMenu(false); }}
                     className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
                   >
-                    SAVE JSON
+                    {language === 'en' ? 'SAVE JSON' : '存档 JSON'}
                   </button>
+                  <div className="px-2 py-1 text-[9px] opacity-60">
+                    {language === 'en'
+                      ? 'JSON export is the only way to transfer saves between browsers/devices.'
+                      : '导出 JSON 是跨浏览器/设备转移存档的唯一方式。'}
+                  </div>
                 </div>
               )}
             </div>
