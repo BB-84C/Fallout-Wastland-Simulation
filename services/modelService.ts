@@ -136,7 +136,7 @@ const questSchema = {
   }
 };
 
-const buildCharacterSystem = (targetLang: string) => `You are the Vault-Tec Identity Reconstruction System.
+const buildCharacterSystem = (targetLang: string, userSystemPrompt?: string) => `You are the Vault-Tec Identity Reconstruction System.
 1. INTERNAL PROCESSING: Always research and use the Fallout Wiki in English for lore accuracy.
 2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
 3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
@@ -145,9 +145,10 @@ const buildCharacterSystem = (targetLang: string) => `You are the Vault-Tec Iden
 6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
 7. SKILLS: The skills object must include all skills with numeric values (do not omit any skill).
 8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
+${userSystemPrompt && userSystemPrompt.trim() ? `9. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}
 ${actorSchemaHint}`;
 
-const buildNarratorSystem = (targetLang: string, year: number, location: string) => `You are the Fallout Overseer.
+const buildNarratorSystem = (targetLang: string, year: number, location: string, userSystemPrompt?: string) => `You are the Fallout Overseer.
 1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
 1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing narration. Keep the narration immersive.
 2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
@@ -166,7 +167,8 @@ const buildNarratorSystem = (targetLang: string, year: number, location: string)
    - Only include updates for NPCs already in Known NPCs or the newly created NPC.
 7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
 8. TRANSLATION: Use "Term (Original)" for unlocalized items.
-9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`;
+9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+${userSystemPrompt && userSystemPrompt.trim() ? `10. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildNarratorPrompt = (
   player: Actor,
@@ -554,7 +556,7 @@ export async function createPlayerCharacter(
   year: number,
   region: string,
   lang: Language,
-  options?: { tier?: UserTier; onProgress?: (message: string) => void; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; onProgress?: (message: string) => void; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string }
 ): Promise<PlayerCreationResult> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -564,7 +566,8 @@ export async function createPlayerCharacter(
         tier: options?.tier,
         onProgress: options?.onProgress,
         apiKey: options?.apiKey,
-        textModel: options?.textModel
+        textModel: options?.textModel,
+        userSystemPrompt: options?.userSystemPrompt
       });
     }
     const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
@@ -578,7 +581,7 @@ export async function createPlayerCharacter(
     }
     const emit = (message: string) => options?.onProgress?.(message);
     const targetLang = lang === "zh" ? "Chinese" : "English";
-    const system = buildCharacterSystem(targetLang);
+    const system = buildCharacterSystem(targetLang, options?.userSystemPrompt);
     const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
     const ai = new GoogleGenAI({
       apiKey,
@@ -622,7 +625,7 @@ export async function createPlayerCharacter(
   }
 
   const targetLang = lang === "zh" ? "Chinese" : "English";
-  const system = buildCharacterSystem(targetLang);
+  const system = buildCharacterSystem(targetLang, options?.userSystemPrompt);
   const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
 
   const result = provider === "openai"
@@ -647,7 +650,7 @@ export async function getNarrativeResponse(
   quests: Quest[],
   knownNpcs: Actor[],
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string }
 ): Promise<NarratorResponse> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -656,7 +659,8 @@ export async function getNarrativeResponse(
       return getGeminiNarration(player, history, userInput, year, location, quests, knownNpcs, lang, {
         tier: options?.tier,
         apiKey: options?.apiKey,
-        textModel: options?.textModel
+        textModel: options?.textModel,
+        userSystemPrompt: options?.userSystemPrompt
       });
     }
     const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
@@ -669,7 +673,7 @@ export async function getNarrativeResponse(
       throw new Error("Missing text model name.");
     }
     const targetLang = lang === "zh" ? "Chinese" : "English";
-    const system = buildNarratorSystem(targetLang, year, location);
+    const system = buildNarratorSystem(targetLang, year, location, options?.userSystemPrompt);
     const prompt = buildNarratorPrompt(player, history, userInput, year, location, quests, knownNpcs);
     const ai = new GoogleGenAI({
       apiKey,
@@ -733,7 +737,7 @@ export async function getNarrativeResponse(
   }
 
   const targetLang = lang === "zh" ? "Chinese" : "English";
-  const system = buildNarratorSystem(targetLang, year, location);
+  const system = buildNarratorSystem(targetLang, year, location, options?.userSystemPrompt);
   const prompt = buildNarratorPrompt(player, history, userInput, year, location, quests, knownNpcs);
 
   const result = provider === "openai"
@@ -831,11 +835,12 @@ export async function generateCompanionAvatar(
 
 export async function generateSceneImage(
   prompt: string,
-  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider; textProvider?: ModelProvider; textApiKey?: string; textProxyApiKey?: string }
 ): Promise<{ url?: string; sources?: GroundingSource[]; error?: string } | undefined> {
-  const provider = normalizeProvider(options?.provider);
+  const imageProvider = normalizeProvider(options?.provider);
+  const researchProvider = normalizeProvider(options?.textProvider || options?.provider);
   const useProxy = !!options?.useProxy;
-  if (provider === "gemini") {
+  if (imageProvider === "gemini") {
     if (options?.tier === "guest") {
       return generateGeminiScene(prompt, {
         highQuality: options?.highQuality,
@@ -849,19 +854,22 @@ export async function generateSceneImage(
     if (useProxy && !proxyBaseUrl) {
       return { error: "Missing proxy base URL." };
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const imageApiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, imageProvider);
     const imageModel = options?.imageModel || "";
     if (!imageModel) {
       return { error: "Missing image model name." };
     }
     const textModel = options?.textModel || "";
     const useHighQuality = options?.highQuality !== false;
+    const researchApiKey = useProxy
+      ? (options?.textProxyApiKey || options?.proxyApiKey)
+      : (options?.textApiKey || options?.apiKey);
     try {
       let detailedDescription = prompt;
       let groundingSources: GroundingSource[] = [];
-      if (useHighQuality && textModel) {
+      if (useHighQuality && textModel && researchProvider === "gemini" && researchApiKey) {
         const researchAi = new GoogleGenAI({
-          apiKey,
+          apiKey: researchApiKey,
           ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
         });
         try {
@@ -891,7 +899,7 @@ export async function generateSceneImage(
       }
       const finalPrompt = buildImagePrompt(detailedDescription, useHighQuality);
       const imageAi = new GoogleGenAI({
-        apiKey,
+        apiKey: imageApiKey,
         ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
       });
       const imageResponse = await imageAi.models.generateContent({
@@ -917,29 +925,65 @@ export async function generateSceneImage(
       return { error: e instanceof Error ? e.message : String(e) };
     }
   }
-  if (provider === "claude") {
+  if (imageProvider === "claude") {
     return { error: "Claude image generation is not supported." };
   }
 
-  const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
+  const baseUrl = resolveBaseUrl(imageProvider, useProxy ? options?.proxyBaseUrl : undefined);
   if (useProxy && !baseUrl) {
     return { error: "Missing proxy base URL." };
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, imageProvider);
   const model = options?.imageModel || "";
   if (!model) {
     return { error: "Missing image model name." };
   }
   try {
-    const finalPrompt = buildImagePrompt(prompt, options?.highQuality !== false);
-    const base64 = provider === "openai"
+    let detailedDescription = prompt;
+    let groundingSources: GroundingSource[] = [];
+    const useHighQuality = options?.highQuality !== false;
+    const researchApiKey = useProxy
+      ? (options?.textProxyApiKey || options?.proxyApiKey)
+      : (options?.textApiKey || options?.apiKey);
+    if (useHighQuality && options?.textModel && researchProvider === "gemini" && researchApiKey) {
+      try {
+        const researchAi = new GoogleGenAI({
+          apiKey: researchApiKey,
+          ...(useProxy && baseUrl ? { httpOptions: { baseUrl } } : {})
+        });
+        const researchResponse = await researchAi.models.generateContent({
+          model: options.textModel,
+          contents: `Research visual references for this Fallout scene: "${prompt}".
+1. Extract 3-5 keywords related to Fallout lore, items, or environment.
+2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
+3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
+4. Format your final response as a detailed scene description for a concept artist.`,
+          config: {
+            tools: [{ googleSearch: {} }]
+          }
+        });
+        if (researchResponse?.text) {
+          detailedDescription = researchResponse.text;
+        }
+        groundingSources = researchResponse?.candidates?.[0]?.groundingMetadata?.groundingChunks
+          ?.filter((chunk: any) => chunk.web)
+          ?.map((chunk: any) => ({
+            title: chunk.web.title,
+            uri: chunk.web.uri
+          })) || [];
+      } catch {
+        // Skip research if not supported.
+      }
+    }
+    const finalPrompt = buildImagePrompt(detailedDescription, useHighQuality);
+    const base64 = imageProvider === "openai"
       ? await generateOpenAiImage(apiKey, baseUrl, model, finalPrompt)
       : await generateDoubaoImage(apiKey, baseUrl, model, finalPrompt);
     if (!base64) {
       return { error: "No image data returned from the model." };
     }
     const compressed = await compressImage(`data:image/png;base64,${base64}`);
-    return { url: compressed, sources: [] };
+    return { url: compressed, sources: groundingSources };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }

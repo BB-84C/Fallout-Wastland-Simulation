@@ -285,7 +285,7 @@ export async function createPlayerCharacter(
   year: number,
   region: string,
   lang: Language,
-  options?: { tier?: UserTier; onProgress?: (message: string) => void; apiKey?: string; textModel?: TextModelId }
+  options?: { tier?: UserTier; onProgress?: (message: string) => void; apiKey?: string; textModel?: TextModelId; userSystemPrompt?: string }
 ): Promise<PlayerCreationResult> {
   const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
   const { key: apiKey, source } = resolveApiKey(options?.apiKey);
@@ -300,7 +300,8 @@ export async function createPlayerCharacter(
           5. PERK SYSTEM: Assign 1-2 starting perks.
           6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
           7. SKILLS: The skills object must include all skills with numeric values (do not omit any skill).
-          8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.`;
+          8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
+          ${options?.userSystemPrompt?.trim() ? `9. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
   const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
 
   emit(`API key: ${source} (${describeApiKey(apiKey)})`);
@@ -347,7 +348,7 @@ export async function getNarrativeResponse(
   quests: Quest[],
   knownNpcs: Actor[],
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId }
+  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId; userSystemPrompt?: string }
 ): Promise<NarratorResponse> {
   const { key: apiKey } = resolveApiKey(options?.apiKey);
   const ai = new GoogleGenAI({ apiKey: apiKey || '' });
@@ -391,7 +392,8 @@ export async function getNarrativeResponse(
          - Only include updates for NPCs already in Known NPCs or the newly created NPC.
       7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
       8. TRANSLATION: Use "Term (Original)" for unlocalized items.
-      9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.`;
+      9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+      ${options?.userSystemPrompt?.trim() ? `10. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
 
   const response = await ai.models.generateContent({
     model: selectedTextModel,

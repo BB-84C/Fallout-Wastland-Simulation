@@ -91,8 +91,11 @@ export interface GameSettings {
   useProxy?: boolean;
   proxyBaseUrl?: string;
   modelProvider?: ModelProvider;
+  textProvider?: ModelProvider;
+  imageProvider?: ModelProvider;
   textModel?: TextModelId;
   imageModel?: ImageModelId;
+  userSystemPrompt?: string;
 }
 
 export type UserTier = 'admin' | 'normal' | 'guest';

@@ -29,8 +29,11 @@ export const DEFAULT_SETTINGS: GameSettings = {
   useProxy: false,
   proxyBaseUrl: '',
   modelProvider: 'gemini',
+  textProvider: 'gemini',
+  imageProvider: 'gemini',
   textModel: '',
-  imageModel: ''
+  imageModel: '',
+  userSystemPrompt: ''
 };
 
 export const getTierSettings = (tier: UserTier) => TIER_SETTINGS[tier];

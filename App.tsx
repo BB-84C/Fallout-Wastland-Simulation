@@ -283,12 +283,23 @@ const normalizeSkills = (
   return normalizedSkills;
 };
 
+const normalizeProviderSettings = (settings: GameSettings): GameSettings => {
+  const fallbackProvider = settings.textProvider || settings.imageProvider || settings.modelProvider || 'gemini';
+  return {
+    ...settings,
+    textProvider: settings.textProvider || fallbackProvider,
+    imageProvider: settings.imageProvider || fallbackProvider,
+    userSystemPrompt: settings.userSystemPrompt ?? ''
+  };
+};
+
 const normalizeSessionSettings = (settings: GameSettings, tier: UserTier, hasKey: boolean) => {
   const minTurnsOverride = tier === 'normal' && hasKey ? 1 : undefined;
   const normalized = normalizeSettingsForTier(settings, tier, minTurnsOverride);
   const lockedImages = lockImageTurnsForTier(normalized, tier, hasKey);
-  const normalizedProxyBaseUrl = normalizeProxyBaseUrl(lockedImages.proxyBaseUrl || '');
-  return lockHistoryTurnsForTier({ ...lockedImages, proxyBaseUrl: normalizedProxyBaseUrl }, tier);
+  const normalizedProviders = normalizeProviderSettings(lockedImages);
+  const normalizedProxyBaseUrl = normalizeProxyBaseUrl(normalizedProviders.proxyBaseUrl || '');
+  return lockHistoryTurnsForTier({ ...normalizedProviders, proxyBaseUrl: normalizedProxyBaseUrl }, tier);
 };
 
 const normalizeTokenUsage = (usage?: TokenUsage | null): TokenUsage => {
@@ -641,8 +652,10 @@ type UserSession = {
   ap: number;
   apLastUpdated: number;
   settings: GameSettings;
-  apiKey?: string;
-  proxyApiKey?: string;
+  textApiKey?: string;
+  imageApiKey?: string;
+  textProxyKey?: string;
+  imageProxyKey?: string;
   isTemporary: boolean;
 };
 
@@ -658,6 +671,7 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isUserPromptOpen, setIsUserPromptOpen] = useState(false);
   const [isTipOpen, setIsTipOpen] = useState(false);
   const [usersDb, setUsersDb] = useState<Record<string, UserRecord>>({});
   const [usersLoaded, setUsersLoaded] = useState(false);
@@ -681,12 +695,15 @@ const App: React.FC = () => {
   const isAdmin = activeTier === 'admin';
   const isNormal = activeTier === 'normal';
   const isGuest = activeTier === 'guest';
-  const hasUserKey = !!currentUser?.apiKey;
-  const hasProxyKey = !!currentUser?.proxyApiKey;
+  const hasTextUserKey = !!currentUser?.textApiKey;
+  const hasImageUserKey = !!currentUser?.imageApiKey;
+  const hasTextProxyKey = !!currentUser?.textProxyKey;
+  const hasImageProxyKey = !!currentUser?.imageProxyKey;
   const useProxy = isNormal && !!gameState.settings.useProxy;
   const proxyBaseUrl = normalizeProxyBaseUrl(gameState.settings.proxyBaseUrl || '');
-  const hasAuthKey = useProxy ? hasProxyKey : hasUserKey;
-  const normalKeyUnlocked = isNormal && hasAuthKey;
+  const hasTextAuthKey = useProxy ? hasTextProxyKey : hasTextUserKey;
+  const hasImageAuthKey = useProxy ? hasImageProxyKey : hasImageUserKey;
+  const normalKeyUnlocked = isNormal && hasTextAuthKey;
   const isKeyUnlocked = isAdmin || normalKeyUnlocked;
   const apUnlimited = isKeyUnlocked;
   const maxAp = isKeyUnlocked ? getMaxApForTier('admin') : getMaxApForTier(activeTier);
@@ -700,9 +717,12 @@ const App: React.FC = () => {
     : DEFAULT_SETTINGS.maxHistoryTurns;
   const lockedHistoryLimit = isGuest ? getHistoryLimitForTier('guest') : rawHistoryLimit;
   const historyLimit = lockedHistoryLimit === -1 ? null : Math.max(1, lockedHistoryLimit);
-  const activeProvider: ModelProvider = isGuest || isAdmin
+  const textProvider: ModelProvider = isGuest || isAdmin
     ? 'gemini'
-    : (gameState.settings.modelProvider || 'gemini');
+    : (gameState.settings.textProvider || gameState.settings.modelProvider || 'gemini');
+  const imageProvider: ModelProvider = isGuest || isAdmin
+    ? 'gemini'
+    : (gameState.settings.imageProvider || gameState.settings.modelProvider || 'gemini');
   const selectedTextModel = gameState.settings.textModel?.trim() || undefined;
   const selectedImageModel = gameState.settings.imageModel?.trim() || undefined;
   const imagesEnabled = gameState.settings.imagesEnabled !== false;
@@ -711,9 +731,9 @@ const App: React.FC = () => {
   const canManualSave = isAdmin || normalKeyUnlocked;
   const canAdjustImageFrequency = isAdmin || normalKeyUnlocked;
   const hasProxyBase = useProxy ? !!proxyBaseUrl : true;
-  const isModelConfigured = isNormal
-    ? !!activeProvider && !!hasAuthKey && hasProxyBase && !!selectedTextModel && !!selectedImageModel
-    : true;
+  const textConfigured = !!textProvider && !!hasTextAuthKey && hasProxyBase && !!selectedTextModel;
+  const imageConfigured = !imagesEnabled || (!!imageProvider && !!hasImageAuthKey && hasProxyBase && !!selectedImageModel);
+  const isModelConfigured = isNormal ? (textConfigured && imageConfigured) : true;
   const canPlay = isGuest || isAdmin || isModelConfigured;
 
   useEffect(() => {
@@ -780,7 +800,7 @@ const App: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [isNormal, isModelConfigured, activeProvider, hasUserKey]);
+  }, [isNormal, isModelConfigured, textProvider, hasTextUserKey]);
 
   useEffect(() => {
     if (!currentUser || currentUser.tier === 'guest') {
@@ -865,21 +885,39 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!currentUser || !isNormal) return;
-    const storedKey = loadUserApiKey(currentUser.username, activeProvider);
-    const currentKey = currentUser.apiKey || '';
+    const storedKey = loadUserApiKey(currentUser.username, textProvider);
+    const currentKey = currentUser.textApiKey || '';
     if (storedKey !== currentKey) {
-      setCurrentUser(prev => (prev ? { ...prev, apiKey: storedKey || undefined } : prev));
+      setCurrentUser(prev => (prev ? { ...prev, textApiKey: storedKey || undefined } : prev));
     }
-  }, [currentUser, isNormal, activeProvider]);
+  }, [currentUser, isNormal, textProvider]);
 
   useEffect(() => {
     if (!currentUser || !isNormal) return;
-    const storedKey = loadUserProxyKey(currentUser.username, activeProvider);
-    const currentKey = currentUser.proxyApiKey || '';
+    const storedKey = loadUserApiKey(currentUser.username, imageProvider);
+    const currentKey = currentUser.imageApiKey || '';
     if (storedKey !== currentKey) {
-      setCurrentUser(prev => (prev ? { ...prev, proxyApiKey: storedKey || undefined } : prev));
+      setCurrentUser(prev => (prev ? { ...prev, imageApiKey: storedKey || undefined } : prev));
     }
-  }, [currentUser, isNormal, activeProvider]);
+  }, [currentUser, isNormal, imageProvider]);
+
+  useEffect(() => {
+    if (!currentUser || !isNormal) return;
+    const storedKey = loadUserProxyKey(currentUser.username, textProvider);
+    const currentKey = currentUser.textProxyKey || '';
+    if (storedKey !== currentKey) {
+      setCurrentUser(prev => (prev ? { ...prev, textProxyKey: storedKey || undefined } : prev));
+    }
+  }, [currentUser, isNormal, textProvider]);
+
+  useEffect(() => {
+    if (!currentUser || !isNormal) return;
+    const storedKey = loadUserProxyKey(currentUser.username, imageProvider);
+    const currentKey = currentUser.imageProxyKey || '';
+    if (storedKey !== currentKey) {
+      setCurrentUser(prev => (prev ? { ...prev, imageProxyKey: storedKey || undefined } : prev));
+    }
+  }, [currentUser, isNormal, imageProvider]);
 
   const saveGame = useCallback((notify = true) => {
     if (!currentUser || !canManualSave) return;
@@ -993,7 +1031,7 @@ const App: React.FC = () => {
       const now = Date.now();
       const proxyEnabled = currentUser.settings.useProxy && currentUser.tier === 'normal';
       const hasKey = currentUser.tier === 'normal'
-        ? (proxyEnabled ? !!currentUser.proxyApiKey : !!currentUser.apiKey)
+        ? (proxyEnabled ? !!currentUser.textProxyKey : !!currentUser.textApiKey)
         : false;
       const settings = normalizeSessionSettings(
         currentUser.settings || DEFAULT_SETTINGS,
@@ -1045,24 +1083,32 @@ const App: React.FC = () => {
       return;
     }
     const tier = record.tier;
-    const baseSettings = record.settings || DEFAULT_SETTINGS;
-    const provider = (baseSettings.modelProvider ?? 'gemini') as ModelProvider;
-    const storedApiKey = tier === 'normal' ? loadUserApiKey(record.username, provider) : '';
-    const storedProxyKey = tier === 'normal' ? loadUserProxyKey(record.username, provider) : '';
-    const sessionApiKey = storedApiKey || undefined;
-    const sessionProxyKey = storedProxyKey || undefined;
+    const baseSettings = normalizeProviderSettings(record.settings || DEFAULT_SETTINGS);
+    const textProvider = (baseSettings.textProvider || baseSettings.modelProvider || 'gemini') as ModelProvider;
+    const imageProvider = (baseSettings.imageProvider || baseSettings.modelProvider || textProvider) as ModelProvider;
+    const storedTextKey = tier === 'normal' ? loadUserApiKey(record.username, textProvider) : '';
+    const storedImageKey = tier === 'normal' ? loadUserApiKey(record.username, imageProvider) : '';
+    const storedTextProxyKey = tier === 'normal' ? loadUserProxyKey(record.username, textProvider) : '';
+    const storedImageProxyKey = tier === 'normal' ? loadUserProxyKey(record.username, imageProvider) : '';
+    const sessionTextApiKey = storedTextKey || undefined;
+    const sessionImageApiKey = storedImageKey || undefined;
+    const sessionTextProxyKey = storedTextProxyKey || undefined;
+    const sessionImageProxyKey = storedImageProxyKey || undefined;
     const proxyEnabled = tier === 'normal' && !!baseSettings.useProxy;
-    const hasKey = tier === 'normal' && (proxyEnabled ? !!sessionProxyKey : !!sessionApiKey);
-    const settings = normalizeSessionSettings(baseSettings, tier, hasKey);
-    const hasModels = !!settings.textModel?.trim() && !!settings.imageModel?.trim() && !!settings.modelProvider;
+    const hasTextKey = tier === 'normal' && (proxyEnabled ? !!sessionTextProxyKey : !!sessionTextApiKey);
+    const hasImageKey = tier === 'normal' && (proxyEnabled ? !!sessionImageProxyKey : !!sessionImageApiKey);
+    const settings = normalizeSessionSettings(baseSettings, tier, hasTextKey);
     const hasProxyBase = proxyEnabled ? !!normalizeProxyBaseUrl(settings.proxyBaseUrl || '') : true;
-    const needsSetup = tier === 'normal' && (!isUserOnboarded(record.username) || !hasKey || !hasModels || !hasProxyBase);
+    const imagesEnabled = settings.imagesEnabled !== false;
+    const textConfigured = !!settings.textModel?.trim() && !!settings.textProvider && hasTextKey;
+    const imageConfigured = !imagesEnabled || (!!settings.imageModel?.trim() && !!settings.imageProvider && hasImageKey);
+    const needsSetup = tier === 'normal' && (!isUserOnboarded(record.username) || !hasProxyBase || !textConfigured || !imageConfigured);
     const maxAllowedAp = getMaxApForTier(tier);
     let ap = Math.min(maxAllowedAp, typeof record.ap === 'number' ? record.ap : maxAllowedAp);
     let apLastUpdated = typeof record.apLastUpdated === 'number' && record.apLastUpdated > 0
       ? record.apLastUpdated
       : Date.now();
-    const recovery = tier === 'normal' && hasKey ? null : getApRecoveryForTier(tier);
+    const recovery = tier === 'normal' && hasTextKey ? null : getApRecoveryForTier(tier);
     if (recovery) {
       const synced = syncApState(ap, apLastUpdated, Date.now(), maxAllowedAp, recovery);
       ap = synced.ap;
@@ -1074,8 +1120,10 @@ const App: React.FC = () => {
       ap,
       apLastUpdated,
       settings,
-      apiKey: sessionApiKey,
-      proxyApiKey: sessionProxyKey,
+      textApiKey: sessionTextApiKey,
+      imageApiKey: sessionImageApiKey,
+      textProxyKey: sessionTextProxyKey,
+      imageProxyKey: sessionImageProxyKey,
       isTemporary: false
     });
     setAuthError('');
@@ -1126,8 +1174,10 @@ const App: React.FC = () => {
       ap: NORMAL_MAX_AP,
       apLastUpdated: now,
       settings: normalizeSessionSettings(DEFAULT_SETTINGS, 'normal', false),
-      apiKey: undefined,
-      proxyApiKey: undefined,
+      textApiKey: undefined,
+      imageApiKey: undefined,
+      textProxyKey: undefined,
+      imageProxyKey: undefined,
       isTemporary: false
     });
     setAuthError('');
@@ -1154,8 +1204,10 @@ const App: React.FC = () => {
       ap: GUEST_MAX_AP,
       apLastUpdated: now,
       settings: normalizeSessionSettings(DEFAULT_SETTINGS, 'guest', false),
-      apiKey: undefined,
-      proxyApiKey: undefined,
+      textApiKey: undefined,
+      imageApiKey: undefined,
+      textProxyKey: undefined,
+      imageProxyKey: undefined,
       isTemporary: true
     });
     setGuestCooldownUntil(now + GUEST_COOLDOWN_MS);
@@ -1210,7 +1262,7 @@ const App: React.FC = () => {
       setIsSettingsOpen(true);
       return;
     }
-    if (activeProvider === 'gemini' && !useProxy && !hasUserKey && typeof (window as any).aistudio !== 'undefined') {
+    if (textProvider === 'gemini' && !useProxy && !hasTextUserKey && typeof (window as any).aistudio !== 'undefined') {
       const hasKey = await (window as any).aistudio.hasSelectedApiKey();
       if (!hasKey) {
         setKeyAlert(true);
@@ -1229,7 +1281,7 @@ const App: React.FC = () => {
       currentTime: initialTime
     }));
     setView('creation');
-  }, []);
+  }, [isNormal, isModelConfigured, textProvider, useProxy, hasTextUserKey]);
 
   const handleCharacterCreation = async () => {
     if (isNormal && !isModelConfigured) {
@@ -1249,12 +1301,13 @@ const App: React.FC = () => {
         gameState.language,
         { 
           tier: activeTier,
-          apiKey: currentUser?.apiKey,
-          proxyApiKey: currentUser?.proxyApiKey,
+          apiKey: currentUser?.textApiKey,
+          proxyApiKey: currentUser?.textProxyKey,
           proxyBaseUrl,
           useProxy,
           textModel: effectiveTextModel,
-          provider: activeProvider,
+          provider: textProvider,
+          userSystemPrompt: gameState.settings.userSystemPrompt,
           onProgress: (message) => {
             const mapped = formatCreationProgress(message, isZh, isAdmin);
             if (mapped) setCreationPhase(mapped);
@@ -1281,12 +1334,12 @@ const App: React.FC = () => {
 
       const startNarration = `${introMsg} ${player.lore}`;
       const avatarPromise = allowAvatars && seededCompanions.length > 0
-        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: activeProvider })))
+        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider })))
         : Promise.resolve([]);
       const imagePromise = allowImages
         ? generateSceneImage(
           `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
-          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, textModel: effectiveTextModel, provider: activeProvider }
+          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel }
         )
         : Promise.resolve(undefined);
       const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
@@ -1398,7 +1451,7 @@ const App: React.FC = () => {
 
     const updatedHistory: HistoryEntry[] = [...gameState.history, { sender: 'player', text: actionText }];
     const trimmedHistory = historyLimit ? updatedHistory.slice(-historyLimit) : updatedHistory;
-    const lockedImageTurns = isNormal && !hasAuthKey
+    const lockedImageTurns = isNormal && !hasTextAuthKey
       ? normalDefaultImageTurns
       : (isGuest ? guestFixedImageTurns : null);
     const imageEveryTurns = lockedImageTurns ?? Math.max(minImageTurns, Math.floor(gameState.settings.imageEveryTurns || minImageTurns));
@@ -1428,7 +1481,7 @@ const App: React.FC = () => {
         gameState.quests,
         gameState.knownNpcs,
         gameState.language,
-        { tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, textModel: effectiveTextModel, provider: activeProvider }
+        { tier: activeTier, apiKey: currentUser?.textApiKey, proxyApiKey: currentUser?.textProxyKey, proxyBaseUrl, useProxy, textModel: effectiveTextModel, provider: textProvider, userSystemPrompt: gameState.settings.userSystemPrompt }
       );
 
       const tokenDelta = response.tokenUsage;
@@ -1490,10 +1543,10 @@ const App: React.FC = () => {
       // Generate images based on the configured frequency.
       const visualPrompt = response.imagePrompt || actionText;
       const imagePromise = shouldGenerateImage
-        ? generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, textModel: effectiveTextModel, provider: activeProvider })
+        ? generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel })
         : Promise.resolve(undefined);
       const avatarPromise = companionsNeedingAvatar.length > 0
-        ? Promise.all(companionsNeedingAvatar.map(npc => generateCompanionAvatar(npc, { tier: activeTier, apiKey: currentUser?.apiKey, proxyApiKey: currentUser?.proxyApiKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: activeProvider })))
+        ? Promise.all(companionsNeedingAvatar.map(npc => generateCompanionAvatar(npc, { tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider })))
         : Promise.resolve([]);
       const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
       const imageLog = shouldGenerateImage && imgData?.error
@@ -1583,25 +1636,46 @@ const App: React.FC = () => {
     }));
   };
 
-  const updateModelProvider = (value: ModelProvider) => {
+  const updateTextProvider = (value: ModelProvider) => {
     if (!currentUser || !isNormal) return;
     setGameState(prev => ({
       ...prev,
       settings: {
         ...prev.settings,
-        modelProvider: value
+        textProvider: value
       }
     }));
     const storedKey = loadUserApiKey(currentUser.username, value);
     const storedProxyKey = loadUserProxyKey(currentUser.username, value);
-    setCurrentUser(prev => (prev ? { ...prev, apiKey: storedKey || undefined, proxyApiKey: storedProxyKey || undefined } : prev));
+    setCurrentUser(prev => (prev ? { ...prev, textApiKey: storedKey || undefined, textProxyKey: storedProxyKey || undefined } : prev));
   };
 
-  const updateModelApiKey = (value: string) => {
+  const updateImageProvider = (value: ModelProvider) => {
+    if (!currentUser || !isNormal) return;
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        imageProvider: value
+      }
+    }));
+    const storedKey = loadUserApiKey(currentUser.username, value);
+    const storedProxyKey = loadUserProxyKey(currentUser.username, value);
+    setCurrentUser(prev => (prev ? { ...prev, imageApiKey: storedKey || undefined, imageProxyKey: storedProxyKey || undefined } : prev));
+  };
+
+  const updateTextApiKey = (value: string) => {
     if (!currentUser || !isNormal) return;
     const trimmed = value.trim();
-    persistUserApiKey(currentUser.username, activeProvider, trimmed);
-    setCurrentUser(prev => (prev ? { ...prev, apiKey: trimmed || undefined } : prev));
+    persistUserApiKey(currentUser.username, textProvider, trimmed);
+    setCurrentUser(prev => (prev ? { ...prev, textApiKey: trimmed || undefined } : prev));
+  };
+
+  const updateImageApiKey = (value: string) => {
+    if (!currentUser || !isNormal) return;
+    const trimmed = value.trim();
+    persistUserApiKey(currentUser.username, imageProvider, trimmed);
+    setCurrentUser(prev => (prev ? { ...prev, imageApiKey: trimmed || undefined } : prev));
   };
 
   const updateProxyEnabled = (checked: boolean) => {
@@ -1627,11 +1701,18 @@ const App: React.FC = () => {
     }));
   };
 
-  const updateProxyApiKey = (value: string) => {
+  const updateTextProxyKey = (value: string) => {
     if (!currentUser || !isNormal) return;
     const trimmed = value.trim();
-    persistUserProxyKey(currentUser.username, activeProvider, trimmed);
-    setCurrentUser(prev => (prev ? { ...prev, proxyApiKey: trimmed || undefined } : prev));
+    persistUserProxyKey(currentUser.username, textProvider, trimmed);
+    setCurrentUser(prev => (prev ? { ...prev, textProxyKey: trimmed || undefined } : prev));
+  };
+
+  const updateImageProxyKey = (value: string) => {
+    if (!currentUser || !isNormal) return;
+    const trimmed = value.trim();
+    persistUserProxyKey(currentUser.username, imageProvider, trimmed);
+    setCurrentUser(prev => (prev ? { ...prev, imageProxyKey: trimmed || undefined } : prev));
   };
 
   const updateTextModelName = (value: string) => {
@@ -1652,6 +1733,16 @@ const App: React.FC = () => {
       settings: {
         ...prev.settings,
         imageModel: value
+      }
+    }));
+  };
+
+  const updateUserSystemPrompt = (value: string) => {
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        userSystemPrompt: value
       }
     }));
   };
@@ -1817,14 +1908,14 @@ const App: React.FC = () => {
                   ? '图像生成已关闭。'
                   : (isGuest
                     ? '临时用户不生成回合图像，仅在创建角色时生成一张。'
-                    : (isNormal && !hasAuthKey
+                    : (isNormal && !hasTextAuthKey
                       ? `设置模型与 API 后可调整图像频率；当前固定为 ${normalDefaultImageTurns}。`
                       : '每 N 次交互生成一张图像，可自由调整。')))
                 : (!imagesEnabled
                   ? 'Image generation is disabled.'
                   : (isGuest
                     ? 'Temporary users do not generate turn images; only the creation image is shown.'
-                    : (isNormal && !hasAuthKey
+                    : (isNormal && !hasTextAuthKey
                       ? `Configure provider/API to adjust image frequency; currently fixed at ${normalDefaultImageTurns}.`
                       : 'Generate images every N turns; adjustable.')))}
             </div>
@@ -1847,7 +1938,7 @@ const App: React.FC = () => {
                   ? (isZh ? '临时用户不生成回合图像。' : 'Temporary users do not generate turn images.')
                   : (!imagesEnabled
                     ? (isZh ? '图像生成已关闭。' : 'Image generation is disabled.')
-                    : (isNormal && !hasAuthKey
+                    : (isNormal && !hasTextAuthKey
                       ? (isZh ? `完成模型配置后可调整，当前固定为 ${normalDefaultImageTurns}。` : `Adjustable after setup; currently fixed at ${normalDefaultImageTurns}.`)
                       : (isZh ? '普通用户已完成模型配置。' : 'Normal user setup complete.')))}
               </div>
@@ -1885,42 +1976,114 @@ const App: React.FC = () => {
 
           {isNormal && (
             <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5 space-y-4">
-              <div>
-                <div className="text-sm font-bold uppercase">
-                  {isZh ? '模型提供商' : 'Model Provider'}
-                </div>
-                <div className="text-xs opacity-70 mt-1">
-                  {isZh
-                    ? '文本模型必须支持多模态输入（文本+图像）、函数调用与联网搜索。'
-                    : 'Text models must be multimodal (text + image input), support function calling, and online search.'}
-                </div>
-                <select
-                  value={activeProvider}
-                  onChange={(e) => updateModelProvider(e.target.value as ModelProvider)}
-                  className="mt-3 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
-                >
-                  {MODEL_PROVIDER_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+              <div className="text-xs opacity-70">
+                {isZh
+                  ? '文本模型必须支持多模态输入（文本+图像）、函数调用与联网搜索。'
+                  : 'Text models must be multimodal (text + image input), support function calling, and online search.'}
               </div>
 
-              <div>
+              <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 space-y-3">
                 <div className="text-sm font-bold uppercase">
-                  {isZh ? 'API Key' : 'API Key'}
+                  {isZh ? '文本模型' : 'Text Model'}
                 </div>
-                <div className="text-xs opacity-70 mt-1">
-                  {isZh ? '仅保存在本地浏览器，不会上传到服务器。' : 'Stored only in this browser and never uploaded.'}
+                <div>
+                  <div className="text-[11px] uppercase opacity-70">
+                    {isZh ? '文本提供商' : 'Text Provider'}
+                  </div>
+                  <select
+                    value={textProvider}
+                    onChange={(e) => updateTextProvider(e.target.value as ModelProvider)}
+                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                  >
+                    {MODEL_PROVIDER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <input
-                  type="password"
-                  value={currentUser?.apiKey || ''}
-                  onChange={(e) => updateModelApiKey(e.target.value)}
-                  className="mt-3 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
-                  placeholder={isZh ? '粘贴 API Key' : 'Paste API key'}
-                />
+                <div>
+                  <div className="text-[11px] uppercase opacity-70">
+                    {isZh ? '文本 API Key' : 'Text API Key'}
+                  </div>
+                  <div className="text-[10px] opacity-60 mt-1">
+                    {isZh ? '仅保存在本地浏览器，不会上传到服务器。' : 'Stored only in this browser and never uploaded.'}
+                  </div>
+                  <input
+                    type="password"
+                    value={currentUser?.textApiKey || ''}
+                    onChange={(e) => updateTextApiKey(e.target.value)}
+                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                    placeholder={isZh ? '粘贴文本 API Key' : 'Paste text API key'}
+                  />
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase opacity-70">
+                    {isZh ? '文本模型名称' : 'Text model name'}
+                  </div>
+                  <div className="text-[10px] opacity-60 mt-1">
+                    {isZh ? '例如：gpt-4.1-mini 或 gemini-2.5-flash-lite' : 'Example: gpt-4.1-mini or gemini-2.5-flash-lite'}
+                  </div>
+                  <input
+                    type="text"
+                    value={gameState.settings.textModel || ''}
+                    onChange={(e) => updateTextModelName(e.target.value)}
+                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                    placeholder={isZh ? '输入文本模型名称' : 'Enter text model name'}
+                  />
+                </div>
+              </div>
+
+              <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 space-y-3">
+                <div className="text-sm font-bold uppercase">
+                  {isZh ? '图像模型' : 'Image Model'}
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase opacity-70">
+                    {isZh ? '图像提供商' : 'Image Provider'}
+                  </div>
+                  <select
+                    value={imageProvider}
+                    onChange={(e) => updateImageProvider(e.target.value as ModelProvider)}
+                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                  >
+                    {MODEL_PROVIDER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase opacity-70">
+                    {isZh ? '图像 API Key' : 'Image API Key'}
+                  </div>
+                  <div className="text-[10px] opacity-60 mt-1">
+                    {isZh ? '仅保存在本地浏览器，不会上传到服务器。' : 'Stored only in this browser and never uploaded.'}
+                  </div>
+                  <input
+                    type="password"
+                    value={currentUser?.imageApiKey || ''}
+                    onChange={(e) => updateImageApiKey(e.target.value)}
+                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                    placeholder={isZh ? '粘贴图像 API Key' : 'Paste image API key'}
+                  />
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase opacity-70">
+                    {isZh ? '图像模型名称' : 'Image model name'}
+                  </div>
+                  <div className="text-[10px] opacity-60 mt-1">
+                    {isZh ? '例如：gpt-image-1 或 gemini-2.5-flash-image' : 'Example: gpt-image-1 or gemini-2.5-flash-image'}
+                  </div>
+                  <input
+                    type="text"
+                    value={gameState.settings.imageModel || ''}
+                    onChange={(e) => updateImageModelName(e.target.value)}
+                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                    placeholder={isZh ? '输入图像模型名称' : 'Enter image model name'}
+                  />
+                </div>
               </div>
 
               <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 space-y-3">
@@ -1949,14 +2112,26 @@ const App: React.FC = () => {
                     </div>
                     <div>
                       <div className="text-[11px] uppercase opacity-70">
-                        {isZh ? '中转站 API Key' : 'Proxy API Key'}
+                        {isZh ? '中转站 API Key（文本）' : 'Proxy API Key (Text)'}
                       </div>
                       <input
                         type="password"
-                        value={currentUser?.proxyApiKey || ''}
-                        onChange={(e) => updateProxyApiKey(e.target.value)}
+                        value={currentUser?.textProxyKey || ''}
+                        onChange={(e) => updateTextProxyKey(e.target.value)}
                         className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
-                        placeholder={isZh ? '粘贴中转站 API Key' : 'Paste proxy API key'}
+                        placeholder={isZh ? '粘贴文本中转站 API Key' : 'Paste text proxy API key'}
+                      />
+                    </div>
+                    <div>
+                      <div className="text-[11px] uppercase opacity-70">
+                        {isZh ? '中转站 API Key（图像）' : 'Proxy API Key (Image)'}
+                      </div>
+                      <input
+                        type="password"
+                        value={currentUser?.imageProxyKey || ''}
+                        onChange={(e) => updateImageProxyKey(e.target.value)}
+                        className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                        placeholder={isZh ? '粘贴图像中转站 API Key' : 'Paste image proxy API key'}
                       />
                     </div>
                     <div className="text-[11px] opacity-70">
@@ -1968,41 +2143,11 @@ const App: React.FC = () => {
                 )}
               </div>
 
-              <div>
-                <div className="text-sm font-bold uppercase">
-                  {isZh ? '文本模型名称' : 'Text model name'}
-                </div>
-                <div className="text-xs opacity-70 mt-1">
-                  {isZh ? '例如：gpt-4.1-mini 或 gemini-2.5-flash-lite' : 'Example: gpt-4.1-mini or gemini-2.5-flash-lite'}
-                </div>
-                <input
-                  type="text"
-                  value={gameState.settings.textModel || ''}
-                  onChange={(e) => updateTextModelName(e.target.value)}
-                  className="mt-3 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
-                  placeholder={isZh ? '输入文本模型名称' : 'Enter text model name'}
-                />
-              </div>
-
-              <div>
-                <div className="text-sm font-bold uppercase">
-                  {isZh ? '图像模型名称' : 'Image model name'}
-                </div>
-                <div className="text-xs opacity-70 mt-1">
-                  {isZh ? '例如：gpt-image-1 或 gemini-2.5-flash-image' : 'Example: gpt-image-1 or gemini-2.5-flash-image'}
-                </div>
-                <input
-                  type="text"
-                  value={gameState.settings.imageModel || ''}
-                  onChange={(e) => updateImageModelName(e.target.value)}
-                  className="mt-3 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
-                  placeholder={isZh ? '输入图像模型名称' : 'Enter image model name'}
-                />
-              </div>
-
               {!isModelConfigured && (
                 <div className="text-[11px] text-yellow-300 uppercase">
-                  {isZh ? '需要填写提供商、API Key、文本模型和图像模型后才能开始游戏。' : 'Provide provider, API key, text model, and image model to play.'}
+                  {isZh
+                    ? '需要填写文本提供商/API/模型；如启用图像生成，还需填写图像提供商/API/模型。'
+                    : 'Provide text provider/API/model; if images are enabled, also provide image provider/API/model.'}
                 </div>
               )}
             </div>
@@ -2076,11 +2221,37 @@ const App: React.FC = () => {
             </div>
             <div className="opacity-80 mt-2">
               {isZh
-                ? '普通用户：必须在设置中填写模型提供商、API Key、文本模型与图像模型后才能开始游戏；完成后 AP 无限制、图像频率可调、支持手动保存。'
-                : 'Normal: configure provider/API key plus text and image model names in Settings before playing; after setup AP is unlimited, image frequency is adjustable, and manual saves are enabled.'}
+                ? '普通用户：必须在设置中填写文本提供商/API/模型；如启用图像生成，还需填写图像提供商/API/模型。完成后 AP 无限制、图像频率可调、支持手动保存。'
+                : 'Normal: configure text provider/API/model; if images are enabled, also configure image provider/API/model. After setup AP is unlimited, image frequency is adjustable, and manual saves are enabled.'}
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  );
+  const userPromptModal = isUserPromptOpen && (
+    <div className="fixed top-0 left-0 w-full h-full z-[3000] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-2xl font-bold uppercase">{isZh ? '用户系统提示' : 'User System Prompt'}</h3>
+          <button
+            onClick={() => setIsUserPromptOpen(false)}
+            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+          >
+            {isZh ? '关闭' : 'Close'}
+          </button>
+        </div>
+        <div className="text-xs opacity-70 mb-3">
+          {isZh
+            ? '用于控制模型行为，例如：要求每次给出 3 个可选行动、输出超过 2000 token，或将输出限制在 1000 token 内。'
+            : 'Use this to control model behavior, e.g. always give 3 available actions, output more than 2000 tokens, or keep the output within 1000 tokens.'}
+        </div>
+        <textarea
+          value={gameState.settings.userSystemPrompt || ''}
+          onChange={(e) => updateUserSystemPrompt(e.target.value)}
+          className="w-full h-40 md:h-48 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-xs focus:outline-none"
+          placeholder={isZh ? '输入用户系统提示...' : 'Enter user system prompt...'}
+        />
       </div>
     </div>
   );
@@ -2281,6 +2452,7 @@ const App: React.FC = () => {
         {usersEditorModal}
         {settingsModal}
         {helpModal}
+        {userPromptModal}
         <div className="max-w-3xl w-full space-y-6 md:space-y-8 pip-boy-border p-6 md:p-12 bg-black/60 shadow-2xl relative">
           <div className="absolute top-4 right-4 flex space-x-2">
             <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
@@ -2296,6 +2468,12 @@ const App: React.FC = () => {
               className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '帮助' : 'HELP'}
+            </button>
+            <button
+              onClick={() => setIsUserPromptOpen(true)}
+              className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            >
+              {isZh ? '提示' : 'PROMPT'}
             </button>
             {isAdmin && (
               <button
@@ -2336,7 +2514,9 @@ const App: React.FC = () => {
              )}
              {!canPlay && isNormal && (
                <div className="text-xs opacity-70 uppercase">
-                 {isZh ? '请先在设置中填写模型提供商与 API 信息。' : 'Complete provider/API settings in Settings before playing.'}
+                 {isZh
+                   ? '请先在设置中填写文本提供商/API/模型；如启用图像生成，还需填写图像提供商/API/模型。'
+                   : 'Configure text provider/API/model first; if images are enabled, also configure image provider/API/model.'}
                </div>
              )}
           </div>
@@ -2436,6 +2616,7 @@ const App: React.FC = () => {
       {usersEditorModal}
       {settingsModal}
       {helpModal}
+      {userPromptModal}
       {/* Main Terminal Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-black/40 h-full overflow-hidden">
         <header className="p-3 md:p-4 border-b border-[#1aff1a]/30 bg-black/60 flex justify-between items-center z-20">
@@ -2463,6 +2644,12 @@ const App: React.FC = () => {
               className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '帮助' : 'HELP'}
+            </button>
+            <button
+              onClick={() => setIsUserPromptOpen(true)}
+              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            >
+              {isZh ? '提示' : 'PROMPT'}
             </button>
             <button 
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
