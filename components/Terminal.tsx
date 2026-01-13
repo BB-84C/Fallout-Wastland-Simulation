@@ -5,16 +5,35 @@ import { HistoryEntry } from '../types';
 interface TerminalProps {
   history: HistoryEntry[];
   isThinking: boolean;
+  systemError?: string | null;
+  systemErrorLabel?: string;
+  onReroll?: () => void;
+  canReroll?: boolean;
+  rerollLabel?: string;
 }
 
-const Terminal: React.FC<TerminalProps> = ({ history, isThinking }) => {
+const Terminal: React.FC<TerminalProps> = ({
+  history,
+  isThinking,
+  systemError,
+  systemErrorLabel,
+  onReroll,
+  canReroll,
+  rerollLabel
+}) => {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastPlayerIndex = (() => {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      if (history[i].sender === 'player') return i;
+    }
+    return -1;
+  })();
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [history, isThinking]);
+  }, [history, isThinking, systemError]);
 
   return (
     <div 
@@ -60,8 +79,24 @@ const Terminal: React.FC<TerminalProps> = ({ history, isThinking }) => {
               )}
             </div>
           )}
+          {msg.sender === 'player' && i === lastPlayerIndex && onReroll && canReroll && (
+            <button
+              onClick={onReroll}
+              className="mt-2 text-[10px] uppercase border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold disabled:opacity-40"
+            >
+              {rerollLabel || 'REROLL'}
+            </button>
+          )}
         </div>
       ))}
+      {systemError && (
+        <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
+          <div className="text-[10px] uppercase opacity-60 mb-1 font-bold">
+            {systemErrorLabel || '> SYSTEM ERROR'}
+          </div>
+          <div className="opacity-90">{systemError}</div>
+        </div>
+      )}
       {isThinking && (
         <div className="flex items-center space-x-2 animate-pulse text-[#1aff1a]">
           <span className="text-lg font-bold">ACCESSING DATABASE...</span>

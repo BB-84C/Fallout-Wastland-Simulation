@@ -320,6 +320,22 @@ const mergeTokenUsage = (base: TokenUsage, delta?: TokenUsage | null): TokenUsag
   };
 };
 
+const cloneGameState = (state: GameState): GameState => {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(state);
+  }
+  return JSON.parse(JSON.stringify(state)) as GameState;
+};
+
+const stripFailedAction = (history: HistoryEntry[], failedText?: string | null) => {
+  if (!failedText || history.length === 0) return history;
+  const last = history[history.length - 1];
+  if (last.sender === 'player' && last.text === failedText) {
+    return history.slice(0, -1);
+  }
+  return history;
+};
+
 const normalizeQuestUpdate = (update: any): Quest | null => {
   if (!update || typeof update !== 'object') return null;
   const name = typeof update.name === 'string'
@@ -659,6 +675,12 @@ type UserSession = {
   isTemporary: boolean;
 };
 
+type LastActionState = {
+  text: string;
+  snapshot: GameState;
+  status: 'pending' | 'resolved' | 'error';
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<'auth' | 'start' | 'creation' | 'playing'>('auth');
   const [gameState, setGameState] = useState<GameState>(
@@ -667,6 +689,8 @@ const App: React.FC = () => {
   const [userInput, setUserInput] = useState('');
   const [charDescription, setCharDescription] = useState('');
   const [hasSave, setHasSave] = useState(false);
+  const [systemError, setSystemError] = useState<string | null>(null);
+  const [lastAction, setLastAction] = useState<LastActionState | null>(null);
   const [keyAlert, setKeyAlert] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -735,6 +759,7 @@ const App: React.FC = () => {
   const imageConfigured = !imagesEnabled || (!!imageProvider && !!hasImageAuthKey && hasProxyBase && !!selectedImageModel);
   const isModelConfigured = isNormal ? (textConfigured && imageConfigured) : true;
   const canPlay = isGuest || isAdmin || isModelConfigured;
+  const canReroll = !!lastAction && !gameState.isThinking;
 
   useEffect(() => {
     let active = true;
@@ -1068,6 +1093,8 @@ const App: React.FC = () => {
     setHasSave(false);
     lastHistoryLength.current = 0;
     setShowGuestNotice(false);
+    setSystemError(null);
+    setLastAction(null);
   };
 
   const handleLogin = () => {
@@ -1398,29 +1425,63 @@ const App: React.FC = () => {
     }
   };
 
-  const handleAction = async (e?: React.FormEvent) => {
+  const handleAction = async (
+    e?: React.FormEvent,
+    overrideText?: string,
+    overrideState?: GameState,
+    options?: { reroll?: boolean }
+  ) => {
     e?.preventDefault();
-    if (!userInput.trim() || gameState.isThinking || !gameState.player) return;
+    const state = overrideState ?? gameState;
+    const rawText = (overrideText ?? userInput).trim();
+    if (!rawText || state.isThinking || !state.player) return;
     if (isNormal && !isModelConfigured) {
       setIsSettingsOpen(true);
       return;
     }
+    const isZhAction = state.language === 'zh';
+
+    const actionSettings = state.settings;
+    const useProxyAction = isNormal && !!actionSettings.useProxy;
+    const proxyBaseUrlAction = normalizeProxyBaseUrl(actionSettings.proxyBaseUrl || '');
+    const hasTextAuthKeyAction = useProxyAction ? hasTextProxyKey : hasTextUserKey;
+    const normalKeyUnlockedAction = isNormal && hasTextAuthKeyAction;
+    const isKeyUnlockedAction = isAdmin || normalKeyUnlockedAction;
+    const apUnlimitedAction = isKeyUnlockedAction;
+    const maxApAction = isKeyUnlockedAction ? getMaxApForTier('admin') : getMaxApForTier(activeTier);
+    const apRecoveryAction = isKeyUnlockedAction ? null : getApRecoveryForTier(activeTier);
+    const minImageTurnsAction = isKeyUnlockedAction ? 1 : getMinImageTurnsForTier(activeTier);
+    const rawHistoryLimit = Number.isFinite(actionSettings.maxHistoryTurns)
+      ? Math.trunc(actionSettings.maxHistoryTurns)
+      : DEFAULT_SETTINGS.maxHistoryTurns;
+    const lockedHistoryLimit = isGuest ? getHistoryLimitForTier('guest') : rawHistoryLimit;
+    const historyLimitAction = lockedHistoryLimit === -1 ? null : Math.max(1, lockedHistoryLimit);
+    const imagesEnabledAction = actionSettings.imagesEnabled !== false;
+    const textProviderAction: ModelProvider = isGuest || isAdmin
+      ? 'gemini'
+      : (actionSettings.textProvider || actionSettings.modelProvider || 'gemini');
+    const imageProviderAction: ModelProvider = isGuest || isAdmin
+      ? 'gemini'
+      : (actionSettings.imageProvider || actionSettings.modelProvider || 'gemini');
+    const effectiveTextModel = actionSettings.textModel?.trim() || undefined;
+    const effectiveImageModel = actionSettings.imageModel?.trim() || undefined;
+    const tokenUsageBase = options?.reroll ? gameState.tokenUsage : state.tokenUsage;
 
     const now = Date.now();
-    let currentAp = gameState.ap;
-    let currentApLastUpdated = gameState.apLastUpdated;
+    let currentAp = state.ap;
+    let currentApLastUpdated = state.apLastUpdated;
 
-    if (!apUnlimited && apRecovery) {
-      const synced = syncApState(currentAp, currentApLastUpdated, now, maxAp, apRecovery);
+    if (!apUnlimitedAction && apRecoveryAction) {
+      const synced = syncApState(currentAp, currentApLastUpdated, now, maxApAction, apRecoveryAction);
       currentAp = synced.ap;
       currentApLastUpdated = synced.apLastUpdated;
 
       if (currentAp <= 0) {
         const elapsed = Math.max(0, now - currentApLastUpdated);
-        const remainingMs = apRecovery.intervalMs - (elapsed % apRecovery.intervalMs);
+        const remainingMs = apRecoveryAction.intervalMs - (elapsed % apRecoveryAction.intervalMs);
         const minutesLeft = Math.max(1, Math.ceil(remainingMs / 60000));
-        const waitLabel = formatRecoveryInterval(minutesLeft, isZh);
-        const apMessage = gameState.language === 'en'
+        const waitLabel = formatRecoveryInterval(minutesLeft, isZhAction);
+        const apMessage = state.language === 'en'
           ? `ACTION POINTS DEPLETED. Please return after ${waitLabel}.`
           : `行动点已耗尽。请在 ${waitLabel} 后再试。`;
         setGameState(prev => ({
@@ -1432,8 +1493,8 @@ const App: React.FC = () => {
         }));
         return;
       }
-    } else if (!apUnlimited && currentAp <= 0) {
-      const apMessage = gameState.language === 'en'
+    } else if (!apUnlimitedAction && currentAp <= 0) {
+      const apMessage = state.language === 'en'
         ? `ACTION POINTS DEPLETED. Please return later.`
         : `行动点已耗尽。请稍后再试。`;
       setGameState(prev => ({
@@ -1446,46 +1507,73 @@ const App: React.FC = () => {
       return;
     }
 
-    const actionText = userInput;
-    setUserInput('');
+    if (!options?.reroll) {
+      setUserInput('');
+    }
+    setSystemError(null);
 
-    const updatedHistory: HistoryEntry[] = [...gameState.history, { sender: 'player', text: actionText }];
-    const trimmedHistory = historyLimit ? updatedHistory.slice(-historyLimit) : updatedHistory;
-    const lockedImageTurns = isNormal && !hasTextAuthKey
+    const baseHistory = !options?.reroll && lastAction?.status === 'error'
+      ? stripFailedAction(state.history, lastAction.text)
+      : state.history;
+    if (!options?.reroll && lastAction?.status === 'error') {
+      setLastAction(null);
+    }
+
+    const actionText = rawText;
+    const updatedHistory: HistoryEntry[] = [...baseHistory, { sender: 'player', text: actionText }];
+    const trimmedHistory = historyLimitAction ? updatedHistory.slice(-historyLimitAction) : updatedHistory;
+    const lockedImageTurns = isNormal && !hasTextAuthKeyAction
       ? normalDefaultImageTurns
       : (isGuest ? guestFixedImageTurns : null);
-    const imageEveryTurns = lockedImageTurns ?? Math.max(minImageTurns, Math.floor(gameState.settings.imageEveryTurns || minImageTurns));
-    const nextTurn = gameState.turnCount + 1;
-    const shouldGenerateImage = imagesEnabled && !isGuest && nextTurn % imageEveryTurns === 0;
-    const nextAp = apUnlimited ? currentAp : Math.max(0, currentAp - 1);
-    const nextApLastUpdated = apRecovery
-      ? (currentAp >= maxAp ? now : currentApLastUpdated)
+    const imageEveryTurns = lockedImageTurns ?? Math.max(minImageTurnsAction, Math.floor(actionSettings.imageEveryTurns || minImageTurnsAction));
+    const nextTurn = state.turnCount + 1;
+    const shouldGenerateImage = imagesEnabledAction && !isGuest && nextTurn % imageEveryTurns === 0;
+    const nextAp = apUnlimitedAction ? currentAp : Math.max(0, currentAp - 1);
+    const nextApLastUpdated = apRecoveryAction
+      ? (currentAp >= maxApAction ? now : currentApLastUpdated)
       : currentApLastUpdated;
 
-    setGameState(prev => ({
-      ...prev,
+    setLastAction({
+      text: actionText,
+      snapshot: cloneGameState(state),
+      status: 'pending'
+    });
+
+    setGameState({
+      ...state,
       isThinking: true,
       history: updatedHistory,
       ap: currentAp,
       apLastUpdated: currentApLastUpdated,
-      turnCount: nextTurn
-    }));
+      turnCount: nextTurn,
+      tokenUsage: tokenUsageBase
+    });
 
     try {
       const response = await getNarrativeResponse(
-        gameState.player,
+        state.player,
         trimmedHistory,
         actionText,
-        gameState.currentYear,
-        gameState.location,
-        gameState.quests,
-        gameState.knownNpcs,
-        gameState.language,
-        { tier: activeTier, apiKey: currentUser?.textApiKey, proxyApiKey: currentUser?.textProxyKey, proxyBaseUrl, useProxy, textModel: effectiveTextModel, provider: textProvider, userSystemPrompt: gameState.settings.userSystemPrompt }
+        state.currentYear,
+        state.location,
+        state.quests,
+        state.knownNpcs,
+        state.language,
+        {
+          tier: activeTier,
+          apiKey: currentUser?.textApiKey,
+          proxyApiKey: currentUser?.textProxyKey,
+          proxyBaseUrl: proxyBaseUrlAction,
+          useProxy: useProxyAction,
+          textModel: effectiveTextModel,
+          provider: textProviderAction,
+          userSystemPrompt: actionSettings.userSystemPrompt
+        }
       );
 
       const tokenDelta = response.tokenUsage;
       if (response.ruleViolation) {
+        setLastAction(prev => (prev ? { ...prev, status: 'resolved' } : prev));
         setGameState(prev => ({
           ...prev,
           isThinking: false,
@@ -1500,10 +1588,10 @@ const App: React.FC = () => {
         return;
       }
 
-      const newTime = new Date(gameState.currentTime);
+      const newTime = new Date(state.currentTime);
       newTime.setMinutes(newTime.getMinutes() + response.timePassedMinutes);
 
-      const mergedQuests = [...gameState.quests];
+      const mergedQuests = [...state.quests];
       if (response.questUpdates) {
         response.questUpdates.forEach(update => {
           const normalized = normalizeQuestUpdate(update);
@@ -1527,7 +1615,7 @@ const App: React.FC = () => {
         });
       }
 
-      let nextKnownNpcs = gameState.knownNpcs.map(npc => ({
+      let nextKnownNpcs = state.knownNpcs.map(npc => ({
         ...npc,
         ifCompanion: npc.ifCompanion ?? false
       }));
@@ -1536,21 +1624,41 @@ const App: React.FC = () => {
       }
       nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, response.companionUpdates);
 
-      const companionsNeedingAvatar = !imagesEnabled || isGuest
+      const companionsNeedingAvatar = !imagesEnabledAction || isGuest
         ? []
         : nextKnownNpcs.filter(npc => npc.ifCompanion && !npc.avatarUrl);
 
-      // Generate images based on the configured frequency.
       const visualPrompt = response.imagePrompt || actionText;
       const imagePromise = shouldGenerateImage
-        ? generateSceneImage(visualPrompt, { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel })
+        ? generateSceneImage(visualPrompt, {
+          highQuality: actionSettings.highQualityImages,
+          tier: activeTier,
+          apiKey: currentUser?.imageApiKey,
+          proxyApiKey: currentUser?.imageProxyKey,
+          proxyBaseUrl: proxyBaseUrlAction,
+          useProxy: useProxyAction,
+          imageModel: effectiveImageModel,
+          provider: imageProviderAction,
+          textProvider: textProviderAction,
+          textApiKey: currentUser?.textApiKey,
+          textProxyApiKey: currentUser?.textProxyKey,
+          textModel: effectiveTextModel
+        })
         : Promise.resolve(undefined);
       const avatarPromise = companionsNeedingAvatar.length > 0
-        ? Promise.all(companionsNeedingAvatar.map(npc => generateCompanionAvatar(npc, { tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider })))
+        ? Promise.all(companionsNeedingAvatar.map(npc => generateCompanionAvatar(npc, {
+          tier: activeTier,
+          apiKey: currentUser?.imageApiKey,
+          proxyApiKey: currentUser?.imageProxyKey,
+          proxyBaseUrl: proxyBaseUrlAction,
+          useProxy: useProxyAction,
+          imageModel: effectiveImageModel,
+          provider: imageProviderAction
+        })))
         : Promise.resolve([]);
       const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
       const imageLog = shouldGenerateImage && imgData?.error
-        ? (isZh ? `\n\n[图像日志] ${imgData.error}` : `\n\n[IMAGE LOG] ${imgData.error}`)
+        ? (isZhAction ? `\n\n[图像日志] ${imgData.error}` : `\n\n[IMAGE LOG] ${imgData.error}`)
         : '';
 
       if (avatarResults.length > 0) {
@@ -1570,6 +1678,8 @@ const App: React.FC = () => {
         }
       }
       nextKnownNpcs = nextKnownNpcs.map(npc => normalizeActor(npc));
+      setSystemError(null);
+      setLastAction(prev => (prev ? { ...prev, status: 'resolved' } : prev));
 
       setGameState(prev => ({
         ...prev,
@@ -1593,22 +1703,33 @@ const App: React.FC = () => {
     } catch (err) {
       console.error(err);
       const errorDetail = err instanceof Error ? err.message : String(err);
-      const errorLog = gameState.language === 'en'
-        ? `\n\n[LOG] ${errorDetail}`
-        : `\n\n[日志] ${errorDetail}`;
+      const errorLog = state.language === 'en'
+        ? `[LOG] ${errorDetail}`
+        : `[日志] ${errorDetail}`;
+      const errorMessage = state.language === 'en'
+        ? `VAULT-TEC ERROR: Narrative link unstable.\n${errorLog}`
+        : `避难所科技错误：叙事链路不稳定。\n${errorLog}`;
+      setSystemError(errorMessage);
+      setLastAction(prev => (prev ? { ...prev, status: 'error' } : prev));
       setGameState(prev => ({ 
         ...prev, 
         isThinking: false,
         ap: currentAp,
         apLastUpdated: currentApLastUpdated,
-        history: [...updatedHistory, { 
-          sender: 'narrator', 
-          text: gameState.language === 'en' 
-            ? `VAULT-TEC ERROR: Narrative link unstable.${errorLog}` 
-            : `避难所科技错误：叙事链路不稳定。${errorLog}` 
-        }]
-      }))
+        turnCount: state.turnCount,
+        history: updatedHistory
+      }));
     }
+  };
+
+  const handleReroll = () => {
+    if (!lastAction || gameState.isThinking) return;
+    const rerollState: GameState = {
+      ...lastAction.snapshot,
+      settings: gameState.settings,
+      language: gameState.language
+    };
+    handleAction(undefined, lastAction.text, rerollState, { reroll: true });
   };
 
   const toggleLanguage = (lang: Language) => {
@@ -2661,7 +2782,15 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        <Terminal history={gameState.history} isThinking={gameState.isThinking} />
+        <Terminal
+          history={gameState.history}
+          isThinking={gameState.isThinking}
+          systemError={systemError}
+          systemErrorLabel={isZh ? '> 系统日志' : '> SYSTEM LOG'}
+          onReroll={handleReroll}
+          canReroll={canReroll}
+          rerollLabel={isZh ? '重掷' : 'REROLL'}
+        />
 
         <form onSubmit={handleAction} className="p-3 md:p-4 bg-black/80 border-t border-[#1aff1a]/30 flex space-x-2 md:space-x-4">
           <input 
