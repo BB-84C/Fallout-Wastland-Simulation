@@ -320,6 +320,17 @@ const mergeTokenUsage = (base: TokenUsage, delta?: TokenUsage | null): TokenUsag
   };
 };
 
+const rollEra = () => {
+  const era = FALLOUT_ERA_STARTS[Math.floor(Math.random() * FALLOUT_ERA_STARTS.length)];
+  const randomHour = Math.floor(Math.random() * 12) + 6;
+  const date = new Date(Date.UTC(era.year, 6, 15, randomHour, 0, 0));
+  return {
+    year: era.year,
+    region: era.region,
+    time: date.toISOString()
+  };
+};
+
 const cloneGameState = (state: GameState): GameState => {
   if (typeof structuredClone === 'function') {
     return structuredClone(state);
@@ -1296,16 +1307,13 @@ const App: React.FC = () => {
       }
     }
 
-    const era = FALLOUT_ERA_STARTS[Math.floor(Math.random() * FALLOUT_ERA_STARTS.length)];
-    const randomHour = Math.floor(Math.random() * 12) + 6;
-    const date = new Date(Date.UTC(era.year, 6, 15, randomHour, 0, 0));
-    const initialTime = date.toISOString();
+    const { year, region, time } = rollEra();
     
     setGameState(prev => ({ 
       ...prev, 
-      currentYear: era.year, 
-      location: era.region,
-      currentTime: initialTime
+      currentYear: year, 
+      location: region,
+      currentTime: time
     }));
     setView('creation');
   }, [isNormal, isModelConfigured, textProvider, useProxy, hasTextUserKey]);
@@ -1730,6 +1738,17 @@ const App: React.FC = () => {
       language: gameState.language
     };
     handleAction(undefined, lastAction.text, rerollState, { reroll: true });
+  };
+
+  const rerollCreationParams = () => {
+    if (gameState.isThinking) return;
+    const { year, region, time } = rollEra();
+    setGameState(prev => ({
+      ...prev,
+      currentYear: year,
+      location: region,
+      currentTime: time
+    }));
   };
 
   const toggleLanguage = (lang: Language) => {
@@ -2685,6 +2704,13 @@ const App: React.FC = () => {
                {displayLocation} / {displayYear}
              </div>
           </div>
+          <button
+            onClick={rerollCreationParams}
+            disabled={gameState.isThinking}
+            className="mb-4 w-full text-xs md:text-sm border border-[#1aff1a]/50 py-2 hover:bg-[#1aff1a]/20 transition-all disabled:opacity-40"
+          >
+            {isZh ? '这个世界太可怕了，我要换一个世界生活' : 'This world is terrifying. I want another life somewhere else.'}
+          </button>
           <p className="mb-4 text-base md:text-lg">
             {gameState.language === 'en' 
               ? 'Describe your origin, skills, and current state. The system will derive your profile.' 
