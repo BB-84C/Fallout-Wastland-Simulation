@@ -97,6 +97,7 @@ export interface GameSettings {
   imageModel?: ImageModelId;
   userSystemPrompt?: string;
   userSystemPromptCustom?: boolean;
+  maxCompressedMemoryK?: number;
 }
 
 export type UserTier = 'admin' | 'normal' | 'guest';
@@ -134,6 +135,7 @@ export interface HistoryEntry {
   text: string;
   imageUrl?: string;
   groundingSources?: GroundingSource[];
+  meta?: 'memory';
 }
 
 export interface TokenUsage {
@@ -157,6 +159,9 @@ export interface GameState {
   apLastUpdated: number;
   turnCount: number;
   tokenUsage: TokenUsage;
+  compressedMemory?: string;
+  compressionTurnCounter: number;
+  compressionEnabled: boolean;
 }
 
 export interface NarratorResponse {

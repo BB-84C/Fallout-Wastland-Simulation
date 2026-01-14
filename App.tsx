@@ -5,7 +5,7 @@ import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
 import StatBar from './components/StatBar';
-import { createPlayerCharacter, getNarrativeResponse, generateSceneImage, generateCompanionAvatar } from './services/modelService';
+import { createPlayerCharacter, getNarrativeResponse, generateSceneImage, generateCompanionAvatar, compressMemory } from './services/modelService';
 import wechatQr from './assets/wech.png';
 import alipayQr from './assets/zhif.png';
 import venmoQr from './assets/venm.png';
@@ -30,6 +30,7 @@ const USER_ONBOARD_PREFIX = 'fallout_user_onboarded';
 const RESERVED_ADMIN_USERNAME = 'admin';
 const GUEST_COOLDOWN_KEY = 'fallout_guest_cooldown_until';
 const GUEST_COOLDOWN_MS = 30 * 60 * 1000;
+const MEMORY_ENTRY_TAG = 'COMPRESSED MEMORY';
 const DEFAULT_USER_PROMPT_ZH = `1. 请输出800 tokens左右
 2. 每轮给出三个可选行动
 3. 用户想要追求高难度的游玩体验，请安排更加离奇的事件，同时提高玩家各种行为的判定失败几率。`;
@@ -310,6 +311,71 @@ const applyDefaultUserPrompt = (settings: GameSettings, language: Language): Gam
   return settings;
 };
 
+const clampCompressedMemory = (text: string, maxMemoryK: number, language: Language) => {
+  if (!text) return text;
+  const safeK = Math.max(1, Math.floor(maxMemoryK || 1));
+  const charCap = safeK * 1000 * (language === 'zh' ? 1 : 4);
+  if (text.length <= charCap) return text.trim();
+  const suffix = language === 'zh' ? '…' : '...';
+  return `${text.slice(0, charCap).trim()}${suffix}`;
+};
+
+const extractLegacyCompressedMemory = (history: HistoryEntry[]) => {
+  let memoryText = '';
+  const cleaned: HistoryEntry[] = [];
+  history.forEach(entry => {
+    const anyEntry = entry as any;
+    if (anyEntry && typeof anyEntry === 'object' && typeof anyEntry.compressed_memory === 'string') {
+      if (!memoryText) memoryText = anyEntry.compressed_memory;
+      return;
+    }
+    if (entry.meta === 'memory') {
+      if (!memoryText) memoryText = entry.text || '';
+      return;
+    }
+    cleaned.push(entry);
+  });
+  return { memoryText: memoryText.trim(), cleanedHistory: cleaned };
+};
+
+const buildNarratorHistory = (
+  history: HistoryEntry[],
+  limit: number | null,
+  compressedMemory: string | undefined,
+  useMemory = true
+) => {
+  const nonMemory = history.filter(item => item.meta !== 'memory' && !isErrorHistoryEntry(item));
+  const recent = limit ? nonMemory.slice(-limit) : nonMemory;
+  const memoryText = (compressedMemory || '').trim();
+  if (!memoryText || !useMemory) return recent;
+  return [
+    { sender: 'narrator', text: `${MEMORY_ENTRY_TAG}:\n${memoryText}` },
+    ...recent
+  ];
+};
+
+const buildCompressionPayload = (state: GameState, limit: number) => {
+  const nonMemory = state.history.filter(item => item.meta !== 'memory' && !isErrorHistoryEntry(item));
+  const recentHistory = nonMemory.slice(-limit);
+  const { history, compressedMemory, ...saveState } = state;
+  return {
+    saveState,
+    compressedMemory: (compressedMemory || '').trim(),
+    recentHistory
+  };
+};
+
+const isErrorHistoryEntry = (entry: HistoryEntry) => {
+  if (entry.sender !== 'narrator') return false;
+  const text = entry.text || '';
+  return (
+    text.includes('VAULT-TEC ERROR') ||
+    text.includes('避难所科技错误') ||
+    text.includes('[RULE ERROR') ||
+    text.includes('规则错误')
+  );
+};
+
 const normalizeProviderSettings = (settings: GameSettings): GameSettings => {
   const fallbackProvider = settings.textProvider || settings.imageProvider || settings.modelProvider || 'gemini';
   return {
@@ -434,6 +500,7 @@ const formatExportLabel = (sender: HistoryEntry['sender'], language: Language) =
 const buildExportMarkdown = (history: HistoryEntry[], language: Language) => {
   const blocks: string[] = [];
   history.forEach(entry => {
+    if (entry.meta === 'memory') return;
     blocks.push(`## ${formatExportLabel(entry.sender, language)}`);
     blocks.push(entry.text);
     if (entry.imageUrl) {
@@ -474,20 +541,22 @@ const escapeHtml = (value: string) =>
 const escapeHtmlAttr = (value: string) => escapeHtml(value);
 
 const buildExportHtml = (history: HistoryEntry[], language: Language) => {
-  const entries = history.map(entry => {
-    const label = formatExportLabel(entry.sender, language);
-    const text = escapeHtml(entry.text).replace(/\n/g, '<br />');
-    const image = entry.imageUrl
-      ? `<div class="image"><img src="${escapeHtmlAttr(entry.imageUrl)}" alt="Scene" /></div>`
-      : '';
-    return `
-      <section class="entry">
-        <div class="label">${label}</div>
-        <div class="text">${text}</div>
-        ${image}
-      </section>
-    `;
-  }).join('\n');
+  const entries = history
+    .filter(entry => entry.meta !== 'memory')
+    .map(entry => {
+      const label = formatExportLabel(entry.sender, language);
+      const text = escapeHtml(entry.text).replace(/\n/g, '<br />');
+      const image = entry.imageUrl
+        ? `<div class="image"><img src="${escapeHtmlAttr(entry.imageUrl)}" alt="Scene" /></div>`
+        : '';
+      return `
+        <section class="entry">
+          <div class="label">${label}</div>
+          <div class="text">${text}</div>
+          ${image}
+        </section>
+      `;
+    }).join('\n');
   return `<!doctype html>
 <html lang="${language}">
   <head>
@@ -582,6 +651,9 @@ const createInitialGameState = (
     apLastUpdated,
     turnCount: 0,
     tokenUsage: { sent: 0, received: 0, total: 0 },
+    compressedMemory: '',
+    compressionTurnCounter: 0,
+    compressionEnabled: true
   };
 };
 
@@ -723,6 +795,12 @@ type LastActionState = {
   status: 'pending' | 'resolved' | 'error';
 };
 
+type LegacyCompressionPrompt = {
+  state: GameState;
+  limit: number;
+  reason: 'no-memory' | 'memory-no-counter';
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<'auth' | 'start' | 'creation' | 'playing'>('auth');
   const [gameState, setGameState] = useState<GameState>(
@@ -733,6 +811,11 @@ const App: React.FC = () => {
   const [hasSave, setHasSave] = useState(false);
   const [systemError, setSystemError] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<LastActionState | null>(null);
+  const [isCompressing, setIsCompressing] = useState(false);
+  const [compressionError, setCompressionError] = useState<string | null>(null);
+  const [compressionStatus, setCompressionStatus] = useState<string | null>(null);
+  const [legacyCompressionPrompt, setLegacyCompressionPrompt] = useState<LegacyCompressionPrompt | null>(null);
+  const [isManualCompressionConfirmOpen, setIsManualCompressionConfirmOpen] = useState(false);
   const [keyAlert, setKeyAlert] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -756,6 +839,8 @@ const App: React.FC = () => {
   const [creationStartTime, setCreationStartTime] = useState<number | null>(null);
   const [creationElapsed, setCreationElapsed] = useState(0);
   const lastHistoryLength = useRef(0);
+  const lastCompressedMemory = useRef('');
+  const compressionStatusTimeout = useRef<number | null>(null);
 
   const activeTier: UserTier = currentUser?.tier ?? 'guest';
   const isAdmin = activeTier === 'admin';
@@ -781,8 +866,8 @@ const App: React.FC = () => {
   const rawHistoryLimit = Number.isFinite(gameState.settings.maxHistoryTurns)
     ? Math.trunc(gameState.settings.maxHistoryTurns)
     : DEFAULT_SETTINGS.maxHistoryTurns;
-  const lockedHistoryLimit = isGuest ? getHistoryLimitForTier('guest') : rawHistoryLimit;
-  const historyLimit = lockedHistoryLimit === -1 ? null : Math.max(1, lockedHistoryLimit);
+    const lockedHistoryLimit = isGuest ? getHistoryLimitForTier('guest') : rawHistoryLimit;
+    const historyLimit = lockedHistoryLimit === -1 ? null : Math.max(1, lockedHistoryLimit);
   const textProvider: ModelProvider = isGuest || isAdmin
     ? 'gemini'
     : (gameState.settings.textProvider || gameState.settings.modelProvider || 'gemini');
@@ -801,7 +886,9 @@ const App: React.FC = () => {
   const imageConfigured = !imagesEnabled || (!!imageProvider && !!hasImageAuthKey && hasProxyBase && !!selectedImageModel);
   const isModelConfigured = isNormal ? (textConfigured && imageConfigured) : true;
   const canPlay = isGuest || isAdmin || isModelConfigured;
-  const canReroll = !!lastAction && !gameState.isThinking;
+  const compressionLocked = isCompressing || !!compressionError || !!legacyCompressionPrompt || isManualCompressionConfirmOpen;
+  const canReroll = !!lastAction && !gameState.isThinking && !compressionLocked;
+  const inputLocked = gameState.isThinking || compressionLocked;
 
   useEffect(() => {
     let active = true;
@@ -933,11 +1020,15 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!isNormal || !currentUser) return;
-    if (gameState.history.length <= lastHistoryLength.current) {
+    const currentMemory = gameState.compressedMemory || '';
+    const historyChanged = gameState.history.length > lastHistoryLength.current;
+    const memoryChanged = currentMemory !== lastCompressedMemory.current;
+    if (!historyChanged && !memoryChanged) {
       lastHistoryLength.current = gameState.history.length;
       return;
     }
     lastHistoryLength.current = gameState.history.length;
+    lastCompressedMemory.current = currentMemory;
     const key = getSaveKey(currentUser.username);
     localStorage.setItem(key, JSON.stringify(gameState));
     setHasSave(true);
@@ -1095,6 +1186,12 @@ const App: React.FC = () => {
       const parsedKnownNpcs = Array.isArray(parsed?.knownNpcs)
         ? parsed.knownNpcs.map((npc: Actor) => normalizeActor(npc))
         : [];
+      const legacyExtracted = Array.isArray(parsed?.history)
+        ? extractLegacyCompressedMemory(parsed.history as HistoryEntry[])
+        : { memoryText: '', cleanedHistory: parsed?.history || [] };
+      const normalizedHistory = Array.isArray(legacyExtracted.cleanedHistory)
+        ? legacyExtracted.cleanedHistory
+        : [];
       const now = Date.now();
       const proxyEnabled = currentUser.settings.useProxy && currentUser.tier === 'normal';
       const hasKey = currentUser.tier === 'normal'
@@ -1106,6 +1203,12 @@ const App: React.FC = () => {
         hasKey
       );
       const nextSettings = applyDefaultUserPrompt(settings, parsed?.language || gameState.language);
+      const compressionEnabled = typeof parsed?.compressionEnabled === 'boolean'
+        ? parsed.compressionEnabled
+        : true;
+      const compressionTurnCounter = typeof parsed?.compressionTurnCounter === 'number'
+        ? parsed.compressionTurnCounter
+        : 0;
       let clampedAp = Math.min(maxAp, typeof currentUser.ap === 'number' ? currentUser.ap : maxAp);
       let apLastUpdated = typeof currentUser.apLastUpdated === 'number' && currentUser.apLastUpdated > 0
         ? currentUser.apLastUpdated
@@ -1115,8 +1218,8 @@ const App: React.FC = () => {
         clampedAp = synced.ap;
         apLastUpdated = synced.apLastUpdated;
       }
-      setGameState(prev => ({
-        ...prev,
+      const nextState: GameState = {
+        ...gameState,
         ...parsed,
         player: parsedPlayer,
         knownNpcs: parsedKnownNpcs,
@@ -1125,8 +1228,41 @@ const App: React.FC = () => {
         apLastUpdated,
         turnCount: typeof parsed.turnCount === 'number' ? parsed.turnCount : 0,
         tokenUsage: normalizeTokenUsage(parsed?.tokenUsage),
-      }));
+        history: normalizedHistory,
+        compressedMemory: (typeof parsed?.compressedMemory === 'string' ? parsed.compressedMemory : legacyExtracted.memoryText) || '',
+        compressionTurnCounter,
+        compressionEnabled,
+        language: parsed?.language || gameState.language
+      };
+      const memoryCap = nextSettings.maxCompressedMemoryK ?? DEFAULT_SETTINGS.maxCompressedMemoryK;
+      const normalizedMemory = nextState.compressedMemory
+        ? clampCompressedMemory(nextState.compressedMemory, memoryCap, nextState.language)
+        : '';
+      nextState.compressedMemory = normalizedMemory;
+      setGameState(nextState);
       setView('playing');
+
+      const isLegacy = typeof parsed?.compressionTurnCounter !== 'number' || typeof parsed?.compressionEnabled !== 'boolean';
+      if (isLegacy) {
+        const rawLimit = Number.isFinite(nextSettings.maxHistoryTurns)
+          ? Math.trunc(nextSettings.maxHistoryTurns)
+          : DEFAULT_SETTINGS.maxHistoryTurns;
+        const lockedLimit = isGuest ? getHistoryLimitForTier('guest') : rawLimit;
+        if (lockedLimit !== -1) {
+          const limit = Math.max(1, lockedLimit);
+          const nonMemoryCount = nextState.history.filter(entry =>
+            entry.meta !== 'memory' && !isErrorHistoryEntry(entry)
+          ).length;
+          if (nonMemoryCount > limit) {
+            const reason: LegacyCompressionPrompt['reason'] = nextState.compressedMemory ? 'memory-no-counter' : 'no-memory';
+            setLegacyCompressionPrompt({
+              state: nextState,
+              limit: nonMemoryCount,
+              reason
+            });
+          }
+        }
+      }
     }
   }, [currentUser, isGuest, isNormal, isModelConfigured, activeTier, maxAp, apRecovery]);
 
@@ -1135,9 +1271,14 @@ const App: React.FC = () => {
     setGameState(createInitialGameState(session.settings, session.ap, session.apLastUpdated, gameState.language));
     setHasSave(false);
     lastHistoryLength.current = 0;
+    lastCompressedMemory.current = '';
     setShowGuestNotice(false);
     setSystemError(null);
     setLastAction(null);
+    setIsCompressing(false);
+    setCompressionError(null);
+    setCompressionStatus(null);
+    setLegacyCompressionPrompt(null);
   };
 
   const handleLogin = () => {
@@ -1437,6 +1578,7 @@ const App: React.FC = () => {
         knownNpcs: initialKnownNpcs,
         isThinking: false,
         tokenUsage: mergeTokenUsage(prev.tokenUsage, creationUsage),
+        compressionTurnCounter: 0,
         history: [{ 
           sender: 'narrator', 
           text: startNarration, 
@@ -1444,6 +1586,11 @@ const App: React.FC = () => {
           groundingSources: imgData?.sources
         }]
       }));
+      setSystemError(null);
+      setLastAction(null);
+      setIsCompressing(false);
+      setCompressionError(null);
+      setCompressionStatus(null);
       setView('playing');
       setCreationPhase('');
       setCreationStartTime(null);
@@ -1475,6 +1622,7 @@ const App: React.FC = () => {
     const state = overrideState ?? gameState;
     const rawText = (overrideText ?? userInput).trim();
     if (!rawText || state.isThinking || !state.player) return;
+    if (compressionLocked) return;
     if (isNormal && !isModelConfigured) {
       setIsSettingsOpen(true);
       return;
@@ -1561,7 +1709,13 @@ const App: React.FC = () => {
 
     const actionText = rawText;
     const updatedHistory: HistoryEntry[] = [...baseHistory, { sender: 'player', text: actionText }];
-    const trimmedHistory = historyLimitAction ? updatedHistory.slice(-historyLimitAction) : updatedHistory;
+    const useMemory = state.compressionEnabled !== false;
+    const trimmedHistory = buildNarratorHistory(
+      updatedHistory,
+      historyLimitAction,
+      state.compressedMemory,
+      useMemory
+    );
     const lockedImageTurns = isNormal && !hasTextAuthKeyAction
       ? normalDefaultImageTurns
       : (isGuest ? guestFixedImageTurns : null);
@@ -1721,25 +1875,37 @@ const App: React.FC = () => {
       setSystemError(null);
       setLastAction(prev => (prev ? { ...prev, status: 'resolved' } : prev));
 
-      setGameState(prev => ({
-        ...prev,
+      const narratorEntry: HistoryEntry = {
+        sender: 'narrator',
+        text: `${response.storyText}${imageLog}`,
+        imageUrl: imgData?.url,
+        groundingSources: imgData?.sources
+      };
+      const nextHistory = [...updatedHistory, narratorEntry];
+      const compressionActive = !!historyLimitAction && state.compressionEnabled !== false;
+      const nextCounter = compressionActive ? (state.compressionTurnCounter || 0) + 1 : 0;
+      const nextState: GameState = {
+        ...state,
         isThinking: false,
         currentTime: newTime.toISOString(),
         quests: mergedQuests,
         knownNpcs: nextKnownNpcs,
         ap: nextAp,
         apLastUpdated: nextApLastUpdated,
-        tokenUsage: mergeTokenUsage(prev.tokenUsage, tokenDelta),
+        turnCount: nextTurn,
+        tokenUsage: mergeTokenUsage(state.tokenUsage, tokenDelta),
         player: response.updatedPlayer
-          ? (prev.player ? mergeActor(prev.player, response.updatedPlayer) : normalizeActor(response.updatedPlayer))
-          : prev.player, 
-        history: [...updatedHistory, { 
-          sender: 'narrator', 
-          text: `${response.storyText}${imageLog}`, 
-          imageUrl: imgData?.url,
-          groundingSources: imgData?.sources
-        }]
-      }));
+          ? (state.player ? mergeActor(state.player, response.updatedPlayer) : normalizeActor(response.updatedPlayer))
+          : state.player,
+        history: nextHistory,
+        compressionTurnCounter: nextCounter
+      };
+      setGameState(nextState);
+
+      if (compressionActive && historyLimitAction && nextCounter >= historyLimitAction) {
+        setLastAction(null);
+        await runMemoryCompression(nextState, historyLimitAction);
+      }
     } catch (err) {
       console.error(err);
       const errorDetail = err instanceof Error ? err.message : String(err);
@@ -1757,7 +1923,8 @@ const App: React.FC = () => {
         ap: currentAp,
         apLastUpdated: currentApLastUpdated,
         turnCount: state.turnCount,
-        history: updatedHistory
+        history: updatedHistory,
+        compressionTurnCounter: state.compressionTurnCounter || 0
       }));
     }
   };
@@ -1781,6 +1948,135 @@ const App: React.FC = () => {
       location: region,
       currentTime: time
     }));
+  };
+
+  const runMemoryCompression = async (state: GameState, limit: number) => {
+    if (limit <= 0) return;
+    const isZhCompression = state.language === 'zh';
+    if (compressionStatusTimeout.current) {
+      window.clearTimeout(compressionStatusTimeout.current);
+      compressionStatusTimeout.current = null;
+    }
+    setIsCompressing(true);
+    setCompressionError(null);
+    setCompressionStatus(isZhCompression
+      ? '叙事历史上限已到，正在进行记忆压缩...'
+      : 'Narrator history limit hit. Performing memory compression...');
+    try {
+      const payload = buildCompressionPayload(state, limit);
+      const maxMemoryK = state.settings.maxCompressedMemoryK || 25;
+      const result = await compressMemory(payload, state.language, maxMemoryK, {
+        tier: activeTier,
+        apiKey: currentUser?.textApiKey,
+        proxyApiKey: currentUser?.textProxyKey,
+        proxyBaseUrl: normalizeProxyBaseUrl(state.settings.proxyBaseUrl || ''),
+        useProxy: isNormal && !!state.settings.useProxy,
+        textModel: state.settings.textModel || undefined,
+        provider: (state.settings.textProvider || state.settings.modelProvider || 'gemini') as ModelProvider
+      });
+      const memoryText = result.memory?.trim();
+      if (!memoryText) {
+        throw new Error(isZhCompression ? '记忆压缩返回内容为空。' : 'Compression returned empty memory.');
+      }
+      const safeMemory = clampCompressedMemory(memoryText, maxMemoryK, state.language);
+      const nextHistory = state.history;
+      setGameState(prev => ({
+        ...prev,
+        history: nextHistory,
+        compressedMemory: safeMemory,
+        compressionTurnCounter: 0,
+        compressionEnabled: true,
+        tokenUsage: mergeTokenUsage(prev.tokenUsage, result.tokenUsage)
+      }));
+      const successMessage = isZhCompression ? '记忆压缩完成。' : 'Memory compression complete.';
+      setCompressionStatus(successMessage);
+      compressionStatusTimeout.current = window.setTimeout(() => {
+        setCompressionStatus(null);
+        compressionStatusTimeout.current = null;
+      }, 4000);
+      setIsCompressing(false);
+      setCompressionError(null);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setCompressionStatus(null);
+      setIsCompressing(false);
+      setCompressionError(isZhCompression ? `记忆压缩失败：${detail}` : `Memory compression failed: ${detail}`);
+    }
+  };
+
+  const retryMemoryCompression = () => {
+    if (gameState.isThinking || isCompressing) return;
+    const rawLimit = Number.isFinite(gameState.settings.maxHistoryTurns)
+      ? Math.trunc(gameState.settings.maxHistoryTurns)
+      : DEFAULT_SETTINGS.maxHistoryTurns;
+    const lockedLimit = isGuest ? getHistoryLimitForTier('guest') : rawLimit;
+    if (lockedLimit === -1) return;
+    const limit = Math.max(1, lockedLimit);
+    runMemoryCompression(gameState, limit);
+  };
+
+  const runManualCompression = () => {
+    if (gameState.isThinking || isCompressing) return;
+    const nonMemoryCount = gameState.history.filter(entry =>
+      entry.meta !== 'memory' && !isErrorHistoryEntry(entry)
+    ).length;
+    const rawLimit = Number.isFinite(gameState.settings.maxHistoryTurns)
+      ? Math.trunc(gameState.settings.maxHistoryTurns)
+      : DEFAULT_SETTINGS.maxHistoryTurns;
+    const lockedLimit = isGuest ? getHistoryLimitForTier('guest') : rawLimit;
+    const historyLimit = lockedLimit === -1 ? null : Math.max(1, lockedLimit);
+    const targetLimit = gameState.compressedMemory
+      ? (historyLimit ?? nonMemoryCount)
+      : nonMemoryCount;
+    if (!targetLimit) return;
+    setLastAction(null);
+    const nextState = {
+      ...gameState,
+      compressionTurnCounter: 0,
+      compressionEnabled: true
+    };
+    setGameState(nextState);
+    runMemoryCompression(nextState, targetLimit);
+  };
+
+  const handleManualCompressionRequest = () => {
+    if (compressionLocked) return;
+    setIsManualCompressionConfirmOpen(true);
+  };
+
+  const handleManualCompressionConfirm = () => {
+    setIsManualCompressionConfirmOpen(false);
+    runManualCompression();
+  };
+
+  const handleLegacyCompressNow = () => {
+    if (!legacyCompressionPrompt) return;
+    const targetState = {
+      ...legacyCompressionPrompt.state,
+      compressionTurnCounter: 0,
+      compressionEnabled: true
+    };
+    setLegacyCompressionPrompt(null);
+    setCompressionError(null);
+    setCompressionStatus(null);
+    setGameState(targetState);
+    runMemoryCompression(targetState, legacyCompressionPrompt.limit);
+  };
+
+  const handleLegacyCompressLater = () => {
+    if (!legacyCompressionPrompt) return;
+    const nextState = {
+      ...legacyCompressionPrompt.state,
+      compressionTurnCounter: 0,
+      compressionEnabled: false
+    };
+    setLegacyCompressionPrompt(null);
+    setCompressionError(null);
+    setCompressionStatus(null);
+    setGameState(nextState);
+    setSystemError(isZh
+      ? '已暂时跳过记忆压缩。你可以在顶部按钮中手动压缩记忆。'
+      : 'Memory compression skipped for now. You can compress manually via the top button.');
   };
 
   const toggleLanguage = (lang: Language) => {
@@ -1920,6 +2216,19 @@ const App: React.FC = () => {
         ...prev.settings,
         userSystemPrompt: value,
         userSystemPromptCustom: true
+      }
+    }));
+  };
+
+  const updateCompressedMemoryLimit = (value: string) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return;
+    const clamped = Math.max(1, Math.floor(parsed));
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        maxCompressedMemoryK: clamped
       }
     }));
   };
@@ -2128,8 +2437,8 @@ const App: React.FC = () => {
             </div>
             <div className="text-xs opacity-70 mt-1">
               {isZh
-                ? '发送给叙事模型的历史回合上限。设置为 -1 表示全部历史。注册用户默认 100，临时用户固定 20。'
-                : 'Max turns sent to the narrator. Set to -1 to send all history. Registered default is 100; temporary users are fixed at 20.'}
+                ? '发送给叙事模型的历史回合上限。设置为 -1 表示全部历史。注册用户默认 30，临时用户固定 20。'
+                : 'Max turns sent to the narrator. Set to -1 to send all history. Registered default is 30; temporary users are fixed at 20.'}
             </div>
             <div className="mt-3 flex items-center space-x-3">
               <input
@@ -2149,6 +2458,29 @@ const App: React.FC = () => {
                 {isZh ? '临时用户固定为 20。' : 'Temporary users are fixed at 20.'}
               </div>
             )}
+          </div>
+
+          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
+            <div className="text-sm font-bold uppercase">
+              {isZh ? '压缩记忆上限 (K)' : 'Compressed memory cap (K)'}
+            </div>
+            <div className="text-xs opacity-70 mt-1">
+              {isZh
+                ? '压缩记忆的最大长度（单位 K token）。叙事历史越长，建议相应提高此上限，否则压缩记忆可能丢失重要细节；但上限越高、历史越长，响应越慢且成本更高。'
+                : 'Maximum size of compressed memory in K tokens. Longer narrator history needs a larger cap or the summary may lose key details; higher caps and longer history increase latency and cost.'}
+            </div>
+            <div className="mt-3 flex items-center space-x-3">
+              <input
+                type="number"
+                min={1}
+                value={gameState.settings.maxCompressedMemoryK ?? 25}
+                onChange={(e) => updateCompressedMemoryLimit(e.target.value)}
+                className="w-20 bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-sm focus:outline-none"
+              />
+              <span className="text-[10px] uppercase opacity-60">
+                K
+              </span>
+            </div>
           </div>
 
           {isNormal && (
@@ -2429,6 +2761,78 @@ const App: React.FC = () => {
           className="w-full h-40 md:h-48 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-xs focus:outline-none"
           placeholder={isZh ? '输入用户系统提示...' : 'Enter user system prompt...'}
         />
+      </div>
+    </div>
+  );
+  const legacyCompressionModal = legacyCompressionPrompt && (
+    <div className="fixed top-0 left-0 w-full h-full z-[3200] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-md w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 bg-black">
+        <h3 className="text-xl font-bold uppercase mb-3">
+          {isZh ? '记忆压缩提示' : 'Memory Compression'}
+        </h3>
+        <div className="text-sm opacity-80 space-y-2">
+          <div>
+            {isZh
+              ? '检测到旧存档的历史回合已超过当前叙事历史上限。'
+              : 'This save has more turns than the current narrator history limit.'}
+          </div>
+          <div>
+            {legacyCompressionPrompt.reason === 'no-memory'
+              ? (isZh
+                ? '当前没有压缩记忆。建议压缩全部历史以生成记忆（可能会丢失部分细节）。'
+                : 'No compressed memory found. Compressing the full history is recommended (some detail may be lost).')
+              : (isZh
+                ? '检测到压缩记忆但没有计数器记录，建议压缩全部历史以重置计数器。'
+                : 'Compressed memory exists but no counter was saved; compress the full history to reset it.')}
+          </div>
+        </div>
+        <div className="mt-4 space-y-2">
+          <button
+            onClick={handleLegacyCompressNow}
+            className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+          >
+            {isZh ? '立即压缩' : 'Compress now'}
+          </button>
+          <button
+            onClick={handleLegacyCompressLater}
+            className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+          >
+            {isZh ? '稍后再说' : 'Not now'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+  const manualCompressionModal = isManualCompressionConfirmOpen && (
+    <div className="fixed top-0 left-0 w-full h-full z-[3200] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-md w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 bg-black">
+        <h3 className="text-xl font-bold uppercase mb-3">
+          {isZh ? '确认压缩记忆' : 'Confirm Compression'}
+        </h3>
+        <div className="text-sm opacity-80 space-y-2">
+          <div>
+            {isZh
+              ? '手动压缩会覆盖已有压缩记忆，并可能丢失部分细节，且无法撤销。'
+              : 'Manual compression overwrites existing compressed memory and may lose detail. This cannot be undone.'}
+          </div>
+          <div>
+            {isZh ? '确定继续吗？' : 'Do you want to continue?'}
+          </div>
+        </div>
+        <div className="mt-4 space-y-2">
+          <button
+            onClick={handleManualCompressionConfirm}
+            className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+          >
+            {isZh ? '确认压缩' : 'Confirm'}
+          </button>
+          <button
+            onClick={() => setIsManualCompressionConfirmOpen(false)}
+            className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+          >
+            {isZh ? '取消' : 'Cancel'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -2801,6 +3205,8 @@ const App: React.FC = () => {
       {settingsModal}
       {helpModal}
       {userPromptModal}
+      {legacyCompressionModal}
+      {manualCompressionModal}
       {/* Main Terminal Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-black/40 h-full overflow-hidden">
         <header className="p-3 md:p-4 border-b border-[#1aff1a]/30 bg-black/60 flex justify-between items-center z-20">
@@ -2822,6 +3228,13 @@ const App: React.FC = () => {
               className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '设置' : 'SET'}
+            </button>
+            <button
+              onClick={handleManualCompressionRequest}
+              disabled={compressionLocked}
+              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
+            >
+              {isZh ? '压缩' : 'MEMORY'}
             </button>
             <button 
               onClick={() => setIsHelpOpen(true)}
@@ -2850,6 +3263,11 @@ const App: React.FC = () => {
           isThinking={gameState.isThinking}
           systemError={systemError}
           systemErrorLabel={isZh ? '> 系统日志' : '> SYSTEM LOG'}
+          compressionStatus={compressionStatus}
+          compressionError={compressionError}
+          compressionLabel={isZh ? '> 系统日志' : '> SYSTEM LOG'}
+          compressionRetryLabel={isZh ? '重试' : 'Retry'}
+          onRetryCompression={retryMemoryCompression}
           onReroll={handleReroll}
           canReroll={canReroll}
           rerollLabel={isZh ? '重掷' : 'REROLL'}
@@ -2862,12 +3280,12 @@ const App: React.FC = () => {
             onChange={(e) => setUserInput(e.target.value)}
             placeholder={gameState.language === 'en' ? "Your action..." : "你的行动..."}
             className="flex-1 bg-black border border-[#1aff1a]/50 p-3 md:p-4 text-[#1aff1a] text-lg md:text-xl focus:outline-none"
-            disabled={gameState.isThinking}
+            disabled={inputLocked}
             autoFocus
           />
           <button 
             type="submit"
-            disabled={gameState.isThinking || !userInput.trim()}
+            disabled={inputLocked || !userInput.trim()}
             className="px-4 md:px-8 border-2 border-[#1aff1a] hover:bg-[#1aff1a] hover:text-black font-bold uppercase transition-all whitespace-nowrap"
           >
             {gameState.language === 'en' ? 'EXE' : '执行'}

@@ -16,8 +16,8 @@ const TIER_SETTINGS: Record<UserTier, {
   historyLimit: number;
   apRecovery?: ApRecoveryConfig | null;
 }> = {
-  admin: { maxAp: ADMIN_MAX_AP, minImageTurns: 1, defaultImageTurns: 1, historyLimit: 100, apRecovery: null },
-  normal: { maxAp: NORMAL_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 100, apRecovery: { amount: 1, intervalMs: HOUR_MS } },
+  admin: { maxAp: ADMIN_MAX_AP, minImageTurns: 1, defaultImageTurns: 1, historyLimit: 30, apRecovery: null },
+  normal: { maxAp: NORMAL_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 30, apRecovery: { amount: 1, intervalMs: HOUR_MS } },
   guest: { maxAp: GUEST_MAX_AP, minImageTurns: 20, defaultImageTurns: 20, historyLimit: 20, apRecovery: null }
 };
 
@@ -34,7 +34,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   textModel: '',
   imageModel: '',
   userSystemPrompt: '',
-  userSystemPromptCustom: false
+  userSystemPromptCustom: false,
+  maxCompressedMemoryK: 25
 };
 
 export const getTierSettings = (tier: UserTier) => TIER_SETTINGS[tier];
@@ -70,10 +71,16 @@ export const normalizeSettingsForTier = (
     : historyValue < -1
       ? -1
       : Math.max(1, historyValue);
+  const rawMemoryK = settings.maxCompressedMemoryK;
+  const memoryValue = Number.isFinite(rawMemoryK)
+    ? Math.trunc(rawMemoryK as number)
+    : DEFAULT_SETTINGS.maxCompressedMemoryK;
+  const normalizedMemoryK = Math.max(1, memoryValue);
   return {
     ...DEFAULT_SETTINGS,
     ...settings,
     imageEveryTurns: Math.max(minTurns, Math.floor(fallbackTurns)),
-    maxHistoryTurns: normalizedHistory
+    maxHistoryTurns: normalizedHistory,
+    maxCompressedMemoryK: normalizedMemoryK
   };
 };

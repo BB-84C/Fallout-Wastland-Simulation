@@ -1,10 +1,11 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, ModelProvider, SpecialAttr, Skill, TokenUsage } from "../types";
+import { Actor, NarratorResponse, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, ModelProvider, SpecialAttr, Skill, TokenUsage, HistoryEntry } from "../types";
 import {
   createPlayerCharacter as createGeminiPlayer,
   getNarrativeResponse as getGeminiNarration,
   generateSceneImage as generateGeminiScene,
-  generateCompanionAvatar as generateGeminiAvatar
+  generateCompanionAvatar as generateGeminiAvatar,
+  compressMemory as compressGeminiMemory
 } from "./geminiService";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -121,6 +122,14 @@ const playerCreationSchema = {
   required: actorSchema.required
 };
 
+const memorySchema = {
+  type: Type.OBJECT,
+  properties: {
+    memory: { type: Type.STRING }
+  },
+  required: ["memory"]
+};
+
 const questSchema = {
   type: Type.ARRAY,
   items: {
@@ -141,8 +150,8 @@ const buildCharacterSystem = (targetLang: string, userSystemPrompt?: string) => 
 2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
 3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
 4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
-5. PERK SYSTEM: Assign 1-2 starting perks.
-6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
+5. PERK SYSTEM: Assign 1-2 starting perks. And 1 perk particularly relevant to the character background.
+6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC (even animals or any creatures) profiles and set ifCompanion=true.
 7. SKILLS: The skills object must include all skills with numeric values (do not omit any skill).
 8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
 ${userSystemPrompt && userSystemPrompt.trim() ? `9. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}
@@ -165,7 +174,7 @@ const buildNarratorSystem = (targetLang: string, year: number, location: string,
    - Based on the interaction history and NPC relationship, decide if any known NPC becomes a companion.
    - If a companion status changes, add an entry in 'companionUpdates' with the NPC name and ifCompanion=true/false.
    - Only include updates for NPCs already in Known NPCs or the newly created NPC.
-7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
+7. RULE GUARD: Player can only dictates what they think and what action will take. If player dictates narrative outcomes or facts/result of their will-do action, return 'ruleViolation'.
 8. TRANSLATION: Use "Term (Original)" for unlocalized items.
 9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
 ${userSystemPrompt && userSystemPrompt.trim() ? `10. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
@@ -194,6 +203,10 @@ TASK:
    - If a new goal is set by an NPC or circumstance, add a new quest to 'questUpdates'.
    - If an objective is met, update the 'status' to 'completed' in 'questUpdates'.
    - Use 'questUpdates' to signal changes to the quest log.
+3. Narrate the outcome as a DM of a Fallout RPG, focusing on vivid descriptions, character dialogues, and environmental details.
+4. Avoid assuming the player is the protagonist, unless the user specified or the player background says so.
+5. You are encouraged to create new events for the player that fit within the Fallout universe to enhance the story.
+6. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
 Return strict JSON with keys: storyText, ruleViolation, timePassedMinutes, questUpdates, companionUpdates, newNpc, updatedPlayer, imagePrompt.`;
 
 const normalizeProvider = (provider?: ModelProvider): ModelProvider =>
@@ -750,6 +763,104 @@ export async function getNarrativeResponse(
   const response = parseNarrator(parsed, userInput);
   response.tokenUsage = result.tokenUsage;
   return response;
+}
+
+export async function compressMemory(
+  payload: { saveState: any; compressedMemory: string; recentHistory: HistoryEntry[] },
+  lang: Language,
+  maxMemoryK: number,
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider }
+): Promise<{ memory: string; tokenUsage?: TokenUsage }> {
+  const provider = normalizeProvider(options?.provider);
+  const useProxy = !!options?.useProxy;
+  const historyText = payload.recentHistory
+    .map(entry => `${entry.sender.toUpperCase()}: ${entry.text}`)
+    .join("\n");
+  const prompt = `SAVE STATE (JSON, no history):
+${JSON.stringify(payload.saveState)}
+
+EXISTING COMPRESSED MEMORY:
+${payload.compressedMemory || 'None'}
+
+RECENT HISTORY:
+${historyText}
+
+Return JSON: {"memory": "..."} only.`;
+  const targetLang = lang === "zh" ? "Chinese" : "English";
+  const system = `You are the Vault-Tec Memory Compression System.
+1. Summarize the narrative memory for long-term continuity.
+2. Keep the memory at or under ${maxMemoryK}K tokens.
+3. Output language must be ${targetLang}.
+4. Return JSON with key "memory" only.`;
+
+  if (provider === "gemini") {
+    if (options?.tier === "guest") {
+      return compressGeminiMemory(payload, lang, maxMemoryK, {
+        tier: options?.tier,
+        apiKey: options?.apiKey,
+        textModel: options?.textModel
+      });
+    }
+    const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+    if (useProxy && !proxyBaseUrl) {
+      throw new Error("Missing proxy base URL.");
+    }
+    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const model = options?.textModel || "";
+    if (!model) {
+      throw new Error("Missing text model name.");
+    }
+    const ai = new GoogleGenAI({
+      apiKey,
+      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+    });
+    const response = await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: memorySchema,
+        systemInstruction: system
+      }
+    });
+    if (!response.text) {
+      throw new Error("No response from compression service.");
+    }
+    const parsed = safeJsonParse(response.text);
+    const memory = typeof parsed?.memory === "string" ? parsed.memory.trim() : "";
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: response.usageMetadata?.promptTokenCount,
+      completionTokens: response.usageMetadata?.candidatesTokenCount,
+      totalTokens: response.usageMetadata?.totalTokenCount
+    }, `${system}\n${prompt}`, response.text);
+    if (!memory) {
+      throw new Error("Compression returned empty memory.");
+    }
+    return { memory, tokenUsage };
+  }
+
+  const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
+  if (useProxy && !baseUrl) {
+    throw new Error("Missing proxy base URL.");
+  }
+  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+  const model = options?.textModel || "";
+  if (!model) {
+    throw new Error("Missing text model name.");
+  }
+
+  const result = provider === "openai"
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
+    : provider === "claude"
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
+
+  const parsed = safeJsonParse(result.content);
+  const memory = typeof parsed?.memory === "string" ? parsed.memory.trim() : "";
+  if (!memory) {
+    throw new Error("Compression returned empty memory.");
+  }
+  return { memory, tokenUsage: result.tokenUsage };
 }
 
 export async function generateCompanionAvatar(

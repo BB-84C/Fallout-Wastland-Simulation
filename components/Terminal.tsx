@@ -7,6 +7,11 @@ interface TerminalProps {
   isThinking: boolean;
   systemError?: string | null;
   systemErrorLabel?: string;
+  compressionStatus?: string | null;
+  compressionError?: string | null;
+  compressionLabel?: string;
+  compressionRetryLabel?: string;
+  onRetryCompression?: () => void;
   onReroll?: () => void;
   canReroll?: boolean;
   rerollLabel?: string;
@@ -17,14 +22,20 @@ const Terminal: React.FC<TerminalProps> = ({
   isThinking,
   systemError,
   systemErrorLabel,
+  compressionStatus,
+  compressionError,
+  compressionLabel,
+  compressionRetryLabel,
+  onRetryCompression,
   onReroll,
   canReroll,
   rerollLabel
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const displayHistory = history.filter(entry => entry.meta !== 'memory');
   const lastPlayerIndex = (() => {
-    for (let i = history.length - 1; i >= 0; i -= 1) {
-      if (history[i].sender === 'player') return i;
+    for (let i = displayHistory.length - 1; i >= 0; i -= 1) {
+      if (displayHistory[i].sender === 'player') return i;
     }
     return -1;
   })();
@@ -33,14 +44,14 @@ const Terminal: React.FC<TerminalProps> = ({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [history, isThinking, systemError]);
+  }, [displayHistory, isThinking, systemError, compressionStatus, compressionError]);
 
   return (
     <div 
       ref={scrollRef}
       className="flex-1 overflow-y-auto p-4 space-y-6 bg-black/40 border-b border-[#1aff1a]/30"
     >
-      {history.map((msg, i) => (
+      {displayHistory.map((msg, i) => (
         <div key={i} className={`flex flex-col ${msg.sender === 'player' ? 'items-end' : 'items-start'}`}>
           <div className={`max-w-[85%] p-3 rounded ${
             msg.sender === 'player' 
@@ -89,6 +100,30 @@ const Terminal: React.FC<TerminalProps> = ({
           )}
         </div>
       ))}
+      {compressionStatus && (
+        <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
+          <div className="text-[10px] uppercase opacity-60 mb-1 font-bold">
+            {compressionLabel || '> SYSTEM LOG'}
+          </div>
+          <div className="opacity-90">{compressionStatus}</div>
+        </div>
+      )}
+      {compressionError && (
+        <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
+          <div className="text-[10px] uppercase opacity-60 mb-1 font-bold">
+            {compressionLabel || '> SYSTEM LOG'}
+          </div>
+          <div className="opacity-90">{compressionError}</div>
+          {onRetryCompression && (
+            <button
+              onClick={onRetryCompression}
+              className="mt-3 text-[10px] uppercase border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+            >
+              {compressionRetryLabel || 'RETRY'}
+            </button>
+          )}
+        </div>
+      )}
       {systemError && (
         <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
           <div className="text-[10px] uppercase opacity-60 mb-1 font-bold">

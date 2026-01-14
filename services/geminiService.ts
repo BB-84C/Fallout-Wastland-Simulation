@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, TokenUsage } from "../types";
+import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, TokenUsage, HistoryEntry } from "../types";
 
 const actorSchema = {
   type: Type.OBJECT,
@@ -70,6 +70,14 @@ const playerCreationSchema = {
     }
   },
   required: actorSchema.required
+};
+
+const memorySchema = {
+  type: Type.OBJECT,
+  properties: {
+    memory: { type: Type.STRING }
+  },
+  required: ["memory"]
 };
 
 const DEFAULT_TEXT_MODEL = 'gemini-2.5-flash-lite';
@@ -440,6 +448,59 @@ export async function getNarrativeResponse(
     parsed.tokenUsage = tokenUsage;
   }
   return parsed;
+}
+
+export async function compressMemory(
+  payload: { saveState: any; compressedMemory: string; recentHistory: HistoryEntry[] },
+  lang: Language,
+  maxMemoryK: number,
+  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId }
+): Promise<{ memory: string; tokenUsage?: TokenUsage }> {
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
+  const ai = new GoogleGenAI({ apiKey: apiKey || '' });
+  const targetLang = lang === 'zh' ? 'Chinese' : 'English';
+  const historyText = payload.recentHistory
+    .map(entry => `${entry.sender?.toUpperCase?.() || 'NARRATOR'}: ${entry.text}`)
+    .join('\n');
+  const prompt = `SAVE STATE (JSON, no history):
+${JSON.stringify(payload.saveState)}
+
+EXISTING COMPRESSED MEMORY:
+${payload.compressedMemory || 'None'}
+
+RECENT HISTORY:
+${historyText}
+
+Return JSON: {"memory": "..."} only.`;
+  const systemInstruction = `You are the Vault-Tec Memory Compression System.
+1. Summarize the narrative memory for long-term continuity.
+2. Keep the memory at or under ${maxMemoryK}K tokens.
+3. Output language must be ${targetLang}.
+4. Return JSON with key "memory" only.`;
+
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: memorySchema,
+      systemInstruction
+    }
+  });
+
+  if (!response.text) throw new Error("No response from compression service.");
+  const parsed = safeJsonParse(response.text);
+  const memory = typeof parsed?.memory === 'string' ? parsed.memory.trim() : '';
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: response.usageMetadata?.promptTokenCount,
+    completionTokens: response.usageMetadata?.candidatesTokenCount,
+    totalTokens: response.usageMetadata?.totalTokenCount
+  }, `${systemInstruction}\n${prompt}`, response.text);
+  if (!memory) {
+    throw new Error("Compression returned empty memory.");
+  }
+  return { memory, tokenUsage };
 }
 
 export async function generateCompanionAvatar(
