@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, TokenUsage, HistoryEntry } from "../types";
+import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, TokenUsage, StatusUpdate, InventoryItem, HistoryEntry } from "../types";
 
 const actorSchema = {
   type: Type.OBJECT,
@@ -47,8 +47,11 @@ const actorSchema = {
           type: { type: Type.STRING },
           description: { type: Type.STRING },
           weight: { type: Type.NUMBER },
-          value: { type: Type.NUMBER }
-        }
+          value: { type: Type.NUMBER },
+          count: { type: Type.NUMBER },
+          isConsumable: { type: Type.BOOLEAN }
+        },
+        required: ["name", "type", "description", "weight", "value", "count", "isConsumable"]
       }
     },
     lore: { type: Type.STRING },
@@ -130,6 +133,56 @@ const questSchema = {
     },
     required: ["id", "name", "objective", "status", "hiddenProgress"]
   }
+};
+
+const companionUpdatesSchema = {
+  type: Type.ARRAY,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      name: { type: Type.STRING },
+      ifCompanion: { type: Type.BOOLEAN },
+      reason: { type: Type.STRING }
+    },
+    required: ["name", "ifCompanion"]
+  }
+};
+
+const statusSchema = {
+  type: Type.OBJECT,
+  properties: {
+    updatedPlayer: actorSchema,
+    questUpdates: questSchema,
+    companionUpdates: companionUpdatesSchema,
+    newNpc: actorSchema,
+    location: { type: Type.STRING },
+    currentYear: { type: Type.NUMBER }
+  }
+};
+
+const inventoryItemSchema = {
+  type: Type.OBJECT,
+  properties: {
+    name: { type: Type.STRING },
+    type: { type: Type.STRING },
+    description: { type: Type.STRING },
+    weight: { type: Type.NUMBER },
+    value: { type: Type.NUMBER },
+    count: { type: Type.NUMBER },
+    isConsumable: { type: Type.BOOLEAN }
+  },
+  required: ["name", "type", "description", "weight", "value", "count", "isConsumable"]
+};
+
+const inventoryRefreshSchema = {
+  type: Type.OBJECT,
+  properties: {
+    inventory: {
+      type: Type.ARRAY,
+      items: inventoryItemSchema
+    }
+  },
+  required: ["inventory"]
 };
 
 const resolveApiKey = (overrideKey?: string) => {
@@ -376,32 +429,17 @@ export async function getNarrativeResponse(
 
     TASK:
     1. Determine the outcome of the action.
-    2. CHECK QUESTS: Does this action start a new quest, progress an existing one, or complete/fail one? 
-       - If a new goal is set by an NPC or circumstance, add a new quest to 'questUpdates'.
-       - If an objective is met, update the 'status' to 'completed' in 'questUpdates'.
-       - Use 'questUpdates' to signal changes to the quest log.
+    2. Narrate the outcome as a DM of a Fallout RPG, focusing on vivid descriptions, character dialogues, and environmental details.
   `;
   const systemInstruction = `You are the Fallout Overseer. 
           1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
           1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing narration. Keep the narration immersive.
           2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
-      3. QUEST SYSTEM (CRITICAL):
-         - You are responsible for maintaining the quest log via the 'questUpdates' field.
-         - CREATE: If the player is given a task (e.g., "Find the water chip", "Kill the radroaches"), you MUST generate a new quest object in 'questUpdates' with a unique ID.
-         - UPDATE: If the player completes an objective or receives new information that changes the goal, provide the updated quest in 'questUpdates'.
-         - FINISH: When a task is done, set its status to 'completed'.
-         - Never delete quests; only update their status.
-      4. ECONOMY & TRADING: 
-         - Calculate costs based on Barter skill, Charisma, and perks. Update 'updatedPlayer' caps and inventory on trade.
-      5. PERKS: Incorporate player perks into story outcomes.
-      6. COMPANION SYSTEM:
-         - Based on the interaction history and NPC relationship, decide if any known NPC becomes a companion.
-         - If a companion status changes, add an entry in 'companionUpdates' with the NPC name and ifCompanion=true/false.
-         - Only include updates for NPCs already in Known NPCs or the newly created NPC.
-      7. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
-      8. TRANSLATION: Use "Term (Original)" for unlocalized items.
-      9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
-      ${options?.userSystemPrompt?.trim() ? `10. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
+      3. STATUS CONTROL: Do NOT update quests, inventory, caps, perks, companions, location, or any player/NPC stats. A separate status manager handles all status updates.
+      4. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
+      5. TRANSLATION: Use "Term (Original)" for unlocalized items.
+      6. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+      ${options?.userSystemPrompt?.trim() ? `7. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
 
   const response = await ai.models.generateContent({
     model: selectedTextModel,
@@ -414,21 +452,6 @@ export async function getNarrativeResponse(
           storyText: { type: Type.STRING },
           ruleViolation: { type: Type.STRING },
           timePassedMinutes: { type: Type.NUMBER },
-          questUpdates: questSchema,
-          companionUpdates: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING },
-                ifCompanion: { type: Type.BOOLEAN },
-                reason: { type: Type.STRING }
-              },
-              required: ["name", "ifCompanion"]
-            }
-          },
-          newNpc: actorSchema,
-          updatedPlayer: actorSchema,
           imagePrompt: { type: Type.STRING }
         },
         required: ["storyText", "timePassedMinutes", "imagePrompt"]
@@ -448,6 +471,119 @@ export async function getNarrativeResponse(
     parsed.tokenUsage = tokenUsage;
   }
   return parsed;
+}
+
+export async function getStatusUpdate(
+  player: Actor,
+  quests: Quest[],
+  knownNpcs: Actor[],
+  year: number,
+  location: string,
+  currentTime: string,
+  narration: string,
+  lang: Language,
+  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId }
+): Promise<StatusUpdate & { tokenUsage?: TokenUsage }> {
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
+  const ai = new GoogleGenAI({ apiKey: apiKey || '' });
+  const targetLang = lang === 'zh' ? 'Chinese' : 'English';
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
+
+  const prompt = `
+    Environment Year: ${year}
+    Environment Location: ${location}
+    Current Time: ${currentTime}
+    Current Player Status: ${JSON.stringify(player)}
+    Current Quests: ${JSON.stringify(quests)}
+    Known NPCs: ${JSON.stringify(knownNpcs)}
+
+    LAST NARRATION:
+    ${narration}
+
+    TASK:
+    Update status fields based on the narration. Return JSON with optional keys:
+    updatedPlayer, questUpdates, companionUpdates, newNpc, location, currentYear.
+    If no changes are needed, return {}.
+  `;
+  const systemInstruction = `You are the Vault-Tec Status Manager.
+          1. PURPOSE: Update ONLY status data shown in the status bar (player stats, inventory, caps, quests, known NPCs/companions, location/year).
+          2. INPUTS: Use the CURRENT STATUS and the LAST NARRATION only. Do NOT infer changes that are not explicitly stated or clearly implied by the narration.
+          3. CONSISTENCY: Keep existing items, caps, perks, SPECIAL, skills, and quests unless the narration clearly changes them. Never invent trades or items.
+          4. INVENTORY: Items include count (number) and isConsumable (boolean). If a consumable is used, decrement its count. Remove items with count <= 0. Do not change counts unless the narration implies use, loss, or gain.
+          5. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
+          6. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
+          7. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
+          8. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
+
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: statusSchema,
+      systemInstruction
+    }
+  });
+
+  if (!response.text) throw new Error("Connection to the Wasteland lost.");
+  const parsed = safeJsonParse(response.text);
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: response.usageMetadata?.promptTokenCount,
+    completionTokens: response.usageMetadata?.candidatesTokenCount,
+    totalTokens: response.usageMetadata?.totalTokenCount
+  }, `${systemInstruction}\n${prompt}`, response.text);
+  if (parsed && typeof parsed === 'object') {
+    (parsed as any).tokenUsage = tokenUsage;
+    return parsed as StatusUpdate & { tokenUsage?: TokenUsage };
+  }
+  return { tokenUsage } as StatusUpdate & { tokenUsage?: TokenUsage };
+}
+
+export async function refreshInventory(
+  inventory: InventoryItem[],
+  lang: Language,
+  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId }
+): Promise<{ inventory: InventoryItem[] } & { tokenUsage?: TokenUsage }> {
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
+  const ai = new GoogleGenAI({ apiKey: apiKey || '' });
+  const targetLang = lang === 'zh' ? 'Chinese' : 'English';
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
+
+  const prompt = `
+    Current Inventory (JSON):
+    ${JSON.stringify(inventory)}
+
+    TASK:
+    Return JSON with key inventory containing the rectified items.
+  `;
+  const systemInstruction = `You are the Vault-Tec Inventory Auditor.
+          1. PURPOSE: Clean and rectify the player's inventory data only.
+          2. WEIGHT FIX: If an item's weight is 0 lb, verify via Fallout Wiki and correct it. If the item truly weighs 0 (e.g. bottle caps), keep 0.
+          3. COUNT FIX: If count is missing or invalid, assign a reasonable count based on item type and description. Default to 1 if unsure.
+          4. CONSUMABLE FLAG: Set isConsumable=true for items that are eaten/used up (Aid/food/chems/drinks, stimpaks, etc.). Set false otherwise.
+          5. CONSISTENCY: Do not rename items or change their type/description unless clearly wrong. Keep value unless obviously invalid.
+          6. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
+          7. RETURN FORMAT: Return JSON only with key inventory.`;
+
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: inventoryRefreshSchema,
+      systemInstruction
+    }
+  });
+
+  if (!response.text) throw new Error("Connection to the Wasteland lost.");
+  const parsed = safeJsonParse(response.text);
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: response.usageMetadata?.promptTokenCount,
+    completionTokens: response.usageMetadata?.candidatesTokenCount,
+    totalTokens: response.usageMetadata?.totalTokenCount
+  }, `${systemInstruction}\n${prompt}`, response.text);
+  const items = parsed && typeof parsed === 'object' && Array.isArray(parsed.inventory) ? parsed.inventory : [];
+  return { inventory: items, tokenUsage };
 }
 
 export async function compressMemory(

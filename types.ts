@@ -50,6 +50,8 @@ export interface InventoryItem {
   description: string;
   weight: number;
   value: number;
+  count: number;
+  isConsumable: boolean;
 }
 
 export interface Actor {
@@ -130,6 +132,15 @@ export interface CompanionUpdate {
   reason?: string;
 }
 
+export interface StatusUpdate {
+  updatedPlayer?: Actor;
+  questUpdates?: Quest[];
+  companionUpdates?: CompanionUpdate[];
+  newNpc?: Actor;
+  location?: string;
+  currentYear?: number;
+}
+
 export interface HistoryEntry {
   sender: 'player' | 'narrator';
   text: string;
@@ -169,9 +180,5 @@ export interface NarratorResponse {
   ruleViolation: string | null;
   timePassedMinutes: number;
   tokenUsage?: TokenUsage;
-  questUpdates?: Quest[];
-  companionUpdates?: CompanionUpdate[];
-  newNpc?: Actor;
-  updatedPlayer?: Actor; // For inventory/caps/health changes
   imagePrompt?: string;
 }

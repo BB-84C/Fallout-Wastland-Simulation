@@ -22,6 +22,8 @@ interface StatBarProps {
   onSave: () => void;
   onExport: (format: 'log-md' | 'log-pdf' | 'save-json') => void;
   showSave: boolean;
+  onRefreshInventory: () => void;
+  inventoryRefreshing: boolean;
   onClose: () => void;
 }
 
@@ -101,6 +103,8 @@ const StatBar: React.FC<StatBarProps> = ({
   onSave,
   onExport,
   showSave,
+  onRefreshInventory,
+  inventoryRefreshing,
   onClose
 }) => {
   const [activeTab, setActiveTab] = useState<Tab>('STAT');
@@ -322,8 +326,10 @@ const StatBar: React.FC<StatBarProps> = ({
                           <div className="space-y-1">
                             {companion.inventory.map((item, idx) => (
                               <div key={`${item.name}-${idx}`} className="text-[10px]">
-                                <span className="font-bold">{item.name}</span>
-                                <span className="opacity-70"> · {item.type} · {item.weight} lb</span>
+                                <span className="font-bold">
+                                  {item.name} {item.count > 1 ? `x${item.count}` : ''}
+                                </span>
+                                <span className="opacity-70"> · {item.type} · {(item.weight * item.count).toFixed(1)} lb</span>
                               </div>
                             ))}
                           </div>
@@ -377,15 +383,19 @@ const StatBar: React.FC<StatBarProps> = ({
             {player.inventory.map((item, idx) => (
               <div key={idx} className="text-xs p-1.5 border-b border-[#1aff1a]/5 flex justify-between hover:bg-[#1aff1a]/5 group">
                 <div className="flex flex-col truncate pr-2">
-                  <span className="font-bold group-hover:text-white transition-colors">{item.name}</span>
+                  <span className="font-bold group-hover:text-white transition-colors">
+                    {item.name} {item.count > 1 ? `x${item.count}` : ''}
+                  </span>
                   <span className="text-[9px] opacity-50 truncate">{item.type}</span>
                 </div>
-                <span className="opacity-40 whitespace-nowrap self-center">{item.weight} lb</span>
+                <span className="opacity-40 whitespace-nowrap self-center">
+                  {(item.weight * item.count).toFixed(1)} lb
+                </span>
               </div>
             ))}
             <div className="pt-4 text-[10px] opacity-50 text-right">
                {language === 'en' ? 'Total Weight: ' : '总重: '}
-               {player.inventory.reduce((acc, curr) => acc + curr.weight, 0).toFixed(1)} / {player.special.Strength * 10 + 50} lb
+               {player.inventory.reduce((acc, curr) => acc + curr.weight * curr.count, 0).toFixed(1)} / {player.special.Strength * 10 + 50} lb
             </div>
           </div>
         );
@@ -428,6 +438,15 @@ const StatBar: React.FC<StatBarProps> = ({
                 {language === 'en' ? 'SAVE' : '保存'}
               </button>
             )}
+            <button
+              onClick={onRefreshInventory}
+              disabled={inventoryRefreshing}
+              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold disabled:opacity-40"
+            >
+              {inventoryRefreshing
+                ? (language === 'en' ? 'REFRESH...' : '刷新中...')
+                : (language === 'en' ? 'INV REFRESH' : '库存刷新')}
+            </button>
             <div className="relative">
               <button 
                 onClick={() => setShowExportMenu(prev => !prev)}
