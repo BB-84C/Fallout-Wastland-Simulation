@@ -137,6 +137,8 @@ export interface GameSettings {
   maxHistoryTurns: number;
   useProxy?: boolean;
   proxyBaseUrl?: string;
+  textProxyBaseUrl?: string;
+  imageProxyBaseUrl?: string;
   modelProvider?: ModelProvider;
   textProvider?: ModelProvider;
   imageProvider?: ModelProvider;

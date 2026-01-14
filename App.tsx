@@ -424,6 +424,16 @@ const buildStatusSnapshot = (
 const countNarrations = (history: HistoryEntry[]) =>
   history.filter(entry => entry.sender === 'narrator' && entry.meta !== 'memory').length;
 
+const getPendingPlayerAction = (history: HistoryEntry[]) => {
+  if (history.length === 0) return null;
+  const last = history[history.length - 1];
+  if (last.sender !== 'player') return null;
+  return {
+    text: last.text,
+    trimmedHistory: history.slice(0, -1)
+  };
+};
+
 const rebuildInventoryFromStatusTrack = (track: StatusTrack) => {
   let inventory = normalizeInventory(track.initial_status.player.inventory);
   track.status_change.forEach(change => {
@@ -570,7 +580,18 @@ const normalizeSessionSettings = (settings: GameSettings, tier: UserTier, hasKey
   const lockedImages = lockImageTurnsForTier(normalized, tier, hasKey);
   const normalizedProviders = normalizeProviderSettings(lockedImages);
   const normalizedProxyBaseUrl = normalizeProxyBaseUrl(normalizedProviders.proxyBaseUrl || '');
-  return lockHistoryTurnsForTier({ ...normalizedProviders, proxyBaseUrl: normalizedProxyBaseUrl }, tier);
+  const normalizedTextProxyBaseUrl = normalizeProxyBaseUrl(
+    normalizedProviders.textProxyBaseUrl || normalizedProviders.proxyBaseUrl || ''
+  );
+  const normalizedImageProxyBaseUrl = normalizeProxyBaseUrl(
+    normalizedProviders.imageProxyBaseUrl || normalizedProviders.proxyBaseUrl || ''
+  );
+  return lockHistoryTurnsForTier({
+    ...normalizedProviders,
+    proxyBaseUrl: normalizedProxyBaseUrl,
+    textProxyBaseUrl: normalizedTextProxyBaseUrl,
+    imageProxyBaseUrl: normalizedImageProxyBaseUrl
+  }, tier);
 };
 
 const normalizeTokenUsage = (usage?: TokenUsage | null): TokenUsage => {
@@ -1074,7 +1095,12 @@ const App: React.FC = () => {
   const hasTextProxyKey = !!currentUser?.textProxyKey;
   const hasImageProxyKey = !!currentUser?.imageProxyKey;
   const useProxy = isNormal && !!gameState.settings.useProxy;
-  const proxyBaseUrl = normalizeProxyBaseUrl(gameState.settings.proxyBaseUrl || '');
+  const textProxyBaseUrl = normalizeProxyBaseUrl(
+    gameState.settings.textProxyBaseUrl || gameState.settings.proxyBaseUrl || ''
+  );
+  const imageProxyBaseUrl = normalizeProxyBaseUrl(
+    gameState.settings.imageProxyBaseUrl || gameState.settings.proxyBaseUrl || ''
+  );
   const hasTextAuthKey = useProxy ? hasTextProxyKey : hasTextUserKey;
   const hasImageAuthKey = useProxy ? hasImageProxyKey : hasImageUserKey;
   const normalKeyUnlocked = isNormal && hasTextAuthKey;
@@ -1105,9 +1131,10 @@ const App: React.FC = () => {
   const isZh = gameState.language === 'zh';
   const canManualSave = isAdmin || normalKeyUnlocked;
   const canAdjustImageFrequency = isAdmin || normalKeyUnlocked;
-  const hasProxyBase = useProxy ? !!proxyBaseUrl : true;
-  const textConfigured = !!textProvider && !!hasTextAuthKey && hasProxyBase && !!selectedTextModel;
-  const imageConfigured = !imagesEnabled || (!!imageProvider && !!hasImageAuthKey && hasProxyBase && !!selectedImageModel);
+  const textProxyOk = useProxy ? !!textProxyBaseUrl : true;
+  const imageProxyOk = useProxy ? !!imageProxyBaseUrl : true;
+  const textConfigured = !!textProvider && !!hasTextAuthKey && textProxyOk && !!selectedTextModel;
+  const imageConfigured = !imagesEnabled || (!!imageProvider && !!hasImageAuthKey && imageProxyOk && !!selectedImageModel);
   const isModelConfigured = isNormal ? (textConfigured && imageConfigured) : true;
   const canPlay = isGuest || isAdmin || isModelConfigured;
   const compressionLocked = isCompressing || !!compressionError || !!legacyCompressionPrompt || isManualCompressionConfirmOpen;
@@ -1345,6 +1372,11 @@ const App: React.FC = () => {
   const saveGame = useCallback((notify = true) => {
     if (!currentUser || !canManualSave) return;
     try {
+      if (gameState.isThinking) {
+        alert(gameState.language === 'en'
+          ? "Narration is still running. It's safer to wait for it to finish before closing or refreshing. If you leave now, the next load will reset the pending state."
+          : "叙事仍在进行中。建议等待叙事完成后再关闭或刷新。如果你现在离开，下次加载会重置未完成状态。");
+      }
       const data = JSON.stringify(gameState);
       const key = getSaveKey(currentUser.username);
       localStorage.setItem(key, data);
@@ -1530,12 +1562,28 @@ const App: React.FC = () => {
         compressionEnabled,
         language: parsed?.language || gameState.language
       };
+      nextState.isThinking = false;
       const memoryCap = nextSettings.maxCompressedMemoryK ?? DEFAULT_SETTINGS.maxCompressedMemoryK;
       const normalizedMemory = nextState.compressedMemory
         ? clampCompressedMemory(nextState.compressedMemory, memoryCap, nextState.language)
         : '';
       nextState.compressedMemory = normalizedMemory;
       setGameState(nextState);
+      const pendingAction = getPendingPlayerAction(nextState.history);
+      if (pendingAction) {
+        setLastAction({
+          text: pendingAction.text,
+          snapshot: {
+            ...nextState,
+            history: pendingAction.trimmedHistory,
+            isThinking: false,
+            turnCount: Math.max(0, (nextState.turnCount || 0) - 1)
+          },
+          status: 'pending'
+        });
+      } else {
+        setLastAction(null);
+      }
       setView('playing');
 
       if (!normalizedStatusTrack) {
@@ -1619,7 +1667,13 @@ const App: React.FC = () => {
     const hasTextKey = tier === 'normal' && (proxyEnabled ? !!sessionTextProxyKey : !!sessionTextApiKey);
     const hasImageKey = tier === 'normal' && (proxyEnabled ? !!sessionImageProxyKey : !!sessionImageApiKey);
     const settings = normalizeSessionSettings(baseSettings, tier, hasTextKey);
-    const hasProxyBase = proxyEnabled ? !!normalizeProxyBaseUrl(settings.proxyBaseUrl || '') : true;
+    const textProxyBase = normalizeProxyBaseUrl(
+      settings.textProxyBaseUrl || settings.proxyBaseUrl || ''
+    );
+    const imageProxyBase = normalizeProxyBaseUrl(
+      settings.imageProxyBaseUrl || settings.proxyBaseUrl || ''
+    );
+    const hasProxyBase = proxyEnabled ? (!!textProxyBase && (!!imageProxyBase || settings.imagesEnabled === false)) : true;
     const imagesEnabled = settings.imagesEnabled !== false;
     const textConfigured = !!settings.textModel?.trim() && !!settings.textProvider && hasTextKey;
     const imageConfigured = !imagesEnabled || (!!settings.imageModel?.trim() && !!settings.imageProvider && hasImageKey);
@@ -1821,7 +1875,7 @@ const App: React.FC = () => {
           tier: activeTier,
           apiKey: currentUser?.textApiKey,
           proxyApiKey: currentUser?.textProxyKey,
-          proxyBaseUrl,
+          proxyBaseUrl: textProxyBaseUrl,
           useProxy,
           textModel: effectiveTextModel,
           provider: textProvider,
@@ -1852,12 +1906,12 @@ const App: React.FC = () => {
 
       const startNarration = `${introMsg} ${player.lore}`;
       const avatarPromise = allowAvatars && seededCompanions.length > 0
-        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider })))
+        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl: imageProxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider })))
         : Promise.resolve([]);
       const imagePromise = allowImages
         ? generateSceneImage(
           `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
-          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel }
+          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl: imageProxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel }
         )
         : Promise.resolve(undefined);
       const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
@@ -1954,7 +2008,12 @@ const App: React.FC = () => {
 
     const actionSettings = state.settings;
     const useProxyAction = isNormal && !!actionSettings.useProxy;
-    const proxyBaseUrlAction = normalizeProxyBaseUrl(actionSettings.proxyBaseUrl || '');
+    const textProxyBaseUrlAction = normalizeProxyBaseUrl(
+      actionSettings.textProxyBaseUrl || actionSettings.proxyBaseUrl || ''
+    );
+    const imageProxyBaseUrlAction = normalizeProxyBaseUrl(
+      actionSettings.imageProxyBaseUrl || actionSettings.proxyBaseUrl || ''
+    );
     const hasTextAuthKeyAction = useProxyAction ? hasTextProxyKey : hasTextUserKey;
     const normalKeyUnlockedAction = isNormal && hasTextAuthKeyAction;
     const isKeyUnlockedAction = isAdmin || normalKeyUnlockedAction;
@@ -2084,7 +2143,7 @@ const App: React.FC = () => {
           tier: activeTier,
           apiKey: currentUser?.textApiKey,
           proxyApiKey: currentUser?.textProxyKey,
-          proxyBaseUrl: proxyBaseUrlAction,
+          proxyBaseUrl: textProxyBaseUrlAction,
           useProxy: useProxyAction,
           textModel: effectiveTextModel,
           provider: textProviderAction,
@@ -2121,7 +2180,7 @@ const App: React.FC = () => {
           tier: activeTier,
           apiKey: currentUser?.imageApiKey,
           proxyApiKey: currentUser?.imageProxyKey,
-          proxyBaseUrl: proxyBaseUrlAction,
+          proxyBaseUrl: imageProxyBaseUrlAction,
           useProxy: useProxyAction,
           imageModel: effectiveImageModel,
           provider: imageProviderAction,
@@ -2154,7 +2213,7 @@ const App: React.FC = () => {
             tier: activeTier,
             apiKey: currentUser?.textApiKey,
             proxyApiKey: currentUser?.textProxyKey,
-            proxyBaseUrl: proxyBaseUrlAction,
+            proxyBaseUrl: textProxyBaseUrlAction,
             useProxy: useProxyAction,
             textModel: effectiveTextModel,
             provider: textProviderAction
@@ -2202,7 +2261,7 @@ const App: React.FC = () => {
           tier: activeTier,
           apiKey: currentUser?.imageApiKey,
           proxyApiKey: currentUser?.imageProxyKey,
-          proxyBaseUrl: proxyBaseUrlAction,
+          proxyBaseUrl: imageProxyBaseUrlAction,
           useProxy: useProxyAction,
           imageModel: effectiveImageModel,
           provider: imageProviderAction
@@ -2360,7 +2419,9 @@ const App: React.FC = () => {
         tier: activeTier,
         apiKey: currentUser?.textApiKey,
         proxyApiKey: currentUser?.textProxyKey,
-        proxyBaseUrl: normalizeProxyBaseUrl(state.settings.proxyBaseUrl || ''),
+        proxyBaseUrl: normalizeProxyBaseUrl(
+          state.settings.textProxyBaseUrl || state.settings.proxyBaseUrl || ''
+        ),
         useProxy: isNormal && !!state.settings.useProxy,
         textModel: state.settings.textModel || undefined,
         provider: (state.settings.textProvider || state.settings.modelProvider || 'gemini') as ModelProvider
@@ -2482,7 +2543,9 @@ const App: React.FC = () => {
         tier: activeTier,
         apiKey: currentUser?.textApiKey,
         proxyApiKey: currentUser?.textProxyKey,
-        proxyBaseUrl: normalizeProxyBaseUrl(state.settings.proxyBaseUrl || ''),
+        proxyBaseUrl: normalizeProxyBaseUrl(
+          state.settings.textProxyBaseUrl || state.settings.proxyBaseUrl || ''
+        ),
         useProxy: isNormal && !!state.settings.useProxy,
         textModel: state.settings.textModel || undefined,
         provider
@@ -2733,6 +2796,30 @@ const App: React.FC = () => {
       settings: {
         ...prev.settings,
         proxyBaseUrl: normalized
+      }
+    }));
+  };
+
+  const updateTextProxyBaseUrl = (value: string) => {
+    if (!isNormal) return;
+    const normalized = normalizeProxyBaseUrl(value);
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        textProxyBaseUrl: normalized
+      }
+    }));
+  };
+
+  const updateImageProxyBaseUrl = (value: string) => {
+    if (!isNormal) return;
+    const normalized = normalizeProxyBaseUrl(value);
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        imageProxyBaseUrl: normalized
       }
     }));
   };
@@ -3192,12 +3279,24 @@ const App: React.FC = () => {
                   <div className="space-y-3">
                     <div>
                       <div className="text-[11px] uppercase opacity-70">
-                        {isZh ? '中转站 Base URL' : 'Proxy Base URL'}
+                        {isZh ? '中转站 Base URL（文本）' : 'Proxy Base URL (Text)'}
                       </div>
                       <input
                         type="text"
-                        value={gameState.settings.proxyBaseUrl || ''}
-                        onChange={(e) => updateProxyBaseUrl(e.target.value)}
+                        value={gameState.settings.textProxyBaseUrl || gameState.settings.proxyBaseUrl || ''}
+                        onChange={(e) => updateTextProxyBaseUrl(e.target.value)}
+                        className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                        placeholder="https://example.com/v1"
+                      />
+                    </div>
+                    <div>
+                      <div className="text-[11px] uppercase opacity-70">
+                        {isZh ? '中转站 Base URL（图像）' : 'Proxy Base URL (Image)'}
+                      </div>
+                      <input
+                        type="text"
+                        value={gameState.settings.imageProxyBaseUrl || gameState.settings.proxyBaseUrl || ''}
+                        onChange={(e) => updateImageProxyBaseUrl(e.target.value)}
                         className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
                         placeholder="https://example.com/v1"
                       />
