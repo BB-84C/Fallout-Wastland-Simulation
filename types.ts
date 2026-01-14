@@ -54,6 +54,51 @@ export interface InventoryItem {
   isConsumable: boolean;
 }
 
+export interface InventoryChange {
+  add?: InventoryItem[];
+  remove?: { name: string; count?: number }[];
+}
+
+export interface PlayerChange {
+  health?: number;
+  maxHealth?: number;
+  karma?: number;
+  caps?: number;
+  special?: Partial<SpecialSet>;
+  skills?: Partial<SkillSet>;
+  perksAdd?: Perk[];
+  perksRemove?: { name: string }[];
+  inventoryChange?: InventoryChange;
+}
+
+export interface StatusChange {
+  playerChange?: PlayerChange;
+  questUpdates?: Quest[];
+  companionUpdates?: CompanionUpdate[];
+  newNpc?: Actor;
+  location?: string;
+  currentYear?: number;
+  currentTime?: string;
+}
+
+export interface StatusChangeEntry extends StatusChange {
+  narration_index: number;
+}
+
+export interface StatusSnapshot {
+  player: Actor;
+  quests: Quest[];
+  knownNpcs: Actor[];
+  location: string;
+  currentYear: number;
+  currentTime: string;
+}
+
+export interface StatusTrack {
+  initial_status: StatusSnapshot;
+  status_change: StatusChangeEntry[];
+}
+
 export interface Actor {
   name: string;
   age: number;
@@ -132,14 +177,7 @@ export interface CompanionUpdate {
   reason?: string;
 }
 
-export interface StatusUpdate {
-  updatedPlayer?: Actor;
-  questUpdates?: Quest[];
-  companionUpdates?: CompanionUpdate[];
-  newNpc?: Actor;
-  location?: string;
-  currentYear?: number;
-}
+export type StatusUpdate = StatusChange;
 
 export interface HistoryEntry {
   sender: 'player' | 'narrator';
@@ -171,6 +209,8 @@ export interface GameState {
   turnCount: number;
   tokenUsage: TokenUsage;
   compressedMemory?: string;
+  rawOutputCache?: string;
+  status_track?: StatusTrack | null;
   compressionTurnCounter: number;
   compressionEnabled: boolean;
 }

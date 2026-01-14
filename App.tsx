@@ -1,11 +1,11 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusUpdate, InventoryItem } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange } from './types';
 import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
 import StatBar from './components/StatBar';
-import { createPlayerCharacter, getNarrativeResponse, getStatusUpdate, refreshInventory, generateSceneImage, generateCompanionAvatar, compressMemory } from './services/modelService';
+import { createPlayerCharacter, getNarrativeResponse, getStatusUpdate, auditInventoryWeights, recoverInventoryStatus, generateSceneImage, generateCompanionAvatar, compressMemory } from './services/modelService';
 import wechatQr from './assets/wech.png';
 import alipayQr from './assets/zhif.png';
 import venmoQr from './assets/venm.png';
@@ -312,9 +312,159 @@ const normalizeInventory = (items: InventoryItem[] | undefined) => {
     .filter((item): item is InventoryItem => !!item);
 };
 
+const normalizeInventoryChange = (change?: InventoryChange | null) => {
+  if (!change || typeof change !== 'object') return null;
+  const add = Array.isArray(change.add) ? change.add : [];
+  const remove = Array.isArray(change.remove) ? change.remove : [];
+  return {
+    add,
+    remove
+  };
+};
+
+const applyInventoryChange = (items: InventoryItem[], change?: InventoryChange | null) => {
+  const normalizedChange = normalizeInventoryChange(change);
+  if (!normalizedChange) return items;
+  const next = normalizeInventory(items).map(item => ({ ...item }));
+  const findIndex = (name: string) =>
+    next.findIndex(item => normalizeKey(item.name) === normalizeKey(name));
+  normalizedChange.remove.forEach(entry => {
+    if (!entry?.name) return;
+    const index = findIndex(entry.name);
+    if (index < 0) return;
+    const removeCount = Number.isFinite(entry.count) ? Math.max(1, Math.floor(entry.count)) : 1;
+    const existing = next[index];
+    const nextCount = existing.count - removeCount;
+    if (nextCount > 0) {
+      next[index] = { ...existing, count: nextCount };
+    } else {
+      next.splice(index, 1);
+    }
+  });
+  normalizedChange.add.forEach(item => {
+    const normalizedItem = normalizeInventoryItem(item);
+    if (!normalizedItem) return;
+    const index = findIndex(normalizedItem.name);
+    if (index >= 0) {
+      const existing = next[index];
+      const nextCount = existing.count + normalizedItem.count;
+      next[index] = {
+        ...existing,
+        count: nextCount,
+        description: normalizedItem.description || existing.description,
+        type: normalizedItem.type || existing.type,
+        weight: Number.isFinite(normalizedItem.weight) ? normalizedItem.weight : existing.weight,
+        value: Number.isFinite(normalizedItem.value) ? normalizedItem.value : existing.value,
+        isConsumable: typeof normalizedItem.isConsumable === 'boolean' ? normalizedItem.isConsumable : existing.isConsumable
+      };
+    } else {
+      next.push(normalizedItem);
+    }
+  });
+  return normalizeInventory(next);
+};
+
+const applyPlayerChange = (base: Actor, change?: PlayerChange | null) => {
+  if (!change) return base;
+  const next: Actor = { ...base };
+  if (Number.isFinite(change.health)) next.health = Math.max(0, change.health as number);
+  if (Number.isFinite(change.maxHealth)) next.maxHealth = Math.max(1, change.maxHealth as number);
+  if (Number.isFinite(change.caps)) next.caps = Math.max(0, change.caps as number);
+  if (Number.isFinite(change.karma)) next.karma = Math.max(-100, Math.min(100, change.karma as number));
+  if (change.special) {
+    next.special = normalizeSpecial({ ...base.special, ...change.special });
+  }
+  if (change.skills) {
+    const merged = normalizeSkills(change.skills, next.special, false);
+    next.skills = { ...base.skills, ...merged };
+  }
+  if (Array.isArray(change.perksAdd) && change.perksAdd.length > 0) {
+    const existingNames = new Set(next.perks.map(perk => perk.name));
+    const added = change.perksAdd.filter(perk => perk?.name && !existingNames.has(perk.name));
+    next.perks = [...next.perks, ...added];
+  }
+  if (Array.isArray(change.perksRemove) && change.perksRemove.length > 0) {
+    const removeNames = new Set(change.perksRemove.map(perk => perk.name));
+    next.perks = next.perks.filter(perk => !removeNames.has(perk.name));
+  }
+  if (change.inventoryChange) {
+    next.inventory = applyInventoryChange(next.inventory, change.inventoryChange);
+  }
+  return normalizeActor(next);
+};
+
+const buildStatusSnapshot = (
+  player: Actor,
+  quests: Quest[],
+  knownNpcs: Actor[],
+  location: string,
+  currentYear: number,
+  currentTime: string
+): StatusSnapshot => ({
+  player: normalizeActor({
+    ...player,
+    special: { ...player.special },
+    skills: { ...player.skills },
+    perks: player.perks.map(perk => ({ ...perk })),
+    inventory: player.inventory.map(item => ({ ...item }))
+  }),
+  quests: quests.map(quest => ({ ...quest })),
+  knownNpcs: knownNpcs.map(npc => normalizeActor({
+    ...npc,
+    special: { ...npc.special },
+    skills: { ...npc.skills },
+    perks: npc.perks.map(perk => ({ ...perk })),
+    inventory: npc.inventory.map(item => ({ ...item }))
+  })),
+  location,
+  currentYear,
+  currentTime
+});
+
+const countNarrations = (history: HistoryEntry[]) =>
+  history.filter(entry => entry.sender === 'narrator' && entry.meta !== 'memory').length;
+
+const rebuildInventoryFromStatusTrack = (track: StatusTrack) => {
+  let inventory = normalizeInventory(track.initial_status.player.inventory);
+  track.status_change.forEach(change => {
+    inventory = applyInventoryChange(inventory, change.playerChange?.inventoryChange);
+  });
+  return inventory;
+};
+
+const mergeInventoryWeights = (base: InventoryItem[], audited: InventoryItem[]) => {
+  const weightMap = new Map<string, number>();
+  audited.forEach(item => {
+    if (!item?.name) return;
+    if (!Number.isFinite(item.weight)) return;
+    weightMap.set(normalizeKey(item.name), item.weight);
+  });
+  return base.map(item => {
+    const weight = weightMap.get(normalizeKey(item.name));
+    if (!Number.isFinite(weight)) return item;
+    return { ...item, weight: weight as number };
+  });
+};
+
 const hasMissingInventoryCounts = (items: any) => {
   if (!Array.isArray(items)) return false;
   return items.some(item => !Number.isFinite(item?.count));
+};
+
+const getRawOutputFromError = (err: unknown) => {
+  if (!err || typeof err !== 'object') return '';
+  if ('rawOutput' in err) {
+    const raw = (err as { rawOutput?: unknown }).rawOutput;
+    return typeof raw === 'string' ? raw : '';
+  }
+  if ('cause' in err) {
+    const cause = (err as { cause?: unknown }).cause;
+    if (cause && typeof cause === 'object' && 'rawOutput' in cause) {
+      const raw = (cause as { rawOutput?: unknown }).rawOutput;
+      return typeof raw === 'string' ? raw : '';
+    }
+  }
+  return '';
 };
 
 const getDefaultUserPrompt = (language: Language) =>
@@ -706,6 +856,8 @@ const createInitialGameState = (
     turnCount: 0,
     tokenUsage: { sent: 0, received: 0, total: 0 },
     compressedMemory: '',
+    rawOutputCache: '',
+    status_track: null,
     compressionTurnCounter: 0,
     compressionEnabled: true
   };
@@ -857,7 +1009,10 @@ type LegacyCompressionPrompt = {
 
 type LegacyInventoryPrompt = {
   state: GameState;
+  reason: 'missing-status-track' | 'missing-counts';
 };
+
+type StageStatus = 'idle' | 'pending' | 'running' | 'done' | 'error' | 'skipped';
 
 const App: React.FC = () => {
   const [view, setView] = useState<'auth' | 'start' | 'creation' | 'playing'>('auth');
@@ -876,6 +1031,10 @@ const App: React.FC = () => {
   const [legacyInventoryPrompt, setLegacyInventoryPrompt] = useState<LegacyInventoryPrompt | null>(null);
   const [isInventoryRefreshing, setIsInventoryRefreshing] = useState(false);
   const [inventoryRefreshError, setInventoryRefreshError] = useState<string | null>(null);
+  const [narrationStage, setNarrationStage] = useState<StageStatus>('idle');
+  const [statusStage, setStatusStage] = useState<StageStatus>('idle');
+  const [imageStage, setImageStage] = useState<StageStatus>('idle');
+  const [statusManagerError, setStatusManagerError] = useState<string | null>(null);
   const [isManualCompressionConfirmOpen, setIsManualCompressionConfirmOpen] = useState(false);
   const [keyAlert, setKeyAlert] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -899,9 +1058,11 @@ const App: React.FC = () => {
   const [creationPhase, setCreationPhase] = useState('');
   const [creationStartTime, setCreationStartTime] = useState<number | null>(null);
   const [creationElapsed, setCreationElapsed] = useState(0);
+  const [isRawOutputOpen, setIsRawOutputOpen] = useState(false);
   const lastHistoryLength = useRef(0);
   const lastCompressedMemory = useRef('');
   const lastInventorySignature = useRef('');
+  const lastRawOutputCache = useRef('');
   const compressionStatusTimeout = useRef<number | null>(null);
 
   const activeTier: UserTier = currentUser?.tier ?? 'guest';
@@ -941,6 +1102,7 @@ const App: React.FC = () => {
   const imagesEnabled = gameState.settings.imagesEnabled !== false;
   const effectiveTextModel = selectedTextModel;
   const effectiveImageModel = selectedImageModel;
+  const isZh = gameState.language === 'zh';
   const canManualSave = isAdmin || normalKeyUnlocked;
   const canAdjustImageFrequency = isAdmin || normalKeyUnlocked;
   const hasProxyBase = useProxy ? !!proxyBaseUrl : true;
@@ -952,6 +1114,38 @@ const App: React.FC = () => {
   const inventoryLocked = isInventoryRefreshing || !!legacyInventoryPrompt;
   const canReroll = !!lastAction && !gameState.isThinking && !compressionLocked && !inventoryLocked;
   const inputLocked = gameState.isThinking || compressionLocked || inventoryLocked;
+  const progressVisible = gameState.isThinking || narrationStage === 'error' || statusStage === 'error' || imageStage === 'error';
+  const progressStages = progressVisible ? [
+    {
+      label: isZh ? '叙事生成' : 'Narration',
+      status: narrationStage
+    },
+    {
+      label: isZh ? '状态管理' : 'Status',
+      status: statusStage
+    },
+    {
+      label: isZh ? '图像生成' : 'Image',
+      status: imageStage
+    }
+  ] : [];
+  const stageStatusLabels = isZh
+    ? {
+      idle: '待命',
+      pending: '排队',
+      running: '处理中',
+      done: '完成',
+      error: '错误',
+      skipped: '跳过'
+    }
+    : {
+      idle: 'IDLE',
+      pending: 'PENDING',
+      running: 'RUNNING',
+      done: 'DONE',
+      error: 'ERROR',
+      skipped: 'SKIPPED'
+    };
 
   useEffect(() => {
     let active = true;
@@ -1084,19 +1278,22 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!isNormal || !currentUser) return;
     const currentMemory = gameState.compressedMemory || '';
+    const currentRawOutput = gameState.rawOutputCache || '';
     const currentInventorySignature = gameState.player
       ? JSON.stringify(gameState.player.inventory || [])
       : '';
     const historyChanged = gameState.history.length > lastHistoryLength.current;
     const memoryChanged = currentMemory !== lastCompressedMemory.current;
     const inventoryChanged = currentInventorySignature !== lastInventorySignature.current;
-    if (!historyChanged && !memoryChanged && !inventoryChanged) {
+    const rawOutputChanged = currentRawOutput !== lastRawOutputCache.current;
+    if (!historyChanged && !memoryChanged && !inventoryChanged && !rawOutputChanged) {
       lastHistoryLength.current = gameState.history.length;
       return;
     }
     lastHistoryLength.current = gameState.history.length;
     lastCompressedMemory.current = currentMemory;
     lastInventorySignature.current = currentInventorySignature;
+    lastRawOutputCache.current = currentRawOutput;
     const key = getSaveKey(currentUser.username);
     localStorage.setItem(key, JSON.stringify(gameState));
     setHasSave(true);
@@ -1254,6 +1451,35 @@ const App: React.FC = () => {
       const parsedKnownNpcs = Array.isArray(parsed?.knownNpcs)
         ? parsed.knownNpcs.map((npc: Actor) => normalizeActor(npc))
         : [];
+      const rawStatusTrack = parsed?.status_track ?? parsed?.statusTrack;
+      const initialStatusPlayer = rawStatusTrack?.initial_status?.player
+        ? normalizeActor(rawStatusTrack.initial_status.player)
+        : null;
+      const normalizedStatusTrack: StatusTrack | null = initialStatusPlayer
+        ? {
+          initial_status: {
+            player: initialStatusPlayer,
+            quests: Array.isArray(rawStatusTrack.initial_status?.quests)
+              ? rawStatusTrack.initial_status.quests
+              : [],
+            knownNpcs: Array.isArray(rawStatusTrack.initial_status?.knownNpcs)
+              ? rawStatusTrack.initial_status.knownNpcs.map((npc: Actor) => normalizeActor(npc))
+              : [],
+            location: typeof rawStatusTrack.initial_status?.location === 'string'
+              ? rawStatusTrack.initial_status.location
+              : parsed?.location || gameState.location,
+            currentYear: typeof rawStatusTrack.initial_status?.currentYear === 'number'
+              ? rawStatusTrack.initial_status.currentYear
+              : (typeof parsed?.currentYear === 'number' ? parsed.currentYear : gameState.currentYear),
+            currentTime: typeof rawStatusTrack.initial_status?.currentTime === 'string'
+              ? rawStatusTrack.initial_status.currentTime
+              : (typeof parsed?.currentTime === 'string' ? parsed.currentTime : gameState.currentTime)
+          },
+          status_change: Array.isArray(rawStatusTrack.status_change)
+            ? rawStatusTrack.status_change
+            : []
+        }
+        : null;
       const legacyExtracted = Array.isArray(parsed?.history)
         ? extractLegacyCompressedMemory(parsed.history as HistoryEntry[])
         : { memoryText: '', cleanedHistory: parsed?.history || [] };
@@ -1298,6 +1524,8 @@ const App: React.FC = () => {
         tokenUsage: normalizeTokenUsage(parsed?.tokenUsage),
         history: normalizedHistory,
         compressedMemory: (typeof parsed?.compressedMemory === 'string' ? parsed.compressedMemory : legacyExtracted.memoryText) || '',
+        rawOutputCache: typeof parsed?.rawOutputCache === 'string' ? parsed.rawOutputCache : '',
+        status_track: normalizedStatusTrack,
         compressionTurnCounter,
         compressionEnabled,
         language: parsed?.language || gameState.language
@@ -1310,8 +1538,10 @@ const App: React.FC = () => {
       setGameState(nextState);
       setView('playing');
 
-      if (hasMissingInventoryCounts(parsed?.player?.inventory)) {
-        setLegacyInventoryPrompt({ state: nextState });
+      if (!normalizedStatusTrack) {
+        setLegacyInventoryPrompt({ state: nextState, reason: 'missing-status-track' });
+      } else if (hasMissingInventoryCounts(parsed?.player?.inventory)) {
+        setLegacyInventoryPrompt({ state: nextState, reason: 'missing-counts' });
       }
 
       const isLegacy = typeof parsed?.compressionTurnCounter !== 'number' || typeof parsed?.compressionEnabled !== 'boolean';
@@ -1345,8 +1575,13 @@ const App: React.FC = () => {
     lastHistoryLength.current = 0;
     lastCompressedMemory.current = '';
     lastInventorySignature.current = '';
+    lastRawOutputCache.current = '';
     setLegacyInventoryPrompt(null);
     setInventoryRefreshError(null);
+    setNarrationStage('idle');
+    setStatusStage('idle');
+    setImageStage('idle');
+    setStatusManagerError(null);
     setShowGuestNotice(false);
     setSystemError(null);
     setLastAction(null);
@@ -1646,7 +1881,18 @@ const App: React.FC = () => {
       }
 
       setCreationPhase(getCreationPhaseText('finalize', isZh));
-      
+      const initialStatusTrack: StatusTrack = {
+        initial_status: buildStatusSnapshot(
+          normalizedPlayer,
+          [],
+          initialKnownNpcs,
+          gameState.location,
+          gameState.currentYear,
+          gameState.currentTime
+        ),
+        status_change: []
+      };
+
       setGameState(prev => ({
         ...prev,
         player: normalizedPlayer,
@@ -1654,6 +1900,7 @@ const App: React.FC = () => {
         isThinking: false,
         tokenUsage: mergeTokenUsage(prev.tokenUsage, creationUsage),
         compressionTurnCounter: 0,
+        status_track: initialStatusTrack,
         history: [{ 
           sender: 'narrator', 
           text: startNarration, 
@@ -1672,6 +1919,7 @@ const App: React.FC = () => {
       setCreationElapsed(0);
     } catch (err) {
       console.error("Vault-Tec Database Error:", err);
+      cacheRawOutput(err);
       const errorMessage = err instanceof Error ? err.message : String(err);
       setCreationPhase(isZh ? `访问请求失败：${errorMessage}` : `Access request failed: ${errorMessage}`);
       setGameState(prev => ({ 
@@ -1774,6 +2022,10 @@ const App: React.FC = () => {
       setUserInput('');
     }
     setSystemError(null);
+    setStatusManagerError(null);
+    setNarrationStage('running');
+    setStatusStage('pending');
+    setImageStage('pending');
 
     const baseHistory = !options?.reroll && lastAction?.status === 'error'
       ? stripFailedAction(state.history, lastAction.text)
@@ -1841,6 +2093,7 @@ const App: React.FC = () => {
       );
 
       const narratorTokenUsage = response.tokenUsage;
+      setNarrationStage('done');
       if (response.ruleViolation) {
         setLastAction(prev => (prev ? { ...prev, status: 'resolved' } : prev));
         setGameState(prev => ({
@@ -1861,6 +2114,7 @@ const App: React.FC = () => {
       newTime.setMinutes(newTime.getMinutes() + response.timePassedMinutes);
 
       const visualPrompt = response.imagePrompt || actionText;
+      setImageStage(shouldGenerateImage ? 'running' : 'skipped');
       const sceneImagePromise = shouldGenerateImage
         ? generateSceneImage(visualPrompt, {
           highQuality: actionSettings.highQualityImages,
@@ -1875,12 +2129,17 @@ const App: React.FC = () => {
           textApiKey: currentUser?.textApiKey,
           textProxyApiKey: currentUser?.textProxyKey,
           textModel: effectiveTextModel
+        }).catch(err => {
+          setImageStage('error');
+          throw err;
         })
         : Promise.resolve(undefined);
 
-      let statusUpdate: StatusUpdate | null = null;
+      let statusChange: StatusChange | null = null;
+      let statusSucceeded = false;
       let statusTokenUsage: TokenUsage | undefined;
       try {
+        setStatusStage('running');
         const statusKnownNpcs = state.knownNpcs.map(({ avatarUrl, ...rest }) => rest);
         const statusResult = await getStatusUpdate(
           state.player,
@@ -1901,13 +2160,22 @@ const App: React.FC = () => {
             provider: textProviderAction
           }
         );
-        statusUpdate = statusResult.update || null;
+        statusChange = statusResult.update || null;
         statusTokenUsage = statusResult.tokenUsage;
+        setStatusStage('done');
+        statusSucceeded = true;
       } catch (statusErr) {
+        setStatusStage('error');
+        cacheRawOutput(statusErr);
+        const detail = statusErr instanceof Error ? statusErr.message : String(statusErr);
+        const statusErrorMessage = state.language === 'en'
+          ? `VAULT-TEC ERROR: Status manager failed.\n[LOG] ${detail}`
+          : `避难所科技错误：状态管理失败。\n[日志] ${detail}`;
+        setStatusManagerError(statusErrorMessage);
         console.error('Status manager error:', statusErr);
       }
 
-      const questUpdates = statusUpdate?.questUpdates;
+      const questUpdates = statusChange?.questUpdates;
       const { merged: mergedQuests, completedNotes } = applyQuestUpdates(state.quests, questUpdates);
       let storyText = response.storyText;
       if (completedNotes.length > 0) {
@@ -1918,11 +2186,11 @@ const App: React.FC = () => {
         ...npc,
         ifCompanion: npc.ifCompanion ?? false
       }));
-      const newNpc = statusUpdate?.newNpc;
+      const newNpc = statusChange?.newNpc;
       if (newNpc) {
         nextKnownNpcs = upsertNpc(nextKnownNpcs, newNpc);
       }
-      const companionUpdates = statusUpdate?.companionUpdates;
+      const companionUpdates = statusChange?.companionUpdates;
       nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, companionUpdates);
 
       const companionsNeedingAvatar = !imagesEnabledAction || isGuest
@@ -1941,6 +2209,9 @@ const App: React.FC = () => {
         })))
         : Promise.resolve([]);
       const [imgData, avatarResults] = await Promise.all([sceneImagePromise, avatarPromise]);
+      if (shouldGenerateImage) {
+        setImageStage(imgData?.error ? 'error' : 'done');
+      }
       const imageLog = shouldGenerateImage && imgData?.error
         ? (isZhAction ? `\n\n[图像日志] ${imgData.error}` : `\n\n[IMAGE LOG] ${imgData.error}`)
         : '';
@@ -1972,20 +2243,37 @@ const App: React.FC = () => {
         groundingSources: imgData?.sources
       };
       const nextHistory = [...updatedHistory, narratorEntry];
+      const nextStatusTrack = statusSucceeded && state.status_track
+        ? {
+          ...state.status_track,
+          status_change: [
+            ...state.status_track.status_change,
+            {
+              narration_index: countNarrations(nextHistory),
+              ...(statusChange && typeof statusChange === 'object' ? statusChange : {})
+            }
+          ]
+        }
+        : state.status_track;
       const compressionActive = !!historyLimitAction && state.compressionEnabled !== false;
       const nextCounter = compressionActive ? (state.compressionTurnCounter || 0) + 1 : 0;
-      const statusPlayer = statusUpdate?.updatedPlayer;
-      const nextLocation = typeof statusUpdate?.location === 'string' && statusUpdate.location.trim()
-        ? statusUpdate.location.trim()
+      const statusPlayer = statusChange?.playerChange
+        ? applyPlayerChange(state.player, statusChange.playerChange)
+        : null;
+      const nextLocation = typeof statusChange?.location === 'string' && statusChange.location.trim()
+        ? statusChange.location.trim()
         : state.location;
-      const nextYear = typeof statusUpdate?.currentYear === 'number' && Number.isFinite(statusUpdate.currentYear)
-        ? Math.trunc(statusUpdate.currentYear)
+      const nextYear = typeof statusChange?.currentYear === 'number' && Number.isFinite(statusChange.currentYear)
+        ? Math.trunc(statusChange.currentYear)
         : state.currentYear;
+      const nextTime = typeof statusChange?.currentTime === 'string' && statusChange.currentTime.trim()
+        ? statusChange.currentTime.trim()
+        : newTime.toISOString();
       const tokenDelta = mergeTokenUsage(normalizeTokenUsage(narratorTokenUsage), statusTokenUsage);
       const nextState: GameState = {
         ...state,
         isThinking: false,
-        currentTime: newTime.toISOString(),
+        currentTime: nextTime,
         location: nextLocation,
         currentYear: nextYear,
         quests: mergedQuests,
@@ -1994,10 +2282,9 @@ const App: React.FC = () => {
         apLastUpdated: nextApLastUpdated,
         turnCount: nextTurn,
         tokenUsage: mergeTokenUsage(state.tokenUsage, tokenDelta),
-        player: statusPlayer
-          ? (state.player ? mergeActor(state.player, statusPlayer) : normalizeActor(statusPlayer))
-          : state.player,
+        player: statusPlayer ? statusPlayer : state.player,
         history: nextHistory,
+        status_track: nextStatusTrack,
         compressionTurnCounter: nextCounter
       };
       setGameState(nextState);
@@ -2008,7 +2295,11 @@ const App: React.FC = () => {
       }
     } catch (err) {
       console.error(err);
+      cacheRawOutput(err);
       const errorDetail = err instanceof Error ? err.message : String(err);
+      setNarrationStage('error');
+      setStatusStage('idle');
+      setImageStage('idle');
       const errorLog = state.language === 'en'
         ? `[LOG] ${errorDetail}`
         : `[日志] ${errorDetail}`;
@@ -2097,6 +2388,7 @@ const App: React.FC = () => {
       setIsCompressing(false);
       setCompressionError(null);
     } catch (err) {
+      cacheRawOutput(err);
       const detail = err instanceof Error ? err.message : String(err);
       setCompressionStatus(null);
       setIsCompressing(false);
@@ -2184,32 +2476,102 @@ const App: React.FC = () => {
     setIsInventoryRefreshing(true);
     setInventoryRefreshError(null);
     try {
-      const result = await refreshInventory(
-        state.player.inventory,
+      const isZhRefresh = state.language === 'zh';
+      const provider = (state.settings.textProvider || state.settings.modelProvider || 'gemini') as ModelProvider;
+      const baseOptions = {
+        tier: activeTier,
+        apiKey: currentUser?.textApiKey,
+        proxyApiKey: currentUser?.textProxyKey,
+        proxyBaseUrl: normalizeProxyBaseUrl(state.settings.proxyBaseUrl || ''),
+        useProxy: isNormal && !!state.settings.useProxy,
+        textModel: state.settings.textModel || undefined,
+        provider
+      };
+
+      if (state.status_track) {
+        setSystemError(isZhRefresh
+          ? '正在根据状态轨迹重建库存...'
+          : 'Rebuilding inventory from status track...');
+        const rebuilt = rebuildInventoryFromStatusTrack(state.status_track);
+        setSystemError(isZhRefresh
+          ? '正在校验物品重量...'
+          : 'Auditing item weights...');
+        const audit = await auditInventoryWeights(rebuilt, state.language, baseOptions);
+        const refreshed = mergeInventoryWeights(rebuilt, audit.inventory as InventoryItem[]);
+        setGameState(prev => ({
+          ...prev,
+          player: prev.player ? { ...prev.player, inventory: refreshed } : prev.player,
+          tokenUsage: mergeTokenUsage(prev.tokenUsage, audit.tokenUsage)
+        }));
+        setSystemError(isZhRefresh
+          ? '库存刷新完成。'
+          : 'Inventory refresh complete.');
+        return;
+      }
+
+      setSystemError(isZhRefresh
+        ? '旧存档库存恢复中，可能需要较长时间，且准确度可能受历史长度影响。'
+        : 'Legacy inventory recovery in progress. This may take a while and accuracy may be limited by history length.');
+      const narrationList = state.history
+        .filter(entry => entry.sender === 'narrator')
+        .map(entry => entry.text);
+      const recovery = await recoverInventoryStatus(
+        state.player.lore,
+        narrationList,
         state.language,
-        {
-          tier: activeTier,
-          apiKey: currentUser?.textApiKey,
-          proxyApiKey: currentUser?.textProxyKey,
-          proxyBaseUrl: normalizeProxyBaseUrl(state.settings.proxyBaseUrl || ''),
-          useProxy: isNormal && !!state.settings.useProxy,
-          textModel: state.settings.textModel || undefined,
-          provider: (state.settings.textProvider || state.settings.modelProvider || 'gemini') as ModelProvider
-        }
+        baseOptions
       );
-      const refreshed = normalizeInventory(result.inventory as InventoryItem[]);
+      const recoveredInitialInventory = normalizeInventory(recovery.initialInventory as InventoryItem[]);
+      const maxNarrations = narrationList.length;
+      const recoveredChanges: StatusChangeEntry[] = Array.isArray(recovery.inventoryChanges)
+        ? recovery.inventoryChanges.map((entry: any) => ({
+          narration_index: Math.max(
+            1,
+            Math.min(
+              maxNarrations,
+              Math.trunc(entry?.narration_index ?? entry?.nrration_index ?? 1)
+            )
+          ),
+          playerChange: {
+            inventoryChange: entry?.inventoryChange
+          }
+        }))
+        : [];
+      const recoveredTrack: StatusTrack = {
+        initial_status: buildStatusSnapshot(
+          { ...state.player, inventory: recoveredInitialInventory },
+          state.quests,
+          state.knownNpcs,
+          state.location,
+          state.currentYear,
+          state.currentTime
+        ),
+        status_change: recoveredChanges
+      };
+      const rebuilt = rebuildInventoryFromStatusTrack(recoveredTrack);
+      setSystemError(isZhRefresh
+        ? '正在校验物品重量...'
+        : 'Auditing item weights...');
+      const audit = await auditInventoryWeights(rebuilt, state.language, baseOptions);
+      const refreshed = mergeInventoryWeights(rebuilt, audit.inventory as InventoryItem[]);
+      const combinedUsage = mergeTokenUsage(
+        normalizeTokenUsage(recovery.tokenUsage),
+        audit.tokenUsage
+      );
       setGameState(prev => ({
         ...prev,
+        status_track: recoveredTrack,
         player: prev.player ? { ...prev.player, inventory: refreshed } : prev.player,
-        tokenUsage: mergeTokenUsage(prev.tokenUsage, result.tokenUsage)
+        tokenUsage: mergeTokenUsage(prev.tokenUsage, combinedUsage)
       }));
-      setSystemError(isZh
-        ? '库存刷新完成。'
-        : 'Inventory refresh complete.');
+      setSystemError(isZhRefresh
+        ? '库存恢复完成。'
+        : 'Inventory recovery complete.');
     } catch (err) {
+      cacheRawOutput(err);
       const detail = err instanceof Error ? err.message : String(err);
       setInventoryRefreshError(detail);
-      setSystemError(isZh
+      setSystemError(state.language === 'zh'
         ? `库存刷新失败：${detail}`
         : `Inventory refresh failed: ${detail}`);
     } finally {
@@ -2234,10 +2596,51 @@ const App: React.FC = () => {
 
   const handleLegacyInventoryRefreshLater = () => {
     if (!legacyInventoryPrompt) return;
+    if (legacyInventoryPrompt.reason === 'missing-status-track' && legacyInventoryPrompt.state.player) {
+      const snapshot = buildStatusSnapshot(
+        legacyInventoryPrompt.state.player,
+        legacyInventoryPrompt.state.quests,
+        legacyInventoryPrompt.state.knownNpcs,
+        legacyInventoryPrompt.state.location,
+        legacyInventoryPrompt.state.currentYear,
+        legacyInventoryPrompt.state.currentTime
+      );
+      setGameState(prev => ({
+        ...prev,
+        status_track: {
+          initial_status: snapshot,
+          status_change: []
+        }
+      }));
+    }
     setLegacyInventoryPrompt(null);
-    setSystemError(isZh
-      ? '已暂时跳过库存刷新。你可以在状态面板中手动刷新库存。'
-      : 'Inventory refresh skipped for now. You can refresh manually from the status panel.');
+    if (legacyInventoryPrompt.reason === 'missing-status-track') {
+      setSystemError(isZh
+        ? '已暂时跳过库存恢复。已以当前库存建立初始状态，从本回合起开始记录变更。'
+        : 'Inventory recovery skipped. Current inventory is stored as the initial status and changes will be tracked from this turn onward.');
+    } else {
+      setSystemError(isZh
+        ? '已暂时跳过库存刷新。你可以在状态面板中手动刷新库存。'
+        : 'Inventory refresh skipped for now. You can refresh manually from the status panel.');
+    }
+  };
+
+  const cacheRawOutput = (err: unknown) => {
+    const raw = getRawOutputFromError(err);
+    if (!raw) return;
+    setGameState(prev => ({ ...prev, rawOutputCache: raw }));
+  };
+
+  const handleCopyRawOutput = async () => {
+    const raw = gameState.rawOutputCache || '';
+    if (!raw) return;
+    try {
+      await navigator.clipboard.writeText(raw);
+      alert(isZh ? '原始输出已复制。' : 'Raw output copied.');
+    } catch (err) {
+      console.error(err);
+      alert(isZh ? '复制失败，请手动复制。' : 'Copy failed. Please copy manually.');
+    }
   };
 
   const toggleLanguage = (lang: Language) => {
@@ -2423,7 +2826,6 @@ const App: React.FC = () => {
     }));
   };
 
-  const isZh = gameState.language === 'zh';
   const displayLocation = localizeLocation(gameState.location, gameState.language);
   const displayYear = formatYear(gameState.currentYear, gameState.language);
   const usersEditorModal = isUsersEditorOpen && (
@@ -2641,6 +3043,26 @@ const App: React.FC = () => {
               <span className="text-[10px] uppercase opacity-60">
                 K
               </span>
+            </div>
+          </div>
+
+          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
+            <div className="text-sm font-bold uppercase">
+              {isZh ? '原始输出缓存' : 'Raw Output Cache'}
+            </div>
+            <div className="text-xs opacity-70 mt-1">
+              {isZh
+                ? '当模型输出无法解析时，会保留原始文本，方便排查。'
+                : 'Stores the latest raw model output when parsing fails.'}
+            </div>
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                onClick={() => setIsRawOutputOpen(true)}
+                disabled={!gameState.rawOutputCache}
+                className="px-3 py-1 border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black font-bold uppercase text-xs disabled:opacity-40"
+              >
+                {isZh ? '查看' : 'View'}
+              </button>
             </div>
           </div>
 
@@ -2997,6 +3419,47 @@ const App: React.FC = () => {
       </div>
     </div>
   );
+  const rawOutputModal = isRawOutputOpen && (
+    <div className="fixed top-0 left-0 w-full h-full z-[3200] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 bg-black">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-xl font-bold uppercase">{isZh ? '原始输出缓存' : 'Raw Output Cache'}</h3>
+          <button
+            onClick={() => setIsRawOutputOpen(false)}
+            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+          >
+            {isZh ? '关闭' : 'Close'}
+          </button>
+        </div>
+        <div className="text-xs opacity-70 mb-3">
+          {isZh
+            ? '缓存最近一次模型输出的原始文本（仅在解析失败时记录）。'
+            : 'Caches the latest raw model output when JSON parsing fails.'}
+        </div>
+        <textarea
+          value={gameState.rawOutputCache || ''}
+          readOnly
+          className="w-full h-64 md:h-72 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-xs focus:outline-none font-mono"
+          placeholder={isZh ? '暂无缓存内容。' : 'No cached output.'}
+        />
+        <div className="flex flex-wrap gap-2 mt-4">
+          <button
+            onClick={handleCopyRawOutput}
+            disabled={!gameState.rawOutputCache}
+            className="px-4 py-2 border-2 border-[#1aff1a] hover:bg-[#1aff1a] hover:text-black font-bold uppercase text-xs disabled:opacity-40"
+          >
+            {isZh ? '复制' : 'Copy'}
+          </button>
+          <button
+            onClick={() => setIsRawOutputOpen(false)}
+            className="px-4 py-2 border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black font-bold uppercase text-xs"
+          >
+            {isZh ? '关闭' : 'Close'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
   const legacyInventoryModal = legacyInventoryPrompt && (
     <div className="fixed top-0 left-0 w-full h-full z-[3200] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
       <div className="max-w-md w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 bg-black">
@@ -3005,15 +3468,26 @@ const App: React.FC = () => {
         </h3>
         <div className="text-sm opacity-80 space-y-2">
           <div>
-            {isZh
-              ? '检测到旧存档的物品缺少数量信息。建议立即刷新库存以补全数量与消耗属性。'
-              : 'This save has items missing count data. Refreshing inventory now is recommended.'}
+            {legacyInventoryPrompt.reason === 'missing-status-track'
+              ? (isZh
+                ? '检测到旧存档缺少状态轨迹记录。建议进行库存恢复以建立初始状态与变更索引。'
+                : 'This save is missing status tracking data. Inventory recovery is recommended to rebuild initial status and change indices.')
+              : (isZh
+                ? '检测到旧存档的物品缺少数量信息。建议立即刷新库存以补全数量与消耗属性。'
+                : 'This save has items missing count data. Refreshing inventory now is recommended.')}
           </div>
           <div>
             {isZh
               ? '若稍后再说，可在状态面板中使用“库存刷新”按钮。'
               : 'You can also refresh later using the Inventory Refresh button in the status panel.'}
           </div>
+          {legacyInventoryPrompt.reason === 'missing-status-track' && (
+            <div>
+              {isZh
+                ? '提示：历史过长可能导致恢复不完整，恢复过程中会进行多阶段计算。'
+                : 'Note: long histories may reduce recovery accuracy. The recovery runs in multiple stages.'}
+            </div>
+          )}
         </div>
         <div className="mt-4 space-y-2">
           <button
@@ -3399,6 +3873,7 @@ const App: React.FC = () => {
       {guestNotice}
       {usersEditorModal}
       {settingsModal}
+      {rawOutputModal}
       {helpModal}
       {userPromptModal}
       {legacyCompressionModal}
@@ -3458,8 +3933,12 @@ const App: React.FC = () => {
         <Terminal
           history={gameState.history}
           isThinking={gameState.isThinking}
+          progressStages={progressStages}
+          stageStatusLabels={stageStatusLabels}
           systemError={systemError}
+          statusManagerError={statusManagerError}
           systemErrorLabel={isZh ? '> 系统日志' : '> SYSTEM LOG'}
+          statusErrorLabel={isZh ? '> 状态日志' : '> STATUS LOG'}
           compressionStatus={compressionStatus}
           compressionError={compressionError}
           compressionLabel={isZh ? '> 系统日志' : '> SYSTEM LOG'}

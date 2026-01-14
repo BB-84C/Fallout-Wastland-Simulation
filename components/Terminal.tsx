@@ -5,8 +5,12 @@ import { HistoryEntry } from '../types';
 interface TerminalProps {
   history: HistoryEntry[];
   isThinking: boolean;
+  progressStages?: { label: string; status: 'idle' | 'pending' | 'running' | 'done' | 'error' | 'skipped' }[];
+  stageStatusLabels?: Partial<Record<'idle' | 'pending' | 'running' | 'done' | 'error' | 'skipped', string>>;
   systemError?: string | null;
+  statusManagerError?: string | null;
   systemErrorLabel?: string;
+  statusErrorLabel?: string;
   compressionStatus?: string | null;
   compressionError?: string | null;
   compressionLabel?: string;
@@ -20,8 +24,12 @@ interface TerminalProps {
 const Terminal: React.FC<TerminalProps> = ({
   history,
   isThinking,
+  progressStages,
+  stageStatusLabels,
   systemError,
+  statusManagerError,
   systemErrorLabel,
+  statusErrorLabel,
   compressionStatus,
   compressionError,
   compressionLabel,
@@ -44,7 +52,27 @@ const Terminal: React.FC<TerminalProps> = ({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [displayHistory, isThinking, systemError, compressionStatus, compressionError]);
+  }, [displayHistory, isThinking, systemError, statusManagerError, compressionStatus, compressionError, progressStages]);
+
+  const stageLabel = (status: 'idle' | 'pending' | 'running' | 'done' | 'error' | 'skipped') => {
+    if (stageStatusLabels && stageStatusLabels[status]) {
+      return stageStatusLabels[status] as string;
+    }
+    switch (status) {
+      case 'pending':
+        return 'PENDING';
+      case 'running':
+        return 'RUNNING';
+      case 'done':
+        return 'DONE';
+      case 'error':
+        return 'ERROR';
+      case 'skipped':
+        return 'SKIPPED';
+      default:
+        return 'IDLE';
+    }
+  };
 
   return (
     <div 
@@ -122,6 +150,31 @@ const Terminal: React.FC<TerminalProps> = ({
               {compressionRetryLabel || 'RETRY'}
             </button>
           )}
+        </div>
+      )}
+      {progressStages && progressStages.length > 0 && (
+        <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
+          <div className="text-[10px] uppercase opacity-60 mb-2 font-bold">
+            {systemErrorLabel || '> SYSTEM LOG'}
+          </div>
+          <div className="space-y-1">
+            {progressStages.map(stage => (
+              <div key={stage.label} className="flex items-center justify-between text-xs">
+                <span className="uppercase opacity-70">{stage.label}</span>
+                <span className={`uppercase ${stage.status === 'error' ? 'text-[#ff6b6b]' : stage.status === 'done' ? 'text-[#1aff1a]' : 'opacity-70'}`}>
+                  {stageLabel(stage.status)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {statusManagerError && (
+        <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
+          <div className="text-[10px] uppercase opacity-60 mb-1 font-bold">
+            {statusErrorLabel || systemErrorLabel || '> SYSTEM LOG'}
+          </div>
+          <div className="opacity-90">{statusManagerError}</div>
         </div>
       )}
       {systemError && (

@@ -34,7 +34,8 @@ const actorSchema = {
           name: { type: Type.STRING },
           description: { type: Type.STRING },
           rank: { type: Type.NUMBER }
-        }
+        },
+        required: ["name", "description", "rank"]
       }
     },
     ifCompanion: { type: Type.BOOLEAN },
@@ -72,7 +73,7 @@ const playerCreationSchema = {
       items: actorSchema
     }
   },
-  required: actorSchema.required
+  required: [...actorSchema.required, "companions"]
 };
 
 const memorySchema = {
@@ -148,15 +149,102 @@ const companionUpdatesSchema = {
   }
 };
 
+const perkSchema = {
+  type: Type.OBJECT,
+  properties: {
+    name: { type: Type.STRING },
+    description: { type: Type.STRING },
+    rank: { type: Type.NUMBER }
+  },
+  required: ["name", "description", "rank"]
+};
+
+const partialSpecialSchema = {
+  type: Type.OBJECT,
+  properties: {
+    [SpecialAttr.Strength]: { type: Type.NUMBER },
+    [SpecialAttr.Perception]: { type: Type.NUMBER },
+    [SpecialAttr.Endurance]: { type: Type.NUMBER },
+    [SpecialAttr.Charisma]: { type: Type.NUMBER },
+    [SpecialAttr.Intelligence]: { type: Type.NUMBER },
+    [SpecialAttr.Agility]: { type: Type.NUMBER },
+    [SpecialAttr.Luck]: { type: Type.NUMBER }
+  }
+};
+
+const partialSkillsSchema = {
+  type: Type.OBJECT,
+  properties: Object.values(Skill).reduce(
+    (acc: Record<string, any>, skill) => ({ ...acc, [skill]: { type: Type.NUMBER } }),
+    {}
+  )
+};
+
+const inventoryChangeSchema = {
+  type: Type.OBJECT,
+  properties: {
+    add: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING },
+          type: { type: Type.STRING },
+          description: { type: Type.STRING },
+          weight: { type: Type.NUMBER },
+          value: { type: Type.NUMBER },
+          count: { type: Type.NUMBER },
+          isConsumable: { type: Type.BOOLEAN }
+        },
+        required: ["name", "type", "description", "weight", "value", "count", "isConsumable"]
+      }
+    },
+    remove: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING },
+          count: { type: Type.NUMBER }
+        },
+        required: ["name"]
+      }
+    }
+  }
+};
+
+const playerChangeSchema = {
+  type: Type.OBJECT,
+  properties: {
+    health: { type: Type.NUMBER },
+    maxHealth: { type: Type.NUMBER },
+    karma: { type: Type.NUMBER },
+    caps: { type: Type.NUMBER },
+    special: partialSpecialSchema,
+    skills: partialSkillsSchema,
+    perksAdd: { type: Type.ARRAY, items: perkSchema },
+    perksRemove: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: { name: { type: Type.STRING } },
+        required: ["name"]
+      }
+    },
+    inventoryChange: inventoryChangeSchema
+  }
+};
+
 const statusSchema = {
   type: Type.OBJECT,
   properties: {
-    updatedPlayer: actorSchema,
+    playerChange: playerChangeSchema,
     questUpdates: questSchema,
     companionUpdates: companionUpdatesSchema,
     newNpc: actorSchema,
     location: { type: Type.STRING },
-    currentYear: { type: Type.NUMBER }
+    currentYear: { type: Type.NUMBER },
+    currentTime: { type: Type.STRING }
   }
 };
 
@@ -183,6 +271,28 @@ const inventoryRefreshSchema = {
     }
   },
   required: ["inventory"]
+};
+
+const inventoryRecoverySchema = {
+  type: Type.OBJECT,
+  properties: {
+    initialInventory: {
+      type: Type.ARRAY,
+      items: inventoryItemSchema
+    },
+    inventoryChanges: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          narration_index: { type: Type.NUMBER },
+          inventoryChange: inventoryChangeSchema
+        },
+        required: ["narration_index", "inventoryChange"]
+      }
+    }
+  },
+  required: ["initialInventory", "inventoryChanges"]
 };
 
 const resolveApiKey = (overrideKey?: string) => {
@@ -336,8 +446,14 @@ function safeJsonParse(text: string): any {
         // fall through to sanitize pass
       }
     }
-    const repaired = sanitizeJsonText(trimmed);
-    return JSON.parse(repaired);
+    try {
+      const repaired = sanitizeJsonText(trimmed);
+      return JSON.parse(repaired);
+    } catch (finalError) {
+      const error = finalError instanceof Error ? finalError : new Error(String(finalError));
+      (error as { rawOutput?: string }).rawOutput = text;
+      throw error;
+    }
   }
 }
 
@@ -358,8 +474,8 @@ export async function createPlayerCharacter(
       2. MANDATORY LANGUAGE: All text fields in the final JSON MUST be in ${targetLang}.
       3. TRANSLATION RULE: Use official Fallout localizations for ${targetLang}. If an official term does not exist, translate it manually and append the original English in parentheses.
       4. ECONOMY: Assign 50-200 starting caps in the 'caps' field.
-          5. PERK SYSTEM: Assign 1-2 starting perks.
-          6. COMPANIONS: If the user specifies existing companions, include a 'companions' array with full NPC profiles and set ifCompanion=true.
+          5. PERK SYSTEM: Assign 1-2 starting perks. Each perk MUST include name, rank, and a non-empty description.
+          6. COMPANIONS: Always include a 'companions' array (empty if none). If the user specifies existing companions, include full NPC profiles and set ifCompanion=true for each.
           7. SKILLS: The skills object must include all skills with numeric values (do not omit any skill).
           8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
           ${options?.userSystemPrompt?.trim() ? `9. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
@@ -502,14 +618,15 @@ export async function getStatusUpdate(
 
     TASK:
     Update status fields based on the narration. Return JSON with optional keys:
-    updatedPlayer, questUpdates, companionUpdates, newNpc, location, currentYear.
+    playerChange, questUpdates, companionUpdates, newNpc, location, currentYear, currentTime.
+    playerChange should contain only changed fields (new values), plus inventoryChange with add/remove lists.
     If no changes are needed, return {}.
   `;
   const systemInstruction = `You are the Vault-Tec Status Manager.
-          1. PURPOSE: Update ONLY status data shown in the status bar (player stats, inventory, caps, quests, known NPCs/companions, location/year).
+          1. PURPOSE: Emit ONLY status changes shown in the status bar (player stats, inventory, caps, quests, known NPCs/companions, location/year/time).
           2. INPUTS: Use the CURRENT STATUS and the LAST NARRATION only. Do NOT infer changes that are not explicitly stated or clearly implied by the narration.
           3. CONSISTENCY: Keep existing items, caps, perks, SPECIAL, skills, and quests unless the narration clearly changes them. Never invent trades or items.
-          4. INVENTORY: Items include count (number) and isConsumable (boolean). If a consumable is used, decrement its count. Remove items with count <= 0. Do not change counts unless the narration implies use, loss, or gain.
+          4. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
           5. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
           6. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
           7. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
@@ -584,6 +701,105 @@ export async function refreshInventory(
   }, `${systemInstruction}\n${prompt}`, response.text);
   const items = parsed && typeof parsed === 'object' && Array.isArray(parsed.inventory) ? parsed.inventory : [];
   return { inventory: items, tokenUsage };
+}
+
+export async function auditInventoryWeights(
+  inventory: InventoryItem[],
+  lang: Language,
+  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId }
+): Promise<{ inventory: InventoryItem[] } & { tokenUsage?: TokenUsage }> {
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
+  const ai = new GoogleGenAI({ apiKey: apiKey || '' });
+  const targetLang = lang === 'zh' ? 'Chinese' : 'English';
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
+
+  const prompt = `
+    Current Inventory (JSON):
+    ${JSON.stringify(inventory)}
+
+    TASK:
+    Return JSON with key inventory containing the same items, with weight corrected if needed.
+  `;
+  const systemInstruction = `You are the Vault-Tec Inventory Auditor.
+          1. PURPOSE: Only verify and correct item WEIGHT values.
+          2. WEIGHT RULE: If weight is 0 lb, verify via Fallout Wiki and correct it. If the item truly weighs 0 (e.g. bottle caps), keep 0.
+          3. DO NOT change name, type, description, value, count, or isConsumable.
+          4. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
+          5. RETURN FORMAT: Return JSON only with key inventory.`;
+
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: inventoryRefreshSchema,
+      systemInstruction
+    }
+  });
+
+  if (!response.text) throw new Error("Connection to the Wasteland lost.");
+  const parsed = safeJsonParse(response.text);
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: response.usageMetadata?.promptTokenCount,
+    completionTokens: response.usageMetadata?.candidatesTokenCount,
+    totalTokens: response.usageMetadata?.totalTokenCount
+  }, `${systemInstruction}\n${prompt}`, response.text);
+  const items = parsed && typeof parsed === 'object' && Array.isArray(parsed.inventory) ? parsed.inventory : [];
+  return { inventory: items, tokenUsage };
+}
+
+export async function recoverInventoryStatus(
+  lore: string,
+  narrations: string[],
+  lang: Language,
+  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId }
+): Promise<{ initialInventory: InventoryItem[]; inventoryChanges: { narration_index: number; inventoryChange: any }[] } & { tokenUsage?: TokenUsage }> {
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
+  const ai = new GoogleGenAI({ apiKey: apiKey || '' });
+  const targetLang = lang === 'zh' ? 'Chinese' : 'English';
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
+
+  const prompt = `
+    PLAYER LORE:
+    ${lore}
+
+    NARRATIONS (1-based):
+    ${narrations.map((text, index) => `[${index + 1}] ${text}`).join('\n')}
+
+    TASK:
+    Return JSON with initialInventory and inventoryChanges (narration_index + inventoryChange).
+  `;
+  const systemInstruction = `You are the Vault-Tec Inventory Recovery System.
+          1. PURPOSE: Reconstruct the inventory timeline for an old save.
+          2. INPUTS: Use player lore and the full narration list. Do NOT use player actions.
+          3. OUTPUTS:
+            - initialInventory: the player's starting inventory based on lore.
+            - inventoryChanges: list of inventoryChange entries keyed by narration_index (1-based, narrator entries only).
+          4. inventoryChange must use add/remove only. add items with full details; remove uses name + count.
+          5. Do NOT invent items unless narration clearly implies gain or loss.
+          6. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
+          7. RETURN FORMAT: Return JSON only.`;
+
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: inventoryRecoverySchema,
+      systemInstruction
+    }
+  });
+
+  if (!response.text) throw new Error("Connection to the Wasteland lost.");
+  const parsed = safeJsonParse(response.text);
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: response.usageMetadata?.promptTokenCount,
+    completionTokens: response.usageMetadata?.candidatesTokenCount,
+    totalTokens: response.usageMetadata?.totalTokenCount
+  }, `${systemInstruction}\n${prompt}`, response.text);
+  const initialInventory = parsed && typeof parsed === 'object' && Array.isArray(parsed.initialInventory) ? parsed.initialInventory : [];
+  const inventoryChanges = parsed && typeof parsed === 'object' && Array.isArray(parsed.inventoryChanges) ? parsed.inventoryChanges : [];
+  return { initialInventory, inventoryChanges, tokenUsage };
 }
 
 export async function compressMemory(
