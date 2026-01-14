@@ -33,7 +33,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   imageProvider: 'gemini',
   textModel: '',
   imageModel: '',
-  userSystemPrompt: ''
+  userSystemPrompt: '',
+  userSystemPromptCustom: false
 };
 
 export const getTierSettings = (tier: UserTier) => TIER_SETTINGS[tier];

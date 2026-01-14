@@ -96,6 +96,7 @@ export interface GameSettings {
   textModel?: TextModelId;
   imageModel?: ImageModelId;
   userSystemPrompt?: string;
+  userSystemPromptCustom?: boolean;
 }
 
 export type UserTier = 'admin' | 'normal' | 'guest';

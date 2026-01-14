@@ -30,6 +30,12 @@ const USER_ONBOARD_PREFIX = 'fallout_user_onboarded';
 const RESERVED_ADMIN_USERNAME = 'admin';
 const GUEST_COOLDOWN_KEY = 'fallout_guest_cooldown_until';
 const GUEST_COOLDOWN_MS = 30 * 60 * 1000;
+const DEFAULT_USER_PROMPT_ZH = `1. 请输出800 tokens左右
+2. 每轮给出三个可选行动
+3. 用户想要追求高难度的游玩体验，请安排更加离奇的事件，同时提高玩家各种行为的判定失败几率。`;
+const DEFAULT_USER_PROMPT_EN = `1. Output around 800 tokens.
+2. Provide three available actions each turn.
+3. The player wants a high-difficulty experience. Introduce more unexpected events and increase the failure rate of player actions.`;
 const MODEL_PROVIDER_OPTIONS: { value: ModelProvider; label: string }[] = [
   { value: 'openai', label: 'OpenAI' },
   { value: 'gemini', label: 'Gemini' },
@@ -283,13 +289,35 @@ const normalizeSkills = (
   return normalizedSkills;
 };
 
+const getDefaultUserPrompt = (language: Language) =>
+  language === 'zh' ? DEFAULT_USER_PROMPT_ZH : DEFAULT_USER_PROMPT_EN;
+
+const applyDefaultUserPrompt = (settings: GameSettings, language: Language): GameSettings => {
+  if (settings.userSystemPromptCustom) return settings;
+  const currentPrompt = (settings.userSystemPrompt || '').trim();
+  const defaultPrompt = getDefaultUserPrompt(language);
+  if (
+    !currentPrompt ||
+    currentPrompt === DEFAULT_USER_PROMPT_ZH ||
+    currentPrompt === DEFAULT_USER_PROMPT_EN
+  ) {
+    return {
+      ...settings,
+      userSystemPrompt: defaultPrompt,
+      userSystemPromptCustom: false
+    };
+  }
+  return settings;
+};
+
 const normalizeProviderSettings = (settings: GameSettings): GameSettings => {
   const fallbackProvider = settings.textProvider || settings.imageProvider || settings.modelProvider || 'gemini';
   return {
     ...settings,
     textProvider: settings.textProvider || fallbackProvider,
     imageProvider: settings.imageProvider || fallbackProvider,
-    userSystemPrompt: settings.userSystemPrompt ?? ''
+    userSystemPrompt: settings.userSystemPrompt ?? '',
+    userSystemPromptCustom: settings.userSystemPromptCustom ?? false
   };
 };
 
@@ -537,22 +565,25 @@ const createInitialGameState = (
   ap: number,
   apLastUpdated: number,
   language: Language = 'en'
-): GameState => ({
-  player: null,
-  currentYear: 2281,
-  location: 'Mojave Wasteland',
-  currentTime: new Date(Date.UTC(2281, 9, 23, 10, 0, 0)).toISOString(),
-  history: [],
-  knownNpcs: [],
-  quests: [],
-  isThinking: false,
-  language,
-  settings,
-  ap,
-  apLastUpdated,
-  turnCount: 0,
-  tokenUsage: { sent: 0, received: 0, total: 0 },
-});
+): GameState => {
+  const nextSettings = applyDefaultUserPrompt(settings, language);
+  return {
+    player: null,
+    currentYear: 2281,
+    location: 'Mojave Wasteland',
+    currentTime: new Date(Date.UTC(2281, 9, 23, 10, 0, 0)).toISOString(),
+    history: [],
+    knownNpcs: [],
+    quests: [],
+    isThinking: false,
+    language,
+    settings: nextSettings,
+    ap,
+    apLastUpdated,
+    turnCount: 0,
+    tokenUsage: { sent: 0, received: 0, total: 0 },
+  };
+};
 
 const stripAdminUser = (db: Record<string, UserRecord>) => {
   if (!db[RESERVED_ADMIN_USERNAME]) return db;
@@ -1074,6 +1105,7 @@ const App: React.FC = () => {
         activeTier,
         hasKey
       );
+      const nextSettings = applyDefaultUserPrompt(settings, parsed?.language || gameState.language);
       let clampedAp = Math.min(maxAp, typeof currentUser.ap === 'number' ? currentUser.ap : maxAp);
       let apLastUpdated = typeof currentUser.apLastUpdated === 'number' && currentUser.apLastUpdated > 0
         ? currentUser.apLastUpdated
@@ -1088,7 +1120,7 @@ const App: React.FC = () => {
         ...parsed,
         player: parsedPlayer,
         knownNpcs: parsedKnownNpcs,
-        settings,
+        settings: nextSettings,
         ap: clampedAp,
         apLastUpdated,
         turnCount: typeof parsed.turnCount === 'number' ? parsed.turnCount : 0,
@@ -1752,7 +1784,11 @@ const App: React.FC = () => {
   };
 
   const toggleLanguage = (lang: Language) => {
-    setGameState(prev => ({ ...prev, language: lang }));
+    setGameState(prev => ({
+      ...prev,
+      language: lang,
+      settings: applyDefaultUserPrompt(prev.settings, lang)
+    }));
   };
 
   const toggleHighQualityImages = () => {
@@ -1882,7 +1918,8 @@ const App: React.FC = () => {
       ...prev,
       settings: {
         ...prev.settings,
-        userSystemPrompt: value
+        userSystemPrompt: value,
+        userSystemPromptCustom: true
       }
     }));
   };
@@ -2489,8 +2526,8 @@ const App: React.FC = () => {
           </h1>
           <div className="text-base md:text-lg font-bold text-yellow-300 uppercase tracking-wide">
             {isZh
-              ? '如果你为访问本网站支付过费用，你被诈骗了！本网站永远免费。'
-              : 'If you paid to get this website, you got scammed! This website is always free to access.'}
+              ? '如果你为访问本网站支付过费用，你被诈骗了！本网站永远免费。\n 本网站只负责提供平台与AI调用框架，用户所接收到的任何信息均来自第三方AI模型，与本网站无关。'
+              : 'If you paid to get this website, you got scammed! This website is always free to access.\n This website only provides the platform and AI calling framework; any information you receive comes from third-party AI models and is not affiliated with this website.'}
           </div>
           <p className="text-sm opacity-70">
             {isZh ? '登录或注册以保存设置与进度。' : 'Log in or register to keep settings and progress.'}
