@@ -136,7 +136,7 @@ const StatBar: React.FC<StatBarProps> = ({
               <h3 className="text-xs uppercase opacity-50 mb-2 tracking-widest">{language === 'en' ? 'Condition' : '状态'}</h3>
               <div className="space-y-4">
                 <div>
-                  <div className="flex justify-between text-[10px] uppercase mb-1">
+                  <div className="flex justify-between text-[0.625rem] uppercase mb-1">
                     <span>HP</span>
                     <span>{player.health} / {player.maxHealth}</span>
                   </div>
@@ -149,7 +149,7 @@ const StatBar: React.FC<StatBarProps> = ({
                 </div>
 
                 <div>
-                  <div className="flex justify-between text-[10px] uppercase mb-1">
+                  <div className="flex justify-between text-[0.625rem] uppercase mb-1">
                     <span>AP</span>
                     <span>{apUnlimited ? '∞' : `${ap} / ${maxAp}`}</span>
                   </div>
@@ -160,7 +160,7 @@ const StatBar: React.FC<StatBarProps> = ({
                     ></div>
                   </div>
                   {showApRecovery && apRecovery && (
-                    <div className="text-[9px] opacity-50 mt-1 uppercase tracking-widest">
+                    <div className="text-[0.5625rem] opacity-50 mt-1 uppercase tracking-widest">
                       +{apRecovery.amount} / {apRecoveryLabel}
                     </div>
                   )}
@@ -227,7 +227,7 @@ const StatBar: React.FC<StatBarProps> = ({
             {player.perks.map((perk, idx) => (
               <div key={idx} className="border border-[#1aff1a]/20 p-2 bg-[#1aff1a]/5">
                 <div className="text-sm font-bold text-[#1aff1a] mb-1 uppercase">{perk.name}</div>
-                <div className="text-[11px] opacity-70 leading-tight">{perk.description}</div>
+                <div className="text-[0.6875rem] opacity-70 leading-tight">{perk.description}</div>
               </div>
             ))}
           </div>
@@ -261,30 +261,30 @@ const StatBar: React.FC<StatBarProps> = ({
                           height={100}
                         />
                       ) : (
-                        <div className="w-[100px] h-[100px] flex items-center justify-center text-[9px] uppercase opacity-60">
+                        <div className="w-[100px] h-[100px] flex items-center justify-center text-[0.5625rem] uppercase opacity-60">
                           {language === 'en' ? 'No Avatar' : '暂无头像'}
                         </div>
                       )}
                     </button>
                     <div className="flex-1">
                       <div className="text-sm font-bold text-[#1aff1a] mb-1 uppercase">{companion.name}</div>
-                      <div className="text-[11px] opacity-70">{companion.faction}</div>
-                      <div className="text-[10px] opacity-50">
+                      <div className="text-[0.6875rem] opacity-70">{companion.faction}</div>
+                      <div className="text-[0.625rem] opacity-50">
                         {language === 'en' ? 'Age' : '年龄'} {companion.age} · {companion.gender}
                       </div>
-                      <div className="text-[9px] uppercase opacity-40 mt-2">
+                      <div className="text-[0.5625rem] uppercase opacity-40 mt-2">
                         {language === 'en' ? 'Tap avatar for dossier' : '点击头像展开档案'}
                       </div>
                     </div>
                   </div>
                   {isExpanded && (
-                    <div className="mt-3 space-y-3 text-[11px]">
+                    <div className="mt-3 space-y-3 text-[0.6875rem]">
                       <div>
-                        <div className="text-[10px] uppercase opacity-60 mb-1">{language === 'en' ? 'Lore' : '背景'}</div>
+                        <div className="text-[0.625rem] uppercase opacity-60 mb-1">{language === 'en' ? 'Lore' : '背景'}</div>
                         <div className="opacity-80 leading-tight">{companion.lore}</div>
                       </div>
                       <div>
-                        <div className="text-[10px] uppercase opacity-60 mb-1">SPECIAL</div>
+                        <div className="text-[0.625rem] uppercase opacity-60 mb-1">SPECIAL</div>
                         <div className="grid grid-cols-2 gap-1">
                           {Object.entries(companion.special).map(([key, val]) => (
                             <div key={key} className="flex justify-between border-b border-[#1aff1a]/10">
@@ -295,7 +295,7 @@ const StatBar: React.FC<StatBarProps> = ({
                         </div>
                       </div>
                       <div>
-                        <div className="text-[10px] uppercase opacity-60 mb-1">{language === 'en' ? 'Skills' : '技能'}</div>
+                        <div className="text-[0.625rem] uppercase opacity-60 mb-1">{language === 'en' ? 'Skills' : '技能'}</div>
                         <div className="grid grid-cols-2 gap-1">
                           {Object.values(Skill).map((skill) => (
                             <div key={skill} className="flex justify-between border-b border-[#1aff1a]/10">
@@ -306,13 +306,13 @@ const StatBar: React.FC<StatBarProps> = ({
                         </div>
                       </div>
                       <div>
-                        <div className="text-[10px] uppercase opacity-60 mb-1">{language === 'en' ? 'Perks' : '能力'}</div>
+                        <div className="text-[0.625rem] uppercase opacity-60 mb-1">{language === 'en' ? 'Perks' : '能力'}</div>
                         {companion.perks.length === 0 ? (
                           <div className="opacity-40 italic">{language === 'en' ? 'None' : '暂无'}</div>
                         ) : (
                           <div className="space-y-1">
                             {companion.perks.map((perk, idx) => (
-                              <div key={`${perk.name}-${idx}`} className="text-[10px]">
+                              <div key={`${perk.name}-${idx}`} className="text-[0.625rem]">
                                 <span className="font-bold uppercase">{perk.name}</span>
                                 <span className="opacity-70"> — {perk.description}</span>
                               </div>
@@ -321,13 +321,13 @@ const StatBar: React.FC<StatBarProps> = ({
                         )}
                       </div>
                       <div>
-                        <div className="text-[10px] uppercase opacity-60 mb-1">{language === 'en' ? 'Inventory' : '物品'}</div>
+                        <div className="text-[0.625rem] uppercase opacity-60 mb-1">{language === 'en' ? 'Inventory' : '物品'}</div>
                         {companion.inventory.length === 0 ? (
                           <div className="opacity-40 italic">{language === 'en' ? 'Empty' : '空'}</div>
                         ) : (
                           <div className="space-y-1">
                             {companion.inventory.map((item, idx) => (
-                              <div key={`${item.name}-${idx}`} className="text-[10px]">
+                              <div key={`${item.name}-${idx}`} className="text-[0.625rem]">
                                 <span className="font-bold">
                                   {item.name} {item.count > 1 ? `x${item.count}` : ''}
                                 </span>
@@ -349,23 +349,23 @@ const StatBar: React.FC<StatBarProps> = ({
         return (
           <div className="space-y-4 animate-in slide-in-from-right-4 duration-300">
              <div>
-                <h4 className="text-[10px] uppercase opacity-50 mb-2">{language === 'en' ? 'Active Quests' : '进行中的任务'}</h4>
+                <h4 className="text-[0.625rem] uppercase opacity-50 mb-2">{language === 'en' ? 'Active Quests' : '进行中的任务'}</h4>
                 <div className="space-y-2">
                   {quests.filter(q => q.status === 'active').length === 0 && <div className="text-xs opacity-30 italic px-2">--- {language === 'en' ? 'Empty' : '空'} ---</div>}
                   {quests.filter(q => q.status === 'active').map(q => (
                     <div key={q.id} className="text-sm border-l-2 border-[#1aff1a] pl-2 py-2 bg-[#1aff1a]/5">
                       <div className="font-bold text-[#1aff1a] uppercase text-xs mb-1">{q.name}</div>
-                      <div className="opacity-70 text-[11px]">{q.objective}</div>
+                      <div className="opacity-70 text-[0.6875rem]">{q.objective}</div>
                     </div>
                   ))}
                 </div>
              </div>
              {quests.filter(q => q.status !== 'active').length > 0 && (
                <div className="pt-4 border-t border-[#1aff1a]/10">
-                  <h4 className="text-[10px] uppercase opacity-50 mb-2">{language === 'en' ? 'Completed' : '已完成'}</h4>
+                  <h4 className="text-[0.625rem] uppercase opacity-50 mb-2">{language === 'en' ? 'Completed' : '已完成'}</h4>
                   <div className="space-y-1">
                     {quests.filter(q => q.status !== 'active').map(q => (
-                      <div key={q.id} className="text-[11px] opacity-40 line-through px-2">
+                      <div key={q.id} className="text-[0.6875rem] opacity-40 line-through px-2">
                         {q.name}
                       </div>
                     ))}
@@ -378,7 +378,7 @@ const StatBar: React.FC<StatBarProps> = ({
       case 'INV':
         return (
           <div className="space-y-1 animate-in slide-in-from-right-4 duration-300">
-            <div className="flex justify-between text-[10px] uppercase opacity-40 px-1 mb-2">
+            <div className="flex justify-between text-[0.625rem] uppercase opacity-40 px-1 mb-2">
               <span>{language === 'en' ? 'Item' : '物品'}</span>
               <span>{language === 'en' ? 'Weight' : '重量'}</span>
             </div>
@@ -388,14 +388,14 @@ const StatBar: React.FC<StatBarProps> = ({
                   <span className="font-bold group-hover:text-white transition-colors">
                     {item.name} {item.count > 1 ? `x${item.count}` : ''}
                   </span>
-                  <span className="text-[9px] opacity-50 truncate">{item.type}</span>
+                  <span className="text-[0.5625rem] opacity-50 truncate">{item.type}</span>
                 </div>
                 <span className="opacity-40 whitespace-nowrap self-center">
                   {(item.weight * item.count).toFixed(1)} lb
                 </span>
               </div>
             ))}
-            <div className="pt-4 text-[10px] opacity-50 text-right">
+            <div className="pt-4 text-[0.625rem] opacity-50 text-right">
                {language === 'en' ? 'Total Weight: ' : '总重: '}
                {player.inventory.reduce((acc, curr) => acc + curr.weight * curr.count, 0).toFixed(1)} / {player.special.Strength * 10 + 50} lb
             </div>
@@ -432,21 +432,21 @@ const StatBar: React.FC<StatBarProps> = ({
           <div className="flex justify-between items-center">
             <button 
               onClick={onClose}
-              className="md:hidden text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/20 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="md:hidden text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/20 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
             >
               {language === 'en' ? 'RETURN' : '返回'}
             </button>
             <div className="flex space-x-2">
               <button 
                 onClick={() => onLanguageToggle(language === 'en' ? 'zh' : 'en')}
-                className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors"
+                className="text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors"
               >
                 {language === 'en' ? 'EN / 中' : '中 / EN'}
               </button>
               {showSave && (
                 <button 
                   onClick={onSave}
-                  className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+                  className="text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
                 >
                   {language === 'en' ? 'SAVE' : '保存'}
                 </button>
@@ -454,7 +454,7 @@ const StatBar: React.FC<StatBarProps> = ({
               <button
                 onClick={onRefreshInventory}
                 disabled={inventoryRefreshing}
-                className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold disabled:opacity-40"
+                className="text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold disabled:opacity-40"
               >
                 {inventoryRefreshing
                   ? (language === 'en' ? 'REFRESH...' : '刷新中...')
@@ -463,7 +463,7 @@ const StatBar: React.FC<StatBarProps> = ({
               <div className="relative">
                 <button 
                   onClick={() => setShowExportMenu(prev => !prev)}
-                  className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+                  className="text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
                 >
                   {language === 'en' ? 'EXPORT' : '导出'}
                 </button>
@@ -471,23 +471,23 @@ const StatBar: React.FC<StatBarProps> = ({
                   <div className="absolute right-0 mt-1 w-24 border border-[#1aff1a]/40 bg-black/95 z-10">
                     <button
                       onClick={() => { onExport('log-md'); setShowExportMenu(false); }}
-                      className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
                     >
                       {language === 'en' ? 'LOG MD' : '终端 MD'}
                     </button>
                     <button
                       onClick={() => { onExport('log-pdf'); setShowExportMenu(false); }}
-                      className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
                     >
                       {language === 'en' ? 'LOG PDF' : '终端 PDF'}
                     </button>
                     <button
                       onClick={() => { onExport('save-json'); setShowExportMenu(false); }}
-                      className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
                     >
                       {language === 'en' ? 'SAVE JSON' : '存档 JSON'}
                     </button>
-                    <div className="px-2 py-1 text-[9px] opacity-60">
+                    <div className="px-2 py-1 text-[0.5625rem] opacity-60">
                       {language === 'en'
                         ? 'JSON export is the only way to transfer saves between browsers/devices.'
                         : '导出 JSON 是跨浏览器/设备转移存档的唯一方式。'}
@@ -500,7 +500,7 @@ const StatBar: React.FC<StatBarProps> = ({
           
           <div className="space-y-0.5">
             <h2 className="text-xl font-bold glow-text uppercase leading-none truncate">{player.name}</h2>
-            <div className="text-[10px] opacity-60 uppercase tracking-tighter">Pip-Boy 3000 Interface v4.0.2</div>
+            <div className="text-[0.625rem] opacity-60 uppercase tracking-tighter">Pip-Boy 3000 Interface v4.0.2</div>
           </div>
         </div>
 
@@ -510,7 +510,7 @@ const StatBar: React.FC<StatBarProps> = ({
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 py-2 text-[10px] font-bold transition-all border-r last:border-r-0 border-[#1aff1a]/20 ${
+              className={`flex-1 py-2 text-[0.625rem] font-bold transition-all border-r last:border-r-0 border-[#1aff1a]/20 ${
                 activeTab === tab.id 
                   ? 'bg-[#1aff1a] text-black shadow-[inset_0_0_8px_rgba(0,0,0,0.5)]' 
                   : 'text-[#1aff1a]/60 hover:text-[#1aff1a] hover:bg-[#1aff1a]/10'
@@ -526,7 +526,7 @@ const StatBar: React.FC<StatBarProps> = ({
           {renderTabContent()}
         </div>
 
-        <div className="p-2 border-t border-[#1aff1a]/20 text-[9px] uppercase tracking-widest flex justify-between items-center bg-[#1aff1a]/5">
+        <div className="p-2 border-t border-[#1aff1a]/20 text-[0.5625rem] uppercase tracking-widest flex justify-between items-center bg-[#1aff1a]/5">
           <span>{language === 'en' ? 'TOKENS' : '令牌'}</span>
           <span className="opacity-70">
             {(language === 'en' ? 'SEND' : '发送')} {tokenUsage.sent.toLocaleString()} · {(language === 'en' ? 'RECV' : '接收')} {tokenUsage.received.toLocaleString()} · {(language === 'en' ? 'TOTAL' : '总计')} {tokenUsage.total.toLocaleString()}
@@ -534,7 +534,7 @@ const StatBar: React.FC<StatBarProps> = ({
         </div>
 
         {/* Bottom Footer Info */}
-        <div className="p-2 bg-[#1aff1a]/5 border-t border-[#1aff1a]/20 text-[9px] flex justify-between opacity-50 uppercase tracking-widest">
+        <div className="p-2 bg-[#1aff1a]/5 border-t border-[#1aff1a]/20 text-[0.5625rem] flex justify-between opacity-50 uppercase tracking-widest">
           <span>Vault-Tec Industries</span>
           <span>{displayLocation.split(' ')[0]}</span>
         </div>
@@ -544,3 +544,4 @@ const StatBar: React.FC<StatBarProps> = ({
 };
 
 export default StatBar;
+

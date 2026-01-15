@@ -1283,9 +1283,7 @@ const App: React.FC = () => {
   const textScale = Number.isFinite(gameState.settings.textScale)
     ? clampNumber(gameState.settings.textScale as number, 0.8, 5)
     : 1;
-  const scaledRootStyle: React.CSSProperties = {
-    fontSize: `${textScale * 100}%`
-  };
+  const scaledRootStyle: React.CSSProperties = {};
   const statPanelScale = isDesktop
     ? clampNumber(statPanelWidth / PANEL_BASE_WIDTH, 0.85, 1.2)
     : 1;
@@ -1555,6 +1553,17 @@ const App: React.FC = () => {
       setCurrentUser(prev => (prev ? { ...prev, imageProxyKey: storedKey || undefined } : prev));
     }
   }, [currentUser, isNormal, imageProvider]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const clamped = clampNumber(textScale, 0.8, 5);
+    const html = document.documentElement;
+    const previous = html.style.fontSize;
+    html.style.fontSize = `${clamped * 100}%`;
+    return () => {
+      html.style.fontSize = previous;
+    };
+  }, [textScale]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -5133,33 +5142,33 @@ const App: React.FC = () => {
             {isAdmin && (
               <button
                 onClick={openUsersEditor}
-                className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+                className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
               >
                 {isZh ? '用户' : 'USERS'}
               </button>
             )}
             <button 
               onClick={() => setIsSettingsOpen(true)}
-              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '设置' : 'SET'}
             </button>
             <button
               onClick={handleManualCompressionRequest}
               disabled={compressionLocked}
-              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
+              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
             >
               {isZh ? '压缩' : 'MEMORY'}
             </button>
             <button 
               onClick={() => setIsHelpOpen(true)}
-              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '帮助' : 'HELP'}
             </button>
             <button
               onClick={() => setIsUserPromptOpen(true)}
-              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '提示' : 'PROMPT'}
             </button>
