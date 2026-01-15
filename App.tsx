@@ -5261,7 +5261,7 @@ const App: React.FC = () => {
             absolute md:static inset-0 z-40 md:z-auto
             transition-transform duration-300 ease-in-out
             ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}
-            w-full h-full bg-black/95 md:bg-transparent
+            w-full h-full bg-black/95 md:bg-transparent ${VIEW_PADDING_CLASS}
           `}
           style={isDesktop ? { width: statPanelWidth } : undefined}
         >
