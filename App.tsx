@@ -149,7 +149,7 @@ const STAT_PANEL_MIN = 240;
 const STAT_PANEL_MAX = 520;
 const ARENA_PANEL_MIN = 240;
 const ARENA_PANEL_MAX = 520;
-const VIEW_PADDING_CLASS = 'pt-[10vh] pb-[10vh] md:pt-0 md:pb-0 box-border';
+const VIEW_PADDING_CLASS = 'pt-[15vh] pb-[5vh] md:pt-0 md:pb-0 box-border';
 
 const isUserOnboarded = (username: string) => {
   try {
