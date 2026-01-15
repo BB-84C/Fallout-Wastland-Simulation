@@ -71,49 +71,71 @@ const syncApState = (
 
 const getSaveKey = (username: string) => `${SAVE_KEY_PREFIX}_${username}`;
 const getArenaSaveKey = (username: string) => `${ARENA_SAVE_KEY_PREFIX}_${username}`;
-const getUserApiKeyKey = (username: string, provider: ModelProvider) =>
-  `${USER_API_KEY_PREFIX}_${username}_${provider}`;
-const getUserProxyKeyKey = (username: string, provider: ModelProvider) =>
-  `${USER_PROXY_KEY_PREFIX}_${username}_${provider}`;
+type ApiKeyScope = 'text' | 'image';
+
+const getUserApiKeyKey = (username: string, provider: ModelProvider, scope?: ApiKeyScope) =>
+  `${USER_API_KEY_PREFIX}_${username}_${provider}${scope ? `_${scope}` : ''}`;
+const getUserProxyKeyKey = (username: string, provider: ModelProvider, scope?: ApiKeyScope) =>
+  `${USER_PROXY_KEY_PREFIX}_${username}_${provider}${scope ? `_${scope}` : ''}`;
 const getUserOnboardKey = (username: string) => `${USER_ONBOARD_PREFIX}_${username}`;
 
-const loadUserApiKey = (username: string, provider: ModelProvider) => {
+const loadUserApiKey = (username: string, provider: ModelProvider, scope?: ApiKeyScope) => {
   try {
+    const scopedKey = getUserApiKeyKey(username, provider, scope);
+    const scopedValue = localStorage.getItem(scopedKey);
+    if (scopedValue !== null) return scopedValue;
+    if (!scope) return '';
     return localStorage.getItem(getUserApiKeyKey(username, provider)) || '';
   } catch {
     return '';
   }
 };
 
-const loadUserProxyKey = (username: string, provider: ModelProvider) => {
+const loadUserProxyKey = (username: string, provider: ModelProvider, scope?: ApiKeyScope) => {
   try {
+    const scopedKey = getUserProxyKeyKey(username, provider, scope);
+    const scopedValue = localStorage.getItem(scopedKey);
+    if (scopedValue !== null) return scopedValue;
+    if (!scope) return '';
     return localStorage.getItem(getUserProxyKeyKey(username, provider)) || '';
   } catch {
     return '';
   }
 };
 
-const persistUserApiKey = (username: string, provider: ModelProvider, key: string) => {
+const persistUserApiKey = (
+  username: string,
+  provider: ModelProvider,
+  key: string,
+  scope?: ApiKeyScope
+) => {
   try {
     const trimmed = key.trim();
+    const storageKey = getUserApiKeyKey(username, provider, scope);
     if (!trimmed) {
-      localStorage.removeItem(getUserApiKeyKey(username, provider));
+      localStorage.removeItem(storageKey);
       return;
     }
-    localStorage.setItem(getUserApiKeyKey(username, provider), trimmed);
+    localStorage.setItem(storageKey, trimmed);
   } catch {
     // Ignore storage errors.
   }
 };
 
-const persistUserProxyKey = (username: string, provider: ModelProvider, key: string) => {
+const persistUserProxyKey = (
+  username: string,
+  provider: ModelProvider,
+  key: string,
+  scope?: ApiKeyScope
+) => {
   try {
     const trimmed = key.trim();
+    const storageKey = getUserProxyKeyKey(username, provider, scope);
     if (!trimmed) {
-      localStorage.removeItem(getUserProxyKeyKey(username, provider));
+      localStorage.removeItem(storageKey);
       return;
     }
-    localStorage.setItem(getUserProxyKeyKey(username, provider), trimmed);
+    localStorage.setItem(storageKey, trimmed);
   } catch {
     // Ignore storage errors.
   }
@@ -1465,7 +1487,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!currentUser || !isNormal) return;
-    const storedKey = loadUserApiKey(currentUser.username, textProvider);
+    const storedKey = loadUserApiKey(currentUser.username, textProvider, 'text');
     const currentKey = currentUser.textApiKey || '';
     if (storedKey !== currentKey) {
       setCurrentUser(prev => (prev ? { ...prev, textApiKey: storedKey || undefined } : prev));
@@ -1474,7 +1496,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!currentUser || !isNormal) return;
-    const storedKey = loadUserApiKey(currentUser.username, imageProvider);
+    const storedKey = loadUserApiKey(currentUser.username, imageProvider, 'image');
     const currentKey = currentUser.imageApiKey || '';
     if (storedKey !== currentKey) {
       setCurrentUser(prev => (prev ? { ...prev, imageApiKey: storedKey || undefined } : prev));
@@ -1483,7 +1505,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!currentUser || !isNormal) return;
-    const storedKey = loadUserProxyKey(currentUser.username, textProvider);
+    const storedKey = loadUserProxyKey(currentUser.username, textProvider, 'text');
     const currentKey = currentUser.textProxyKey || '';
     if (storedKey !== currentKey) {
       setCurrentUser(prev => (prev ? { ...prev, textProxyKey: storedKey || undefined } : prev));
@@ -1492,7 +1514,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!currentUser || !isNormal) return;
-    const storedKey = loadUserProxyKey(currentUser.username, imageProvider);
+    const storedKey = loadUserProxyKey(currentUser.username, imageProvider, 'image');
     const currentKey = currentUser.imageProxyKey || '';
     if (storedKey !== currentKey) {
       setCurrentUser(prev => (prev ? { ...prev, imageProxyKey: storedKey || undefined } : prev));
@@ -1823,10 +1845,10 @@ const App: React.FC = () => {
     const baseSettings = normalizeProviderSettings(record.settings || DEFAULT_SETTINGS);
     const textProvider = (baseSettings.textProvider || baseSettings.modelProvider || 'gemini') as ModelProvider;
     const imageProvider = (baseSettings.imageProvider || baseSettings.modelProvider || textProvider) as ModelProvider;
-    const storedTextKey = tier === 'normal' ? loadUserApiKey(record.username, textProvider) : '';
-    const storedImageKey = tier === 'normal' ? loadUserApiKey(record.username, imageProvider) : '';
-    const storedTextProxyKey = tier === 'normal' ? loadUserProxyKey(record.username, textProvider) : '';
-    const storedImageProxyKey = tier === 'normal' ? loadUserProxyKey(record.username, imageProvider) : '';
+    const storedTextKey = tier === 'normal' ? loadUserApiKey(record.username, textProvider, 'text') : '';
+    const storedImageKey = tier === 'normal' ? loadUserApiKey(record.username, imageProvider, 'image') : '';
+    const storedTextProxyKey = tier === 'normal' ? loadUserProxyKey(record.username, textProvider, 'text') : '';
+    const storedImageProxyKey = tier === 'normal' ? loadUserProxyKey(record.username, imageProvider, 'image') : '';
     const sessionTextApiKey = storedTextKey || undefined;
     const sessionImageApiKey = storedImageKey || undefined;
     const sessionTextProxyKey = storedTextProxyKey || undefined;
@@ -3208,8 +3230,8 @@ const App: React.FC = () => {
         textProvider: value
       }
     }));
-    const storedKey = loadUserApiKey(currentUser.username, value);
-    const storedProxyKey = loadUserProxyKey(currentUser.username, value);
+    const storedKey = loadUserApiKey(currentUser.username, value, 'text');
+    const storedProxyKey = loadUserProxyKey(currentUser.username, value, 'text');
     setCurrentUser(prev => (prev ? { ...prev, textApiKey: storedKey || undefined, textProxyKey: storedProxyKey || undefined } : prev));
   };
 
@@ -3222,22 +3244,22 @@ const App: React.FC = () => {
         imageProvider: value
       }
     }));
-    const storedKey = loadUserApiKey(currentUser.username, value);
-    const storedProxyKey = loadUserProxyKey(currentUser.username, value);
+    const storedKey = loadUserApiKey(currentUser.username, value, 'image');
+    const storedProxyKey = loadUserProxyKey(currentUser.username, value, 'image');
     setCurrentUser(prev => (prev ? { ...prev, imageApiKey: storedKey || undefined, imageProxyKey: storedProxyKey || undefined } : prev));
   };
 
   const updateTextApiKey = (value: string) => {
     if (!currentUser || !isNormal) return;
     const trimmed = value.trim();
-    persistUserApiKey(currentUser.username, textProvider, trimmed);
+    persistUserApiKey(currentUser.username, textProvider, trimmed, 'text');
     setCurrentUser(prev => (prev ? { ...prev, textApiKey: trimmed || undefined } : prev));
   };
 
   const updateImageApiKey = (value: string) => {
     if (!currentUser || !isNormal) return;
     const trimmed = value.trim();
-    persistUserApiKey(currentUser.username, imageProvider, trimmed);
+    persistUserApiKey(currentUser.username, imageProvider, trimmed, 'image');
     setCurrentUser(prev => (prev ? { ...prev, imageApiKey: trimmed || undefined } : prev));
   };
 
@@ -3291,14 +3313,14 @@ const App: React.FC = () => {
   const updateTextProxyKey = (value: string) => {
     if (!currentUser || !isNormal) return;
     const trimmed = value.trim();
-    persistUserProxyKey(currentUser.username, textProvider, trimmed);
+    persistUserProxyKey(currentUser.username, textProvider, trimmed, 'text');
     setCurrentUser(prev => (prev ? { ...prev, textProxyKey: trimmed || undefined } : prev));
   };
 
   const updateImageProxyKey = (value: string) => {
     if (!currentUser || !isNormal) return;
     const trimmed = value.trim();
-    persistUserProxyKey(currentUser.username, imageProvider, trimmed);
+    persistUserProxyKey(currentUser.username, imageProvider, trimmed, 'image');
     setCurrentUser(prev => (prev ? { ...prev, imageProxyKey: trimmed || undefined } : prev));
   };
 
