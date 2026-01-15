@@ -5100,13 +5100,13 @@ const App: React.FC = () => {
           </aside>
         </div>
 
-        <div className="p-4 border-t border-[#1aff1a]/30 bg-black/60 flex flex-col md:flex-row gap-3 items-start md:items-center">
+        <div className="p-4 border-t border-[#1aff1a]/30 bg-black/60 flex flex-row flex-nowrap gap-1 md:gap-2 items-center">
           {!arenaState.finished ? (
             <>
               <button
                 onClick={() => runArenaSimulation(false, false)}
                 disabled={arenaState.isThinking}
-                className="flex-1 border-2 border-[#1aff1a] py-2 md:py-3 text-sm md:text-base font-bold uppercase hover:bg-[#1aff1a] hover:text-black transition-all disabled:opacity-50"
+                className="flex-1 min-w-0 border-2 border-[#1aff1a] py-2 md:py-3 text-xs md:text-base font-bold uppercase whitespace-nowrap hover:bg-[#1aff1a] hover:text-black transition-all disabled:opacity-50"
               >
                 {arenaState.briefingComplete
                   ? (isZh ? '继续模拟' : 'Continue Simulation')
@@ -5115,7 +5115,7 @@ const App: React.FC = () => {
               <button
                 onClick={() => runArenaSimulation(true, false)}
                 disabled={arenaState.isThinking || !arenaState.briefingComplete}
-                className="flex-1 border-2 border-[#1aff1a]/50 py-2 md:py-3 text-sm md:text-base font-bold uppercase hover:bg-[#1aff1a]/70 hover:text-black transition-all disabled:opacity-50"
+                className="flex-1 min-w-0 border-2 border-[#1aff1a]/50 py-2 md:py-3 text-xs md:text-base font-bold uppercase whitespace-nowrap hover:bg-[#1aff1a]/70 hover:text-black transition-all disabled:opacity-50"
               >
                 {isZh ? '结束战斗' : 'Finish the Battle'}
               </button>
@@ -5123,15 +5123,15 @@ const App: React.FC = () => {
           ) : (
             <button
               onClick={() => setView('arena_setup')}
-              className="w-full border-2 border-[#1aff1a] py-2 md:py-3 text-sm md:text-base font-bold uppercase hover:bg-[#1aff1a] hover:text-black transition-all"
+              className="flex-1 min-w-0 border-2 border-[#1aff1a] py-2 md:py-3 text-xs md:text-base font-bold uppercase whitespace-nowrap hover:bg-[#1aff1a] hover:text-black transition-all"
             >
               {isZh ? '返回斗兽场' : 'Back to Arena Setup'}
             </button>
           )}
-          <div className="relative md:ml-auto">
+          <div className="relative flex-1 min-w-0">
             <button
               onClick={() => setShowArenaExportMenu(prev => !prev)}
-              className="text-xs border border-[#1aff1a]/50 px-3 py-2 uppercase hover:bg-[#1aff1a] hover:text-black transition-all"
+              className="w-full text-xs border border-[#1aff1a]/50 px-3 py-2 uppercase hover:bg-[#1aff1a] hover:text-black transition-all whitespace-nowrap"
             >
               {isZh ? '导出记录' : 'Export Log'}
             </button>
