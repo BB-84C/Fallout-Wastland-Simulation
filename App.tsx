@@ -3453,6 +3453,16 @@ const App: React.FC = () => {
     }));
   };
 
+  const handleReturnToMenu = () => {
+    const message = isZh
+      ? '返回菜单前请确认已保存进度。现在返回？'
+      : 'Please make sure you saved your progress before returning. Return to menu now?';
+    if (window.confirm(message)) {
+      setIsSidebarOpen(false);
+      setView('start');
+    }
+  };
+
   const startPanelResize = (panel: 'stat' | 'arena') => (event: React.PointerEvent) => {
     if (!isDesktop) return;
     setDraggingPanel(panel);
@@ -4729,9 +4739,18 @@ const App: React.FC = () => {
           </div>
         )}
         <div className="max-w-4xl w-full pip-boy-border p-6 md:p-8 bg-black/80">
-          <h2 className="text-3xl md:text-4xl font-bold mb-4 glow-text uppercase">
-            {gameState.language === 'en' ? 'Identity Reconstruction' : '身份重建'}
-          </h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-3xl md:text-4xl font-bold glow-text uppercase">
+              {gameState.language === 'en' ? 'Identity Reconstruction' : '身份重建'}
+            </h2>
+            <button
+              onClick={() => setView('start')}
+              disabled={gameState.isThinking}
+              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
+            >
+              {isZh ? '返回' : 'BACK'}
+            </button>
+          </div>
           <div className="mb-6 space-y-2 p-4 bg-[#1aff1a]/10 border border-[#1aff1a]/20">
              <div className="text-lg md:text-xl">
                {gameState.language === 'en' ? 'PARAMS: ' : '参数 (PARAMS): '}
@@ -4934,6 +4953,13 @@ const App: React.FC = () => {
             </h1>
           </div>
           <div className="flex items-center space-x-2">
+            <button
+              onClick={() => setView('arena_setup')}
+              disabled={arenaState.isThinking}
+              className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
+            >
+              {isZh ? '返回' : 'BACK'}
+            </button>
             <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
             <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
             <button
@@ -5147,6 +5173,12 @@ const App: React.FC = () => {
                 {isZh ? '用户' : 'USERS'}
               </button>
             )}
+            <button
+              onClick={handleReturnToMenu}
+              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            >
+              {isZh ? '返回' : 'BACK'}
+            </button>
             <button 
               onClick={() => setIsSettingsOpen(true)}
               className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
