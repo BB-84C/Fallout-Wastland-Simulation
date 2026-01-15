@@ -1204,6 +1204,7 @@ const App: React.FC = () => {
   const [isTipOpen, setIsTipOpen] = useState(false);
   const [arenaError, setArenaError] = useState<string | null>(null);
   const [showArenaExportMenu, setShowArenaExportMenu] = useState(false);
+  const [arenaSidebarFolded, setArenaSidebarFolded] = useState(false);
   const [usersDb, setUsersDb] = useState<Record<string, UserRecord>>({});
   const [usersLoaded, setUsersLoaded] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
@@ -1291,6 +1292,11 @@ const App: React.FC = () => {
   const arenaPanelScale = isDesktop
     ? clampNumber(arenaPanelWidth / PANEL_BASE_WIDTH, 0.85, 1.2)
     : 1;
+  const arenaNarrationFlexClass = isDesktop
+    ? 'flex-1'
+    : (arenaSidebarFolded ? 'flex-[5]' : 'flex-[2]');
+  const arenaSidebarFlexClass = isDesktop ? '' : 'flex-[1]';
+  const isArenaSidebarFolded = !isDesktop && arenaSidebarFolded;
   const textProxyOk = useProxy ? !!textProxyBaseUrl : true;
   const imageProxyOk = useProxy ? !!imageProxyBaseUrl : true;
   const textConfigured = !!textProvider && !!hasTextAuthKey && textProxyOk && !!selectedTextModel;
@@ -4961,6 +4967,12 @@ const App: React.FC = () => {
             >
               {isZh ? '返回' : 'BACK'}
             </button>
+            <button
+              onClick={() => setArenaSidebarFolded(prev => !prev)}
+              className="md:hidden px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            >
+              {arenaSidebarFolded ? (isZh ? '展开' : 'EXPAND') : (isZh ? '折叠' : 'FOLD')}
+            </button>
             <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
             <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
             <button
@@ -4990,7 +5002,7 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex flex-1 min-h-0">
-          <div className="flex flex-col flex-1 min-w-0 min-h-0">
+          <div className={`flex flex-col min-w-0 min-h-0 ${arenaNarrationFlexClass}`}>
             <Terminal
               history={arenaState.history}
               isThinking={arenaState.isThinking}
@@ -5006,7 +5018,7 @@ const App: React.FC = () => {
             />
           </div>
           <aside
-            className="relative w-64 md:w-auto border-l border-[#1aff1a]/30 bg-black/60 p-3 md:p-4 overflow-y-auto min-h-0"
+            className={`relative w-64 md:w-auto border-l border-[#1aff1a]/30 bg-black/60 p-3 md:p-4 overflow-y-auto min-h-0 ${arenaSidebarFlexClass}`}
             style={isDesktop ? { width: arenaPanelWidth } : undefined}
           >
             <div
@@ -5016,12 +5028,13 @@ const App: React.FC = () => {
               <div className="h-full w-px bg-[#1aff1a]/30 mx-auto" />
             </div>
             <div
-              style={{
+              style={isDesktop ? {
                 transform: `scale(${arenaPanelScale})`,
                 transformOrigin: 'top left',
                 width: `${100 / arenaPanelScale}%`,
                 height: `${100 / arenaPanelScale}%`
-              }}
+              } : undefined}
+              className={isDesktop ? 'h-full' : undefined}
             >
               <div className="text-xs uppercase opacity-60 mb-2">
                 {isZh ? '参战方概览' : 'Involved Parties'}
@@ -5036,22 +5049,24 @@ const App: React.FC = () => {
                   const isDefeated = arenaState.mode === 'wargame' && forcePower !== null && forcePower <= 0;
                   return (
                     <div key={index} className="border border-[#1aff1a]/20 p-3 bg-black/40">
-                      <div className="flex items-start space-x-3">
-                        <div className="w-14 h-14 border border-[#1aff1a]/40 bg-black/60 flex items-center justify-center text-[10px] uppercase">
+                      <div className={`flex ${isArenaSidebarFolded ? 'flex-col items-center gap-2' : 'items-start space-x-3'}`}>
+                        <div className={`${isArenaSidebarFolded ? 'w-16 h-16' : 'w-14 h-14'} border border-[#1aff1a]/40 bg-black/60 flex items-center justify-center text-[10px] uppercase`}>
                           {party.avatarUrl ? (
                             <img src={party.avatarUrl} alt={`party-${index}`} className="w-full h-full object-cover opacity-90" />
                           ) : (
                             <span>{isZh ? '暂无头像' : 'No avatar'}</span>
                           )}
                         </div>
-                        <div className="flex-1">
-                          <div className="text-sm font-bold uppercase">
-                            {isZh ? `参战方 ${index + 1}` : `Party ${index + 1}`}
+                        {!isArenaSidebarFolded && (
+                          <div className="flex-1">
+                            <div className="text-sm font-bold uppercase">
+                              {isZh ? `参战方 ${index + 1}` : `Party ${index + 1}`}
+                            </div>
+                            <div className="text-xs opacity-70 whitespace-pre-wrap">
+                              {party.description}
+                            </div>
                           </div>
-                          <div className="text-xs opacity-70 whitespace-pre-wrap">
-                            {party.description}
-                          </div>
-                        </div>
+                        )}
                       </div>
                       {arenaState.mode === 'wargame' && (
                         <div className="mt-2">
