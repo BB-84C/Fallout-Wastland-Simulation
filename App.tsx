@@ -4967,12 +4967,6 @@ const App: React.FC = () => {
             >
               {isZh ? '返回' : 'BACK'}
             </button>
-            <button
-              onClick={() => setArenaSidebarFolded(prev => !prev)}
-              className="md:hidden px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
-            >
-              {arenaSidebarFolded ? (isZh ? '展开' : 'EXPAND') : (isZh ? '折叠' : 'FOLD')}
-            </button>
             <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
             <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
             <button
@@ -5036,8 +5030,16 @@ const App: React.FC = () => {
               } : undefined}
               className={isDesktop ? 'h-full' : undefined}
             >
-              <div className="text-xs uppercase opacity-60 mb-2">
-                {isZh ? '参战方概览' : 'Involved Parties'}
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs uppercase opacity-60">
+                  {isZh ? '参战方概览' : 'Involved Parties'}
+                </div>
+                <button
+                  onClick={() => setArenaSidebarFolded(prev => !prev)}
+                  className="md:hidden text-[10px] uppercase border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+                >
+                  {arenaSidebarFolded ? (isZh ? '展开' : 'EXPAND') : (isZh ? '折叠' : 'FOLD')}
+                </button>
               </div>
               <div className="space-y-3">
                 {arenaState.involvedParties.map((party, index) => {
