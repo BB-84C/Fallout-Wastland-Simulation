@@ -25,6 +25,7 @@ interface StatBarProps {
   onRefreshInventory: () => void;
   inventoryRefreshing: boolean;
   onClose: () => void;
+  panelScale?: number;
 }
 
 type Tab = 'STAT' | 'SPEC' | 'SKIL' | 'PERK' | 'COMP' | 'DATA' | 'INV';
@@ -105,7 +106,8 @@ const StatBar: React.FC<StatBarProps> = ({
   showSave,
   onRefreshInventory,
   inventoryRefreshing,
-  onClose
+  onClose,
+  panelScale
 }) => {
   const [activeTab, setActiveTab] = useState<Tab>('STAT');
   const [expandedCompanion, setExpandedCompanion] = useState<string | null>(null);
@@ -412,118 +414,130 @@ const StatBar: React.FC<StatBarProps> = ({
     { id: 'INV', label: language === 'en' ? 'INV' : '背包' }
   ];
 
+  const clampedScale = Math.min(1.2, Math.max(0.85, panelScale ?? 1));
+
   return (
-    <div className="w-full md:w-80 h-full border-l border-[#1aff1a]/30 bg-black/80 p-0 overflow-hidden flex flex-col no-scrollbar">
-      {/* Top Utility Header */}
-      <div className="p-3 border-b border-[#1aff1a]/30 space-y-3 bg-black">
-        <div className="flex justify-between items-center">
-          <button 
-            onClick={onClose}
-            className="md:hidden text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/20 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
-          >
-            {language === 'en' ? 'RETURN' : '返回'}
-          </button>
-          <div className="flex space-x-2">
+    <div className="w-full h-full border-l border-[#1aff1a]/30 bg-black/80 p-0 overflow-hidden flex flex-col no-scrollbar">
+      <div
+        style={{
+          transform: `scale(${clampedScale})`,
+          transformOrigin: 'top left',
+          width: `${100 / clampedScale}%`,
+          height: `${100 / clampedScale}%`
+        }}
+        className="h-full"
+      >
+        {/* Top Utility Header */}
+        <div className="p-3 border-b border-[#1aff1a]/30 space-y-3 bg-black">
+          <div className="flex justify-between items-center">
             <button 
-              onClick={() => onLanguageToggle(language === 'en' ? 'zh' : 'en')}
-              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors"
+              onClick={onClose}
+              className="md:hidden text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/20 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
             >
-              {language === 'en' ? 'EN / 中' : '中 / EN'}
+              {language === 'en' ? 'RETURN' : '返回'}
             </button>
-            {showSave && (
+            <div className="flex space-x-2">
               <button 
-                onClick={onSave}
-                className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+                onClick={() => onLanguageToggle(language === 'en' ? 'zh' : 'en')}
+                className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors"
               >
-                {language === 'en' ? 'SAVE' : '保存'}
+                {language === 'en' ? 'EN / 中' : '中 / EN'}
               </button>
-            )}
-            <button
-              onClick={onRefreshInventory}
-              disabled={inventoryRefreshing}
-              className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold disabled:opacity-40"
-            >
-              {inventoryRefreshing
-                ? (language === 'en' ? 'REFRESH...' : '刷新中...')
-                : (language === 'en' ? 'INV REFRESH' : '库存刷新')}
-            </button>
-            <div className="relative">
-              <button 
-                onClick={() => setShowExportMenu(prev => !prev)}
-                className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
-              >
-                {language === 'en' ? 'EXPORT' : '导出'}
-              </button>
-              {showExportMenu && (
-                <div className="absolute right-0 mt-1 w-24 border border-[#1aff1a]/40 bg-black/95 z-10">
-                  <button
-                    onClick={() => { onExport('log-md'); setShowExportMenu(false); }}
-                    className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
-                  >
-                    {language === 'en' ? 'LOG MD' : '终端 MD'}
-                  </button>
-                  <button
-                    onClick={() => { onExport('log-pdf'); setShowExportMenu(false); }}
-                    className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
-                  >
-                    {language === 'en' ? 'LOG PDF' : '终端 PDF'}
-                  </button>
-                  <button
-                    onClick={() => { onExport('save-json'); setShowExportMenu(false); }}
-                    className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
-                  >
-                    {language === 'en' ? 'SAVE JSON' : '存档 JSON'}
-                  </button>
-                  <div className="px-2 py-1 text-[9px] opacity-60">
-                    {language === 'en'
-                      ? 'JSON export is the only way to transfer saves between browsers/devices.'
-                      : '导出 JSON 是跨浏览器/设备转移存档的唯一方式。'}
-                  </div>
-                </div>
+              {showSave && (
+                <button 
+                  onClick={onSave}
+                  className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+                >
+                  {language === 'en' ? 'SAVE' : '保存'}
+                </button>
               )}
+              <button
+                onClick={onRefreshInventory}
+                disabled={inventoryRefreshing}
+                className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold disabled:opacity-40"
+              >
+                {inventoryRefreshing
+                  ? (language === 'en' ? 'REFRESH...' : '刷新中...')
+                  : (language === 'en' ? 'INV REFRESH' : '库存刷新')}
+              </button>
+              <div className="relative">
+                <button 
+                  onClick={() => setShowExportMenu(prev => !prev)}
+                  className="text-[10px] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+                >
+                  {language === 'en' ? 'EXPORT' : '导出'}
+                </button>
+                {showExportMenu && (
+                  <div className="absolute right-0 mt-1 w-24 border border-[#1aff1a]/40 bg-black/95 z-10">
+                    <button
+                      onClick={() => { onExport('log-md'); setShowExportMenu(false); }}
+                      className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                    >
+                      {language === 'en' ? 'LOG MD' : '终端 MD'}
+                    </button>
+                    <button
+                      onClick={() => { onExport('log-pdf'); setShowExportMenu(false); }}
+                      className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                    >
+                      {language === 'en' ? 'LOG PDF' : '终端 PDF'}
+                    </button>
+                    <button
+                      onClick={() => { onExport('save-json'); setShowExportMenu(false); }}
+                      className="w-full text-[10px] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                    >
+                      {language === 'en' ? 'SAVE JSON' : '存档 JSON'}
+                    </button>
+                    <div className="px-2 py-1 text-[9px] opacity-60">
+                      {language === 'en'
+                        ? 'JSON export is the only way to transfer saves between browsers/devices.'
+                        : '导出 JSON 是跨浏览器/设备转移存档的唯一方式。'}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
+          
+          <div className="space-y-0.5">
+            <h2 className="text-xl font-bold glow-text uppercase leading-none truncate">{player.name}</h2>
+            <div className="text-[10px] opacity-60 uppercase tracking-tighter">Pip-Boy 3000 Interface v4.0.2</div>
+          </div>
         </div>
-        
-        <div className="space-y-0.5">
-          <h2 className="text-xl font-bold glow-text uppercase leading-none truncate">{player.name}</h2>
-          <div className="text-[10px] opacity-60 uppercase tracking-tighter">Pip-Boy 3000 Interface v4.0.2</div>
+
+        {/* Sub-Menu Tabs */}
+        <div className="flex border-b border-[#1aff1a]/30 bg-[#1aff1a]/5">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex-1 py-2 text-[10px] font-bold transition-all border-r last:border-r-0 border-[#1aff1a]/20 ${
+                activeTab === tab.id 
+                  ? 'bg-[#1aff1a] text-black shadow-[inset_0_0_8px_rgba(0,0,0,0.5)]' 
+                  : 'text-[#1aff1a]/60 hover:text-[#1aff1a] hover:bg-[#1aff1a]/10'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
-      </div>
 
-      {/* Sub-Menu Tabs */}
-      <div className="flex border-b border-[#1aff1a]/30 bg-[#1aff1a]/5">
-        {tabs.map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex-1 py-2 text-[10px] font-bold transition-all border-r last:border-r-0 border-[#1aff1a]/20 ${
-              activeTab === tab.id 
-                ? 'bg-[#1aff1a] text-black shadow-[inset_0_0_8px_rgba(0,0,0,0.5)]' 
-                : 'text-[#1aff1a]/60 hover:text-[#1aff1a] hover:bg-[#1aff1a]/10'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+        {/* Content Area */}
+        <div className="flex-1 overflow-y-auto p-4 no-scrollbar">
+          {renderTabContent()}
+        </div>
 
-      {/* Content Area */}
-      <div className="flex-1 overflow-y-auto p-4 no-scrollbar">
-        {renderTabContent()}
-      </div>
+        <div className="p-2 border-t border-[#1aff1a]/20 text-[9px] uppercase tracking-widest flex justify-between items-center bg-[#1aff1a]/5">
+          <span>{language === 'en' ? 'TOKENS' : '令牌'}</span>
+          <span className="opacity-70">
+            {(language === 'en' ? 'SEND' : '发送')} {tokenUsage.sent.toLocaleString()} · {(language === 'en' ? 'RECV' : '接收')} {tokenUsage.received.toLocaleString()} · {(language === 'en' ? 'TOTAL' : '总计')} {tokenUsage.total.toLocaleString()}
+          </span>
+        </div>
 
-      <div className="p-2 border-t border-[#1aff1a]/20 text-[9px] uppercase tracking-widest flex justify-between items-center bg-[#1aff1a]/5">
-        <span>{language === 'en' ? 'TOKENS' : '令牌'}</span>
-        <span className="opacity-70">
-          {(language === 'en' ? 'SEND' : '发送')} {tokenUsage.sent.toLocaleString()} · {(language === 'en' ? 'RECV' : '接收')} {tokenUsage.received.toLocaleString()} · {(language === 'en' ? 'TOTAL' : '总计')} {tokenUsage.total.toLocaleString()}
-        </span>
-      </div>
-
-      {/* Bottom Footer Info */}
-      <div className="p-2 bg-[#1aff1a]/5 border-t border-[#1aff1a]/20 text-[9px] flex justify-between opacity-50 uppercase tracking-widest">
-        <span>Vault-Tec Industries</span>
-        <span>{displayLocation.split(' ')[0]}</span>
+        {/* Bottom Footer Info */}
+        <div className="p-2 bg-[#1aff1a]/5 border-t border-[#1aff1a]/20 text-[9px] flex justify-between opacity-50 uppercase tracking-widest">
+          <span>Vault-Tec Industries</span>
+          <span>{displayLocation.split(' ')[0]}</span>
+        </div>
       </div>
     </div>
   );

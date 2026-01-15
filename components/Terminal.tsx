@@ -19,6 +19,7 @@ interface TerminalProps {
   onReroll?: () => void;
   canReroll?: boolean;
   rerollLabel?: string;
+  forceScrollbar?: boolean;
 }
 
 const Terminal: React.FC<TerminalProps> = ({
@@ -37,10 +38,12 @@ const Terminal: React.FC<TerminalProps> = ({
   onRetryCompression,
   onReroll,
   canReroll,
-  rerollLabel
+  rerollLabel,
+  forceScrollbar
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const displayHistory = history.filter(entry => entry.meta !== 'memory');
+  const scrollClass = forceScrollbar ? 'overflow-y-scroll' : 'overflow-y-auto';
   const lastPlayerIndex = (() => {
     for (let i = displayHistory.length - 1; i >= 0; i -= 1) {
       if (displayHistory[i].sender === 'player') return i;
@@ -77,7 +80,7 @@ const Terminal: React.FC<TerminalProps> = ({
   return (
     <div 
       ref={scrollRef}
-      className="flex-1 overflow-y-auto p-4 space-y-6 bg-black/40 border-b border-[#1aff1a]/30"
+      className={`flex-1 ${scrollClass} p-4 space-y-6 bg-black/40 border-b border-[#1aff1a]/30`}
     >
       {displayHistory.map((msg, i) => (
         <div key={i} className={`flex flex-col ${msg.sender === 'player' ? 'items-end' : 'items-start'}`}>

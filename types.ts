@@ -147,6 +147,7 @@ export interface GameSettings {
   userSystemPrompt?: string;
   userSystemPromptCustom?: boolean;
   maxCompressedMemoryK?: number;
+  textScale?: number;
 }
 
 export type UserTier = 'admin' | 'normal' | 'guest';

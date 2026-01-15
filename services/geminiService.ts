@@ -94,7 +94,7 @@ const arenaSchema = {
       items: { type: Type.NUMBER }
     }
   },
-  required: ["storyText"]
+  required: ["storyText", "imagePrompt"]
 };
 
 const DEFAULT_TEXT_MODEL = 'gemini-2.5-flash-lite';
@@ -645,9 +645,9 @@ PHASE: ${phase}
 TASK:
 ${mode === 'wargame'
   ? `If PHASE is briefing, provide a concise situation briefing only (no combat actions or damage). If CURRENT FORCE POWER is provided, return the same values unchanged; otherwise set initial forcePowers for each party (integer). If PHASE is battle, continue the battle as a war game report. Update forcePowers for each party (integer). If a party is a single unit, set forcePowers to that unit's HP. If a party is down to 0, mark them as defeated but keep narrating until FINISH or only one party remains.
-Return JSON with keys: storyText, forcePowers, imagePrompt (optional).`
+Return JSON with keys: storyText, forcePowers, imagePrompt. imagePrompt is REQUIRED.`
   : `If PHASE is briefing, provide a concise situation briefing only (no combat actions or damage). If PHASE is battle, continue the battle simulation with tactics, setbacks, and momentum shifts. If FINISH is true, conclude the battle with a decisive outcome and aftermath.
-Return JSON with keys: storyText, imagePrompt (optional).`}`;
+Return JSON with keys: storyText, imagePrompt. imagePrompt is REQUIRED.`}`;
 
 const systemInstruction = `You are the Wasteland Smash Arena simulator.
 1. LORE: Always consult the Fallout Wiki in English when possible. If a party is not in the wiki, infer from established Fallout lore.
@@ -658,8 +658,10 @@ const systemInstruction = `You are the Wasteland Smash Arena simulator.
 6. MODE: ${mode === 'wargame'
   ? 'War Game Sim: use a professional, concise tone, reporting actions, tactics, and damage. Always update forcePowers for each party.'
   : 'Scenario: focus on story, atmosphere, and vivid scene depiction.'}
-7. BRIEFING: If PHASE is briefing, do NOT describe any attacks, damage, or exchanges. Only describe parties, location, time, surroundings, and the reason for conflict.
-${options?.userSystemPrompt?.trim() ? `8. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
+7. FORCE POWERS FORMAT (War Game only): forcePowers MUST be a JSON array of integers with the same length and order as INVOLVED PARTIES. Do NOT output an object/map.
+8. IMAGE PROMPT: Always include imagePrompt as a concise, vivid visual description for a single scene.
+9. BRIEFING: If PHASE is briefing, do NOT describe any attacks, damage, or exchanges. Only describe parties, location, time, surroundings, and the reason for conflict.
+${options?.userSystemPrompt?.trim() ? `10. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
 
   const response = await ai.models.generateContent({
     model: selectedTextModel,
@@ -683,7 +685,10 @@ ${options?.userSystemPrompt?.trim() ? `8. USER DIRECTIVE: ${options.userSystemPr
     if (!storyText.trim()) {
       throw new Error('Invalid arena response.');
     }
-    const imagePrompt = typeof (parsed as any).imagePrompt === 'string' ? (parsed as any).imagePrompt : undefined;
+    const imagePrompt = typeof (parsed as any).imagePrompt === 'string' ? (parsed as any).imagePrompt : '';
+    if (!imagePrompt.trim()) {
+      throw new Error('Invalid arena response.');
+    }
     const forcePowers = Array.isArray((parsed as any).forcePowers)
       ? (parsed as any).forcePowers.map((value: any) => Number(value))
       : undefined;

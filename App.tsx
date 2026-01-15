@@ -142,6 +142,13 @@ const persistUserProxyKey = (
 };
 
 const normalizeProxyBaseUrl = (value: string) => value.trim().replace(/\/+$/, '');
+const clampNumber = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const PANEL_BASE_WIDTH = 320;
+const STAT_PANEL_MIN = 240;
+const STAT_PANEL_MAX = 520;
+const ARENA_PANEL_MIN = 240;
+const ARENA_PANEL_MAX = 520;
 
 const isUserOnboarded = (username: string) => {
   try {
@@ -614,12 +621,19 @@ const isErrorHistoryEntry = (entry: HistoryEntry) => {
 
 const normalizeProviderSettings = (settings: GameSettings): GameSettings => {
   const fallbackProvider = settings.textProvider || settings.imageProvider || settings.modelProvider || 'gemini';
+  const defaultTextScale = Number.isFinite(DEFAULT_SETTINGS.textScale)
+    ? (DEFAULT_SETTINGS.textScale as number)
+    : 1;
+  const textScale = Number.isFinite(settings.textScale)
+    ? clampNumber(settings.textScale as number, 0.8, 5)
+    : defaultTextScale;
   return {
     ...settings,
     textProvider: settings.textProvider || fallbackProvider,
     imageProvider: settings.imageProvider || fallbackProvider,
     userSystemPrompt: settings.userSystemPrompt ?? '',
-    userSystemPromptCustom: settings.userSystemPromptCustom ?? false
+    userSystemPromptCustom: settings.userSystemPromptCustom ?? false,
+    textScale
   };
 };
 
@@ -1206,10 +1220,18 @@ const App: React.FC = () => {
   const [creationStartTime, setCreationStartTime] = useState<number | null>(null);
   const [creationElapsed, setCreationElapsed] = useState(0);
   const [isRawOutputOpen, setIsRawOutputOpen] = useState(false);
+  const [statPanelWidth, setStatPanelWidth] = useState(PANEL_BASE_WIDTH);
+  const [arenaPanelWidth, setArenaPanelWidth] = useState(PANEL_BASE_WIDTH);
+  const [draggingPanel, setDraggingPanel] = useState<null | 'stat' | 'arena'>(null);
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window === 'undefined' ? true : window.innerWidth >= 768
+  );
   const lastHistoryLength = useRef(0);
   const lastCompressedMemory = useRef('');
   const lastInventorySignature = useRef('');
   const lastRawOutputCache = useRef('');
+  const dragStartX = useRef(0);
+  const dragStartWidth = useRef(0);
   const compressionStatusTimeout = useRef<number | null>(null);
 
   const activeTier: UserTier = currentUser?.tier ?? 'guest';
@@ -1257,6 +1279,19 @@ const App: React.FC = () => {
   const isZh = gameState.language === 'zh';
   const canManualSave = isAdmin || normalKeyUnlocked;
   const canAdjustImageFrequency = isAdmin || normalKeyUnlocked;
+  const arenaTokenUsage = normalizeTokenUsage(arenaState.tokenUsage);
+  const textScale = Number.isFinite(gameState.settings.textScale)
+    ? clampNumber(gameState.settings.textScale as number, 0.8, 5)
+    : 1;
+  const scaledRootStyle: React.CSSProperties = {
+    fontSize: `${textScale * 100}%`
+  };
+  const statPanelScale = isDesktop
+    ? clampNumber(statPanelWidth / PANEL_BASE_WIDTH, 0.85, 1.2)
+    : 1;
+  const arenaPanelScale = isDesktop
+    ? clampNumber(arenaPanelWidth / PANEL_BASE_WIDTH, 0.85, 1.2)
+    : 1;
   const textProxyOk = useProxy ? !!textProxyBaseUrl : true;
   const imageProxyOk = useProxy ? !!imageProxyBaseUrl : true;
   const textConfigured = !!textProvider && !!hasTextAuthKey && textProxyOk && !!selectedTextModel;
@@ -1520,6 +1555,50 @@ const App: React.FC = () => {
       setCurrentUser(prev => (prev ? { ...prev, imageProxyKey: storedKey || undefined } : prev));
     }
   }, [currentUser, isNormal, imageProvider]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsDesktop(window.innerWidth >= 768);
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (!draggingPanel) return;
+    const handleMove = (event: PointerEvent) => {
+      const delta = dragStartX.current - event.clientX;
+      if (draggingPanel === 'stat') {
+        const next = clampNumber(
+          dragStartWidth.current + delta,
+          STAT_PANEL_MIN,
+          STAT_PANEL_MAX
+        );
+        setStatPanelWidth(next);
+        return;
+      }
+      const next = clampNumber(
+        dragStartWidth.current + delta,
+        ARENA_PANEL_MIN,
+        ARENA_PANEL_MAX
+      );
+      setArenaPanelWidth(next);
+    };
+    const handleUp = () => setDraggingPanel(null);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    window.addEventListener('pointercancel', handleUp);
+    return () => {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+      window.removeEventListener('pointercancel', handleUp);
+    };
+  }, [draggingPanel]);
 
   const saveGame = useCallback((notify = true) => {
     if (!currentUser || !canManualSave) return;
@@ -3365,6 +3444,14 @@ const App: React.FC = () => {
     }));
   };
 
+  const startPanelResize = (panel: 'stat' | 'arena') => (event: React.PointerEvent) => {
+    if (!isDesktop) return;
+    setDraggingPanel(panel);
+    dragStartX.current = event.clientX;
+    dragStartWidth.current = panel === 'stat' ? statPanelWidth : arenaPanelWidth;
+    event.preventDefault();
+  };
+
   const updateCompressedMemoryLimit = (value: string) => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
@@ -3374,6 +3461,26 @@ const App: React.FC = () => {
       settings: {
         ...prev.settings,
         maxCompressedMemoryK: clamped
+      }
+    }));
+  };
+
+  const updateTextScale = (value: string) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return;
+    const clamped = clampNumber(parsed, 0.8, 5);
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        textScale: clamped
+      }
+    }));
+    setArenaState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        textScale: clamped
       }
     }));
   };
@@ -3627,6 +3734,39 @@ const App: React.FC = () => {
             </div>
           </div>
 
+          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5 space-y-4">
+            <div>
+              <div className="text-sm font-bold uppercase">
+                {isZh ? '全局文字缩放' : 'Global text scale'}
+              </div>
+              <div className="text-xs opacity-70 mt-1">
+                {isZh
+                  ? '调整整体字体大小，适合不同设备与观看距离。'
+                  : 'Adjust global font size for different devices and viewing distances.'}
+              </div>
+              <div className="mt-3 flex items-center gap-3">
+                <input
+                  type="range"
+                  min={0.8}
+                  max={5}
+                  step={0.05}
+                  value={textScale}
+                  onChange={(e) => updateTextScale(e.target.value)}
+                  className="flex-1 accent-[#1aff1a]"
+                />
+                <input
+                  type="number"
+                  min={0.8}
+                  max={5}
+                  step={0.05}
+                  value={textScale.toFixed(2)}
+                  onChange={(e) => updateTextScale(e.target.value)}
+                  className="w-20 bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-sm focus:outline-none"
+                />
+              </div>
+            </div>
+          </div>
+
           <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
             <div className="text-sm font-bold uppercase">
               {isZh ? '原始输出缓存' : 'Raw Output Cache'}
@@ -3856,58 +3996,182 @@ const App: React.FC = () => {
         </div>
         <div className="space-y-4 text-sm">
           <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
-            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '行动点 (AP)' : 'Action Points (AP)'}</div>
+            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '快速开始' : 'Quick Start'}</div>
             <div className="opacity-80">
               {isZh
-                ? `AP 上限随用户等级变化（注册用户完成配置后无限制，临时 ${guestMaxAp}）。每次行动消耗 1 点，AP 为 0 时无法行动。`
-                : `AP cap depends on tier (Registered users unlimited after setup, Temporary ${guestMaxAp}). Each action costs 1 AP. You cannot act when AP reaches 0.`}
+                ? '注册用户需先在设置中填写文本提供商/API/模型；如启用图像生成，还需填写图像提供商/API/模型。完成后才能游玩。'
+                : 'Registered users must configure text provider/API/model first; if images are enabled, also configure image provider/API/model before playing.'}
             </div>
             <div className="opacity-80 mt-2">
               {isZh
-                ? '普通用户使用自有 API，AP 不受限制；临时用户不恢复 AP。'
-                : 'Normal users play with their own API key and have unlimited AP; temporary users do not recover AP.'}
+                ? '访客模式可直接体验，但开始后需等待 30 分钟冷却才能再次进入。'
+                : 'Guest mode can start immediately, but has a 30-minute cooldown after entry.'}
             </div>
           </div>
 
           <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
-            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '规则' : 'Rules'}</div>
+            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '模型与密钥' : 'Models & Keys'}</div>
             <div className="opacity-80">
               {isZh
-                ? '请描述行动意图，不要指定结果。系统会根据规则判定，并可能返回规则错误提示。'
-                : 'Describe actions, not outcomes. The system enforces rules and may return a rule error if you dictate results.'}
+                ? '文本模型需支持多模态输入、函数调用和联网搜索。API Key 仅保存在本地浏览器缓存，不上传服务器。'
+                : 'Text models must support multimodal input, function calling, and online search. API keys stay in local browser storage and are never uploaded.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '文本/图像提供商、模型与 API Key 完全分离，可分别配置。'
+                : 'Text and image providers, models, and API keys are fully separated and can be configured independently.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '使用中转站时，需要 Base URL 与独立的文本/图像中转站 Key；请求仍按官方原生协议发起。'
+                : 'When using API Proxy, provide a Base URL and separate text/image proxy keys; requests still use native provider protocols.'}
             </div>
           </div>
 
           <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
-            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '设置' : 'Settings'}</div>
+            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '行动点与限制' : 'AP & Limits'}</div>
             <div className="opacity-80">
               {isZh
-                ? '高质量图像会进行两阶段研究，画面更贴合世界观，但响应更慢。'
-                : 'High-quality images run a two-stage research pass for better immersion, but take longer to respond.'}
+                ? `每次行动消耗 1 AP，AP 为 0 时无法行动。访客 AP 上限 ${guestMaxAp}，无恢复，无手动保存。`
+                : `Each action costs 1 AP; you cannot act at 0 AP. Guest AP cap is ${guestMaxAp}, no recovery, no manual saves.`}
             </div>
             <div className="opacity-80 mt-2">
               {isZh
-                ? '图像频率控制每隔多少回合生成图片。普通用户完成模型配置后可调整；临时用户不生成回合图像。'
-                : 'Image frequency controls how often images appear (every N turns). Normal users can adjust it after setup; temporary users do not generate turn images.'}
-            </div>
-            <div className="opacity-80 mt-2">
-              {isZh
-                ? '叙事历史上限控制每次发送给模型的历史回合数，设置为 -1 表示全部。'
-                : 'Narrator history limit controls how many turns are sent to the model; set -1 to include all history.'}
+                ? '普通用户配置文本模型后 AP 无限制，可手动保存，并可调整图像频率。'
+                : 'Normal users unlock unlimited AP after text model setup, gain manual save, and can adjust image frequency.'}
             </div>
           </div>
 
           <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
-            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '用户等级' : 'User Tiers'}</div>
+            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '叙事流程' : 'Narration Flow'}</div>
             <div className="opacity-80">
               {isZh
-                ? `临时用户：AP 上限 ${guestMaxAp}，无恢复，无保存，仅创建时生成图像，模型固定为 gemini-2.5-flash-lite / gemini-2.5-flash-image。`
-                : `Temporary: AP max ${guestMaxAp}, no recovery, no saves, only creation image, models fixed to gemini-2.5-flash-lite / gemini-2.5-flash-image.`}
+                ? '请描述行动意图，不要指定结果。系统会判定规则并返回叙事。'
+                : 'Describe intent, not outcomes. The system enforces rules and returns narration.'}
             </div>
             <div className="opacity-80 mt-2">
               {isZh
-                ? '普通用户：必须在设置中填写文本提供商/API/模型；如启用图像生成，还需填写图像提供商/API/模型。完成后 AP 无限制、图像频率可调、支持手动保存。'
-                : 'Normal: configure text provider/API/model; if images are enabled, also configure image provider/API/model. After setup AP is unlimited, image frequency is adjustable, and manual saves are enabled.'}
+                ? '重掷按钮可重试最后一次行动；角色创建界面也可重掷世界参数。'
+                : 'The reroll button retries the last action; profile creation also supports rerolling world parameters.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '进度栏会显示叙事/状态/图像的阶段状态（待命/处理中/完成/错误）。'
+                : 'Stage status shows narration/status/image progress (IDLE/RUNNING/DONE/ERROR).'}
+            </div>
+          </div>
+
+          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '图像与头像' : 'Images & Avatars'}</div>
+            <div className="opacity-80">
+              {isZh
+                ? '可关闭图像生成；关闭时高质量与图像频率不可调整。高质量图像会进行两阶段研究，响应更慢但更贴合世界观。'
+                : 'You can disable image generation; when off, high-quality and frequency controls are locked. High-quality images use a two-stage research pass and are slower but more lore-accurate.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '图像频率控制每隔多少回合生成图片；访客不生成回合图像，仅创建时可能生成。'
+                : 'Image frequency controls how often images appear; guests do not generate turn images (only creation images).'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '同伴与斗兽场参战方会自动生成头像。'
+                : 'Companions and arena parties generate avatars automatically.'}
+            </div>
+          </div>
+
+          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '状态与库存' : 'Status & Inventory'}</div>
+            <div className="opacity-80">
+              {isZh
+                ? '状态管理器独立更新 SPECIAL、技能、物品、任务与同伴。'
+                : 'A dedicated status manager updates SPECIAL, skills, inventory, quests, and companions.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '物品包含数量与是否消耗标记；消耗品被使用会扣减数量。'
+                : 'Items track counts and consumable flags; consumables are deducted when used.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '库存刷新按钮用于修复旧存档的数量/重量问题（权重由 LLM 校验）。'
+                : 'Inventory refresh fixes legacy saves with missing counts/weights (weights are LLM-checked).'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '状态栏底部会显示 Token 统计（发送/接收/总计）。'
+                : 'Token tracking shows sent/received/total at the bottom of the status panel.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '同伴栏会展示头像与基础信息，点击头像可展开完整资料。'
+                : 'The companion tab shows avatars and basics; click an avatar to expand full details.'}
+            </div>
+          </div>
+
+          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '记忆压缩' : 'Memory Compression'}</div>
+            <div className="opacity-80">
+              {isZh
+                ? '叙事历史上限控制每次发送给模型的回合数，设置为 -1 表示全部。到达上限会自动压缩记忆并暂时锁定输入。'
+                : 'Narrator history limit controls how many turns are sent; set -1 to include all. Hitting the limit triggers auto-compression and locks input briefly.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '可手动压缩（需确认），并可设置压缩记忆最大长度（K tokens）。旧存档会提示压缩。'
+                : 'Manual compression is available (with confirmation), and you can set max compressed memory length (K tokens). Legacy saves prompt for compression.'}
+            </div>
+          </div>
+
+          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '保存与导出' : 'Saves & Export'}</div>
+            <div className="opacity-80">
+              {isZh
+                ? '注册用户（已配置文本模型）可手动保存；其他情况下自动保存。'
+                : 'Registered users with text model configured can manual-save; otherwise auto-save is used.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '终端记录可导出为 Markdown/PDF；斗兽场同样支持导出。'
+                : 'Terminal logs can be exported to Markdown/PDF; arena logs support the same.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? 'JSON 导出/导入是跨浏览器与设备迁移存档的唯一方式，可在登录与档案生成界面导入。'
+                : 'JSON export/import is the only way to move saves across browsers/devices, and can be imported from the login or profile screens.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '最新错误的原始输出会缓存，可在设置中查看并复制。'
+                : 'Latest error raw output is cached and viewable/copiable in Settings.'}
+            </div>
+          </div>
+
+          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '废土斗兽场' : 'Wasteland Smash Arena'}</div>
+            <div className="opacity-80">
+              {isZh
+                ? '提供情景演绎与战争推演两种模式；填写焦点问题与参战方（最多 10 个，可移除）。'
+                : 'Two submodes: Scenario and War Game Sim. Provide a focus question and up to 10 parties (removable).'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '先生成简报，再点击继续模拟；战争推演会追踪兵力值并在只剩一方时自动结束。'
+                : 'A briefing is generated first, then Continue Simulation advances. War Game tracks force power and auto-ends when one party remains.'}
+            </div>
+            <div className="opacity-80 mt-2">
+              {isZh
+                ? '右侧面板显示参战方、头像与兵力条；斗兽场使用同一套模型/代理/图像设置，并支持独立系统提示。'
+                : 'Side panel lists parties, avatars, and force bars. Arena uses the same model/proxy/image settings and has its own system prompt.'}
+            </div>
+          </div>
+
+          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+            <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '其它' : 'Other'}</div>
+            <div className="opacity-80">
+              {isZh
+                ? '支持中英文切换、用户系统提示、斗兽场系统提示，以及打赏二维码入口。'
+                : 'Supports EN/中文 toggle, user system prompt, arena system prompt, and the tip/donate menu.'}
             </div>
           </div>
         </div>
@@ -4206,7 +4470,10 @@ const App: React.FC = () => {
 
   if (view === 'auth') {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center">
+      <div
+        className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center"
+        style={scaledRootStyle}
+      >
         {usersEditorModal}
         {tipModal}
         <div className="max-w-xl w-full space-y-6 pip-boy-border p-6 md:p-10 bg-black/70 shadow-2xl relative">
@@ -4317,7 +4584,10 @@ const App: React.FC = () => {
 
   if (view === 'start') {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center">
+      <div
+        className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center"
+        style={scaledRootStyle}
+      >
         {guestNotice}
         {usersEditorModal}
         {settingsModal}
@@ -4418,7 +4688,10 @@ const App: React.FC = () => {
 
   if (view === 'creation') {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8">
+      <div
+        className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8"
+        style={scaledRootStyle}
+      >
         {guestNotice}
         {usersEditorModal}
         {arenaPromptModal}
@@ -4511,7 +4784,10 @@ const App: React.FC = () => {
 
   if (view === 'arena_setup') {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8">
+      <div
+        className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8"
+        style={scaledRootStyle}
+      >
         {guestNotice}
         {usersEditorModal}
         {settingsModal}
@@ -4636,7 +4912,7 @@ const App: React.FC = () => {
 
   if (view === 'arena_play') {
     return (
-      <div className="flex flex-col h-screen w-screen overflow-hidden relative">
+      <div className="flex flex-col h-screen w-screen overflow-hidden relative" style={scaledRootStyle}>
         {guestNotice}
         {usersEditorModal}
         {settingsModal}
@@ -4666,7 +4942,7 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        <div className="p-3 md:p-4 border-b border-[#1aff1a]/20 bg-black/50 space-y-2 text-sm">
+        <div className="p-3 md:p-4 border-b border-[#1aff1a]/20 bg-black/50 space-y-2 text-sm max-h-[30vh] overflow-y-auto">
           <div className="uppercase opacity-60">{isZh ? '焦点' : 'Focus'}</div>
           <div className="opacity-90">{arenaState.focus}</div>
           <div className="uppercase opacity-60 pt-2">{isZh ? '参战方' : 'Involved parties'}</div>
@@ -4682,6 +4958,7 @@ const App: React.FC = () => {
             <Terminal
               history={arenaState.history}
               isThinking={arenaState.isThinking}
+              forceScrollbar
               progressStages={[
                 { label: isZh ? '叙事生成' : 'Narration', status: arenaNarrationStage },
                 { label: isZh ? '图像生成' : 'Image', status: arenaImageStage },
@@ -4692,56 +4969,80 @@ const App: React.FC = () => {
               systemErrorLabel={isZh ? '> 系统日志' : '> SYSTEM LOG'}
             />
           </div>
-          <aside className="w-64 md:w-80 border-l border-[#1aff1a]/30 bg-black/60 p-3 md:p-4 overflow-y-auto min-h-0">
-            <div className="text-xs uppercase opacity-60 mb-2">
-              {isZh ? '参战方概览' : 'Involved Parties'}
+          <aside
+            className="relative w-64 md:w-auto border-l border-[#1aff1a]/30 bg-black/60 p-3 md:p-4 overflow-y-auto min-h-0"
+            style={isDesktop ? { width: arenaPanelWidth } : undefined}
+          >
+            <div
+              onPointerDown={startPanelResize('arena')}
+              className="hidden md:block absolute left-0 top-0 h-full w-2 cursor-col-resize z-10"
+            >
+              <div className="h-full w-px bg-[#1aff1a]/30 mx-auto" />
             </div>
-            <div className="space-y-3">
-              {arenaState.involvedParties.map((party, index) => {
-                const forcePower = Number.isFinite(party.forcePower) ? Math.max(0, Math.floor(party.forcePower as number)) : null;
-                const maxPower = Number.isFinite(party.maxForcePower)
-                  ? Math.max(1, Math.floor(party.maxForcePower as number))
-                  : (forcePower ?? 1);
-                const barWidth = forcePower === null ? 0 : Math.max(2, Math.round((forcePower / maxPower) * 100));
-                const isDefeated = arenaState.mode === 'wargame' && forcePower !== null && forcePower <= 0;
-                return (
-                  <div key={index} className="border border-[#1aff1a]/20 p-3 bg-black/40">
-                    <div className="flex items-start space-x-3">
-                      <div className="w-14 h-14 border border-[#1aff1a]/40 bg-black/60 flex items-center justify-center text-[10px] uppercase">
-                        {party.avatarUrl ? (
-                          <img src={party.avatarUrl} alt={`party-${index}`} className="w-full h-full object-cover opacity-90" />
-                        ) : (
-                          <span>{isZh ? '暂无头像' : 'No avatar'}</span>
-                        )}
-                      </div>
-                      <div className="flex-1">
-                        <div className="text-sm font-bold uppercase">
-                          {isZh ? `参战方 ${index + 1}` : `Party ${index + 1}`}
+            <div
+              style={{
+                transform: `scale(${arenaPanelScale})`,
+                transformOrigin: 'top left',
+                width: `${100 / arenaPanelScale}%`,
+                height: `${100 / arenaPanelScale}%`
+              }}
+            >
+              <div className="text-xs uppercase opacity-60 mb-2">
+                {isZh ? '参战方概览' : 'Involved Parties'}
+              </div>
+              <div className="space-y-3">
+                {arenaState.involvedParties.map((party, index) => {
+                  const forcePower = Number.isFinite(party.forcePower) ? Math.max(0, Math.floor(party.forcePower as number)) : null;
+                  const maxPower = Number.isFinite(party.maxForcePower)
+                    ? Math.max(1, Math.floor(party.maxForcePower as number))
+                    : (forcePower ?? 1);
+                  const barWidth = forcePower === null ? 0 : Math.max(2, Math.round((forcePower / maxPower) * 100));
+                  const isDefeated = arenaState.mode === 'wargame' && forcePower !== null && forcePower <= 0;
+                  return (
+                    <div key={index} className="border border-[#1aff1a]/20 p-3 bg-black/40">
+                      <div className="flex items-start space-x-3">
+                        <div className="w-14 h-14 border border-[#1aff1a]/40 bg-black/60 flex items-center justify-center text-[10px] uppercase">
+                          {party.avatarUrl ? (
+                            <img src={party.avatarUrl} alt={`party-${index}`} className="w-full h-full object-cover opacity-90" />
+                          ) : (
+                            <span>{isZh ? '暂无头像' : 'No avatar'}</span>
+                          )}
                         </div>
-                        <div className="text-xs opacity-70 whitespace-pre-wrap">
-                          {party.description}
+                        <div className="flex-1">
+                          <div className="text-sm font-bold uppercase">
+                            {isZh ? `参战方 ${index + 1}` : `Party ${index + 1}`}
+                          </div>
+                          <div className="text-xs opacity-70 whitespace-pre-wrap">
+                            {party.description}
+                          </div>
                         </div>
                       </div>
+                      {arenaState.mode === 'wargame' && (
+                        <div className="mt-2">
+                          <div className="flex items-center justify-between text-xs font-bold">
+                            <span>{isZh ? '兵力值' : 'Force Power'}</span>
+                            <span className={`text-base ${isDefeated ? 'text-[#ff6b6b]' : 'text-[#1aff1a]'}`}>
+                              {forcePower ?? 0}/{maxPower}
+                            </span>
+                          </div>
+                          <div className="mt-1 h-2 w-full bg-black border border-[#1aff1a]/30">
+                            <div
+                              className={`h-full ${isDefeated ? 'bg-[#ff6b6b]' : 'bg-[#1aff1a]'}`}
+                              style={{ width: `${barWidth}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    {arenaState.mode === 'wargame' && (
-                      <div className="mt-2">
-                        <div className="flex items-center justify-between text-xs font-bold">
-                          <span>{isZh ? '兵力值' : 'Force Power'}</span>
-                          <span className={`text-base ${isDefeated ? 'text-[#ff6b6b]' : 'text-[#1aff1a]'}`}>
-                            {forcePower ?? 0}/{maxPower}
-                          </span>
-                        </div>
-                        <div className="mt-1 h-2 w-full bg-black border border-[#1aff1a]/30">
-                          <div
-                            className={`h-full ${isDefeated ? 'bg-[#ff6b6b]' : 'bg-[#1aff1a]'}`}
-                            style={{ width: `${barWidth}%` }}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
+              <div className="mt-4 p-2 border-t border-[#1aff1a]/20 text-[9px] uppercase tracking-widest flex justify-between items-center bg-[#1aff1a]/5">
+                <span>{isZh ? '令牌' : 'TOKENS'}</span>
+                <span className="opacity-70">
+                  {(isZh ? '发送' : 'SEND')} {arenaTokenUsage.sent.toLocaleString()} · {(isZh ? '接收' : 'RECV')} {arenaTokenUsage.received.toLocaleString()} · {(isZh ? '总计' : 'TOTAL')} {arenaTokenUsage.total.toLocaleString()}
+                </span>
+              </div>
             </div>
           </aside>
         </div>
@@ -4810,7 +5111,7 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col md:flex-row h-screen w-screen overflow-hidden relative">
+    <div className="flex flex-col md:flex-row h-screen w-screen overflow-hidden relative" style={scaledRootStyle}>
       {guestNotice}
       {usersEditorModal}
       {settingsModal}
@@ -4913,12 +5214,21 @@ const App: React.FC = () => {
 
       {/* Responsive StatBar */}
       {gameState.player && (
-        <div className={`
-          absolute md:static inset-0 z-40 md:z-auto
-          transition-transform duration-300 ease-in-out
-          ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}
-          w-full md:w-80 h-full bg-black/95 md:bg-transparent
-        `}>
+        <div
+          className={`
+            absolute md:static inset-0 z-40 md:z-auto
+            transition-transform duration-300 ease-in-out
+            ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}
+            w-full h-full bg-black/95 md:bg-transparent
+          `}
+          style={isDesktop ? { width: statPanelWidth } : undefined}
+        >
+          <div
+            onPointerDown={startPanelResize('stat')}
+            className="hidden md:block absolute left-0 top-0 h-full w-2 cursor-col-resize z-10"
+          >
+            <div className="h-full w-px bg-[#1aff1a]/30 mx-auto" />
+          </div>
           <StatBar 
             player={gameState.player} 
             location={gameState.location} 
@@ -4940,6 +5250,7 @@ const App: React.FC = () => {
             onRefreshInventory={handleInventoryRefresh}
             inventoryRefreshing={isInventoryRefreshing}
             onClose={() => setIsSidebarOpen(false)}
+            panelScale={statPanelScale}
           />
         </div>
       )}

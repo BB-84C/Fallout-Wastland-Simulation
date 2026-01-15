@@ -35,7 +35,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   imageModel: '',
   userSystemPrompt: '',
   userSystemPromptCustom: false,
-  maxCompressedMemoryK: 25
+  maxCompressedMemoryK: 25,
+  textScale: 1
 };
 
 export const getTierSettings = (tier: UserTier) => TIER_SETTINGS[tier];

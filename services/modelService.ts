@@ -166,7 +166,7 @@ const arenaSchema = {
       items: { type: Type.NUMBER }
     }
   },
-  required: ["storyText"]
+  required: ["storyText", "imagePrompt"]
 };
 
 const companionUpdatesSchema = {
@@ -404,8 +404,10 @@ const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', user
 6. MODE: ${mode === 'wargame'
   ? 'War Game Sim: use a professional, concise tone, reporting actions, tactics, and damage. Always update forcePowers for each party.'
   : 'Scenario: focus on story, atmosphere, and vivid scene depiction.'}
-7. BRIEFING: If PHASE is briefing, do NOT describe any attacks, damage, or exchanges. Only describe parties, location, time, surroundings, and the reason for conflict.
-${userSystemPrompt && userSystemPrompt.trim() ? `8. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+7. FORCE POWERS FORMAT (War Game only): forcePowers MUST be a JSON array of integers with the same length and order as INVOLVED PARTIES. Do NOT output an object/map.
+8. IMAGE PROMPT: Always include imagePrompt as a concise, vivid visual description for a single scene.
+9. BRIEFING: If PHASE is briefing, do NOT describe any attacks, damage, or exchanges. Only describe parties, location, time, surroundings, and the reason for conflict.
+${userSystemPrompt && userSystemPrompt.trim() ? `10. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildNarratorPrompt = (
   player: Actor,
@@ -461,9 +463,52 @@ PHASE: ${phase}
 TASK:
 ${mode === 'wargame'
   ? `If PHASE is briefing, provide a concise situation briefing only (no combat actions or damage). If CURRENT FORCE POWER is provided, return the same values unchanged; otherwise set initial forcePowers for each party (integer). If PHASE is battle, continue the battle as a war game report. Update forcePowers for each party (integer). If a party is a single unit, set forcePowers to that unit's HP. If a party is down to 0, mark them as defeated but keep narrating until FINISH or only one party remains.
-Return JSON with keys: storyText, forcePowers, imagePrompt (optional).`
+forcePowers MUST be a JSON array of integers in the exact order of INVOLVED PARTIES. Example: "forcePowers":[1000,950]. Do NOT use an object/map.
+Return JSON with keys: storyText, forcePowers, imagePrompt. imagePrompt is REQUIRED.`
   : `If PHASE is briefing, provide a concise situation briefing only (no combat actions or damage). If PHASE is battle, continue the battle simulation with tactics, setbacks, and momentum shifts. If FINISH is true, conclude the battle with a decisive outcome and aftermath.
-Return JSON with keys: storyText, imagePrompt (optional).`}`;
+Return JSON with keys: storyText, imagePrompt. imagePrompt is REQUIRED.`}`;
+
+const normalizeForcePowerKey = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ').trim();
+
+const extractPartyHint = (party: string) => {
+  const trimmed = party.trim();
+  const firstSegment = trimmed.split(/[，,;\n]/)[0] || trimmed;
+  return normalizeForcePowerKey(firstSegment);
+};
+
+const parseForcePowers = (value: any, involvedParties: string[]) => {
+  if (Array.isArray(value)) {
+    const mapped = value.map((entry: any) => Number(entry));
+    return mapped.every(entry => Number.isFinite(entry)) ? mapped : undefined;
+  }
+  if (!value || typeof value !== 'object') return undefined;
+  const partyHints = involvedParties.map(party => extractPartyHint(party));
+  const entries = Object.entries(value);
+  const result: Array<number | null> = new Array(involvedParties.length).fill(null);
+  entries.forEach(([rawKey, rawValue]) => {
+    const key = normalizeForcePowerKey(rawKey);
+    if (!key) return;
+    const idx = partyHints.findIndex(hint => hint && (hint.includes(key) || key.includes(hint)));
+    if (idx >= 0 && result[idx] === null) {
+      const numeric = Number(rawValue);
+      if (Number.isFinite(numeric)) {
+        result[idx] = numeric;
+      }
+    }
+  });
+  const fallbackValues = entries.map(([, rawValue]) => Number(rawValue)).filter(val => Number.isFinite(val));
+  let fallbackIndex = 0;
+  for (let i = 0; i < result.length; i += 1) {
+    if (result[i] !== null) continue;
+    const candidate = fallbackValues[fallbackIndex++];
+    if (!Number.isFinite(candidate)) return undefined;
+    result[i] = candidate;
+  }
+  return result.every(entry => Number.isFinite(entry as number))
+    ? (result as number[])
+    : undefined;
+};
 
 const buildStatusPrompt = (
   player: Actor,
@@ -1125,10 +1170,11 @@ export async function getArenaNarration(
     if (!storyText.trim()) {
       throw new Error("Invalid arena response.");
     }
-    const imagePrompt = typeof parsed?.imagePrompt === "string" ? parsed.imagePrompt : undefined;
-    const forcePowers = Array.isArray(parsed?.forcePowers)
-      ? parsed.forcePowers.map((value: any) => Number(value))
-      : undefined;
+    const imagePrompt = typeof parsed?.imagePrompt === "string" ? parsed.imagePrompt : "";
+    if (!imagePrompt.trim()) {
+      throw new Error("Invalid arena response.");
+    }
+    const forcePowers = parseForcePowers(parsed?.forcePowers, involvedParties);
     if (mode === 'wargame' && (!forcePowers || forcePowers.length !== involvedParties.length)) {
       throw new Error("Invalid force power output.");
     }
@@ -1160,10 +1206,11 @@ export async function getArenaNarration(
   if (!storyText.trim()) {
     throw new Error("Invalid arena response.");
   }
-  const imagePrompt = typeof parsed?.imagePrompt === "string" ? parsed.imagePrompt : undefined;
-  const forcePowers = Array.isArray(parsed?.forcePowers)
-    ? parsed.forcePowers.map((value: any) => Number(value))
-    : undefined;
+  const imagePrompt = typeof parsed?.imagePrompt === "string" ? parsed.imagePrompt : "";
+  if (!imagePrompt.trim()) {
+    throw new Error("Invalid arena response.");
+  }
+  const forcePowers = parseForcePowers(parsed?.forcePowers, involvedParties);
   if (mode === 'wargame' && (!forcePowers || forcePowers.length !== involvedParties.length)) {
     throw new Error("Invalid force power output.");
   }
