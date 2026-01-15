@@ -4987,12 +4987,6 @@ const App: React.FC = () => {
         <div className="p-3 md:p-4 border-b border-[#1aff1a]/20 bg-black/50 space-y-2 text-sm max-h-[30vh] overflow-y-auto">
           <div className="uppercase opacity-60">{isZh ? '焦点' : 'Focus'}</div>
           <div className="opacity-90">{arenaState.focus}</div>
-          <div className="uppercase opacity-60 pt-2">{isZh ? '参战方' : 'Involved parties'}</div>
-          <div className="space-y-1 text-xs md:text-sm opacity-80">
-            {arenaState.involvedParties.map((party, index) => (
-              <div key={index}>{index + 1}. {party.description}</div>
-            ))}
-          </div>
         </div>
 
         <div className="flex flex-1 min-h-0">
