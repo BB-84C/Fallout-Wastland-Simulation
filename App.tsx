@@ -149,6 +149,7 @@ const STAT_PANEL_MIN = 240;
 const STAT_PANEL_MAX = 520;
 const ARENA_PANEL_MIN = 240;
 const ARENA_PANEL_MAX = 520;
+const VIEW_PADDING_CLASS = 'pt-[10vh] pb-[10vh] md:pt-0 md:pb-0 box-border';
 
 const isUserOnboarded = (username: string) => {
   try {
@@ -4490,7 +4491,7 @@ const App: React.FC = () => {
   if (view === 'auth') {
     return (
       <div
-        className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center"
+        className={`flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center ${VIEW_PADDING_CLASS}`}
         style={scaledRootStyle}
       >
         {usersEditorModal}
@@ -4604,7 +4605,7 @@ const App: React.FC = () => {
   if (view === 'start') {
     return (
       <div
-        className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center"
+        className={`flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center ${VIEW_PADDING_CLASS}`}
         style={scaledRootStyle}
       >
         {guestNotice}
@@ -4708,7 +4709,7 @@ const App: React.FC = () => {
   if (view === 'creation') {
     return (
       <div
-        className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8"
+        className={`flex flex-col items-center justify-center min-h-screen p-4 md:p-8 ${VIEW_PADDING_CLASS}`}
         style={scaledRootStyle}
       >
         {guestNotice}
@@ -4813,7 +4814,7 @@ const App: React.FC = () => {
   if (view === 'arena_setup') {
     return (
       <div
-        className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8"
+        className={`flex flex-col items-center justify-center min-h-screen p-4 md:p-8 ${VIEW_PADDING_CLASS}`}
         style={scaledRootStyle}
       >
         {guestNotice}
@@ -4940,7 +4941,7 @@ const App: React.FC = () => {
 
   if (view === 'arena_play') {
     return (
-      <div className="flex flex-col h-screen w-screen overflow-hidden relative" style={scaledRootStyle}>
+      <div className={`flex flex-col h-screen w-screen overflow-hidden relative ${VIEW_PADDING_CLASS}`} style={scaledRootStyle}>
         {guestNotice}
         {usersEditorModal}
         {settingsModal}
@@ -5146,7 +5147,7 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col md:flex-row h-screen w-screen overflow-hidden relative" style={scaledRootStyle}>
+    <div className={`flex flex-col md:flex-row h-screen w-screen overflow-hidden relative ${VIEW_PADDING_CLASS}`} style={scaledRootStyle}>
       {guestNotice}
       {usersEditorModal}
       {settingsModal}
