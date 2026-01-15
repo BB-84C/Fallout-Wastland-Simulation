@@ -224,3 +224,27 @@ export interface NarratorResponse {
   tokenUsage?: TokenUsage;
   imagePrompt?: string;
 }
+
+export type ArenaMode = 'scenario' | 'wargame';
+
+export interface ArenaParty {
+  description: string;
+  forcePower?: number;
+  maxForcePower?: number;
+  avatarUrl?: string;
+}
+
+export interface ArenaState {
+  mode: ArenaMode;
+  focus: string;
+  involvedParties: ArenaParty[];
+  history: HistoryEntry[];
+  isThinking: boolean;
+  settings: GameSettings;
+  turnCount: number;
+  tokenUsage: TokenUsage;
+  finished: boolean;
+  briefingComplete: boolean;
+  userPrompt: string;
+  userPromptCustom?: boolean;
+}

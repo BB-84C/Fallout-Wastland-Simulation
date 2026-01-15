@@ -3,6 +3,7 @@ import { Actor, NarratorResponse, Language, Quest, GroundingSource, UserTier, Pl
 import {
   createPlayerCharacter as createGeminiPlayer,
   getNarrativeResponse as getGeminiNarration,
+  getArenaNarration as getGeminiArenaNarration,
   generateSceneImage as generateGeminiScene,
   generateCompanionAvatar as generateGeminiAvatar,
   compressMemory as compressGeminiMemory,
@@ -153,6 +154,19 @@ const memorySchema = {
     memory: { type: Type.STRING }
   },
   required: ["memory"]
+};
+
+const arenaSchema = {
+  type: Type.OBJECT,
+  properties: {
+    storyText: { type: Type.STRING },
+    imagePrompt: { type: Type.STRING },
+    forcePowers: {
+      type: Type.ARRAY,
+      items: { type: Type.NUMBER }
+    }
+  },
+  required: ["storyText"]
 };
 
 const companionUpdatesSchema = {
@@ -381,6 +395,18 @@ const buildStatusSystem = (targetLang: string, year: number, location: string) =
 7. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
 8. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
+const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', userSystemPrompt?: string) => `You are the Wasteland Smash Arena simulator.
+1. LORE: Always consult the Fallout Wiki in English when possible. If a party is not in the wiki, infer from established Fallout lore.
+2. OUTPUT RULE: Never cite sources, URLs, or provenance in player-facing narration.
+3. LANGUAGE: Output must be in ${targetLang}.
+4. STRUCTURE: Do NOT conclude the battle unless FINISH is true. Continue the simulation round-by-round.
+5. FAIRNESS: Follow Fallout logic and make outcomes believable; avoid deterministic instant victories.
+6. MODE: ${mode === 'wargame'
+  ? 'War Game Sim: use a professional, concise tone, reporting actions, tactics, and damage. Always update forcePowers for each party.'
+  : 'Scenario: focus on story, atmosphere, and vivid scene depiction.'}
+7. BRIEFING: If PHASE is briefing, do NOT describe any attacks, damage, or exchanges. Only describe parties, location, time, surroundings, and the reason for conflict.
+${userSystemPrompt && userSystemPrompt.trim() ? `8. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+
 const buildNarratorPrompt = (
   player: Actor,
   history: any[],
@@ -407,6 +433,37 @@ TASK:
 5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
 6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, narrate how the player realizes they don't have the item.
 Return strict JSON with keys: storyText, ruleViolation, timePassedMinutes, imagePrompt.`;
+
+const buildArenaPrompt = (
+  focus: string,
+  involvedParties: string[],
+  history: HistoryEntry[],
+  finish: boolean,
+  mode: 'scenario' | 'wargame',
+  phase: 'briefing' | 'battle',
+  forcePowers?: Array<number | null>
+) => `
+FOCUS QUESTION:
+${focus}
+
+INVOLVED PARTIES:
+${involvedParties.map((party, index) => `[${index + 1}] ${party}`).join("\n")}
+
+${mode === 'wargame' ? `CURRENT FORCE POWER:
+${(forcePowers || []).map((value, index) => `[${index + 1}] ${value === null || value === undefined ? 'UNKNOWN' : value}`).join("\n")}` : ''}
+
+SIMULATION HISTORY:
+${history.map(entry => `${entry.sender.toUpperCase()}: ${entry.text}`).join("\n")}
+
+FINISH: ${finish ? "true" : "false"}
+PHASE: ${phase}
+
+TASK:
+${mode === 'wargame'
+  ? `If PHASE is briefing, provide a concise situation briefing only (no combat actions or damage). If CURRENT FORCE POWER is provided, return the same values unchanged; otherwise set initial forcePowers for each party (integer). If PHASE is battle, continue the battle as a war game report. Update forcePowers for each party (integer). If a party is a single unit, set forcePowers to that unit's HP. If a party is down to 0, mark them as defeated but keep narrating until FINISH or only one party remains.
+Return JSON with keys: storyText, forcePowers, imagePrompt (optional).`
+  : `If PHASE is briefing, provide a concise situation briefing only (no combat actions or damage). If PHASE is battle, continue the battle simulation with tactics, setbacks, and momentum shifts. If FINISH is true, conclude the battle with a decisive outcome and aftermath.
+Return JSON with keys: storyText, imagePrompt (optional).`}`;
 
 const buildStatusPrompt = (
   player: Actor,
@@ -992,6 +1049,127 @@ export async function getNarrativeResponse(
   return response;
 }
 
+export async function getArenaNarration(
+  focus: string,
+  involvedParties: string[],
+  history: HistoryEntry[],
+  lang: Language,
+  options?: {
+    tier?: UserTier;
+    apiKey?: string;
+    proxyApiKey?: string;
+    proxyBaseUrl?: string;
+    useProxy?: boolean;
+    textModel?: TextModelId;
+    provider?: ModelProvider;
+    userSystemPrompt?: string;
+    finish?: boolean;
+    mode?: 'scenario' | 'wargame';
+    phase?: 'briefing' | 'battle';
+    forcePowers?: Array<number | null>;
+  }
+): Promise<{ storyText: string; tokenUsage?: TokenUsage; forcePowers?: number[]; imagePrompt?: string }> {
+  const provider = normalizeProvider(options?.provider);
+  const useProxy = !!options?.useProxy;
+  const finish = !!options?.finish;
+  const mode = options?.mode === 'wargame' ? 'wargame' : 'scenario';
+  const phase = options?.phase === 'battle' ? 'battle' : 'briefing';
+  if (provider === "gemini") {
+    if (options?.tier === "guest") {
+      return getGeminiArenaNarration(focus, involvedParties, history, lang, {
+        tier: options?.tier,
+        apiKey: options?.apiKey,
+        textModel: options?.textModel,
+        userSystemPrompt: options?.userSystemPrompt,
+        finish,
+        mode,
+        phase,
+        forcePowers: options?.forcePowers
+      });
+    }
+    const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+    if (useProxy && !proxyBaseUrl) {
+      throw new Error("Missing proxy base URL.");
+    }
+    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const model = options?.textModel || "";
+    if (!model) {
+      throw new Error("Missing text model name.");
+    }
+    const targetLang = lang === "zh" ? "Chinese" : "English";
+    const system = buildArenaSystem(targetLang, mode, options?.userSystemPrompt);
+    const prompt = buildArenaPrompt(focus, involvedParties, history, finish, mode, phase, options?.forcePowers);
+    const ai = new GoogleGenAI({
+      apiKey,
+      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+    });
+    const response = await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: arenaSchema,
+        systemInstruction: system
+      }
+    });
+    if (!response.text) {
+      throw new Error("Connection to the Wasteland lost.");
+    }
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: response.usageMetadata?.promptTokenCount,
+      completionTokens: response.usageMetadata?.candidatesTokenCount,
+      totalTokens: response.usageMetadata?.totalTokenCount
+    }, `${system}\n${prompt}`, response.text);
+    const parsed = safeJsonParse(response.text);
+    const storyText = parsed?.storyText ? String(parsed.storyText) : "";
+    if (!storyText.trim()) {
+      throw new Error("Invalid arena response.");
+    }
+    const imagePrompt = typeof parsed?.imagePrompt === "string" ? parsed.imagePrompt : undefined;
+    const forcePowers = Array.isArray(parsed?.forcePowers)
+      ? parsed.forcePowers.map((value: any) => Number(value))
+      : undefined;
+    if (mode === 'wargame' && (!forcePowers || forcePowers.length !== involvedParties.length)) {
+      throw new Error("Invalid force power output.");
+    }
+    return { storyText, tokenUsage, forcePowers, imagePrompt };
+  }
+
+  const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
+  if (useProxy && !baseUrl) {
+    throw new Error("Missing proxy base URL.");
+  }
+  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+  const model = options?.textModel || "";
+  if (!model) {
+    throw new Error("Missing text model name.");
+  }
+
+  const targetLang = lang === "zh" ? "Chinese" : "English";
+  const system = buildArenaSystem(targetLang, mode, options?.userSystemPrompt);
+  const prompt = buildArenaPrompt(focus, involvedParties, history, finish, mode, phase, options?.forcePowers);
+
+  const result = provider === "openai"
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
+    : provider === "claude"
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
+
+  const parsed = safeJsonParse(result.content);
+  const storyText = parsed?.storyText ? String(parsed.storyText) : "";
+  if (!storyText.trim()) {
+    throw new Error("Invalid arena response.");
+  }
+  const imagePrompt = typeof parsed?.imagePrompt === "string" ? parsed.imagePrompt : undefined;
+  const forcePowers = Array.isArray(parsed?.forcePowers)
+    ? parsed.forcePowers.map((value: any) => Number(value))
+    : undefined;
+  if (mode === 'wargame' && (!forcePowers || forcePowers.length !== involvedParties.length)) {
+    throw new Error("Invalid force power output.");
+  }
+  return { storyText, tokenUsage: result.tokenUsage, forcePowers, imagePrompt };
+}
+
 export async function getStatusUpdate(
   player: Actor,
   quests: Quest[],
@@ -1492,6 +1670,114 @@ export async function generateCompanionAvatar(
     const base64 = provider === "openai"
       ? await generateOpenAiImage(apiKey, baseUrl, model, prompt)
       : await generateDoubaoImage(apiKey, baseUrl, model, prompt);
+    if (!base64) {
+      return { error: "No image data returned from the model." };
+    }
+    const resized = await resizeImageToSquare(`data:image/png;base64,${base64}`, 100);
+    return { url: resized };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export async function generateArenaAvatar(
+  label: string,
+  description: string,
+  options?: {
+    highQuality?: boolean;
+    tier?: UserTier;
+    apiKey?: string;
+    proxyApiKey?: string;
+    proxyBaseUrl?: string;
+    useProxy?: boolean;
+    imageModel?: ImageModelId;
+    textModel?: TextModelId;
+    provider?: ModelProvider;
+    textProvider?: ModelProvider;
+    textApiKey?: string;
+    textProxyApiKey?: string;
+  }
+): Promise<{ url?: string; error?: string } | undefined> {
+  const imageProvider = normalizeProvider(options?.provider);
+  const researchProvider = normalizeProvider(options?.textProvider || options?.provider);
+  const useProxy = !!options?.useProxy;
+  const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+  if (useProxy && !proxyBaseUrl) {
+    return { error: "Missing proxy base URL." };
+  }
+  if (imageProvider === "claude") {
+    return { error: "Claude image generation is not supported." };
+  }
+
+  const imageApiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, imageProvider);
+  const imageModel = options?.imageModel || "";
+  if (!imageModel) {
+    return { error: "Missing image model name." };
+  }
+
+  const basePrompt = `Fallout dossier portrait for "${label}". Description: ${description}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
+  let finalPrompt = basePrompt;
+
+  if (options?.highQuality !== false && options?.textModel) {
+    const textModel = options.textModel;
+    const researchApiKey = useProxy
+      ? (options?.textProxyApiKey || options?.proxyApiKey)
+      : (options?.textApiKey || options?.apiKey);
+    if (researchProvider === "gemini" && researchApiKey) {
+      try {
+        const researchAi = new GoogleGenAI({
+          apiKey: researchApiKey,
+          ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+        });
+        const researchResponse = await researchAi.models.generateContent({
+          model: textModel,
+          contents: `Research a Fallout portrait for: ${description}.
+1. Identify key visual traits, attire, and faction motifs.
+2. Use Fallout Wiki terms when possible.
+3. Output a concise portrait description for a concept artist.`,
+          config: {
+            tools: [{ googleSearch: {} }]
+          }
+        });
+        if (researchResponse?.text) {
+          finalPrompt = `Fallout dossier portrait. ${researchResponse.text}`;
+        }
+      } catch {
+        finalPrompt = basePrompt;
+      }
+    }
+  }
+
+  try {
+    if (imageProvider === "gemini") {
+      const imageAi = new GoogleGenAI({
+        apiKey: imageApiKey,
+        ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+      });
+      const response = await imageAi.models.generateContent({
+        model: imageModel,
+        contents: {
+          parts: [{ text: finalPrompt }]
+        },
+        config: {
+          imageConfig: { aspectRatio: "1:1" }
+        }
+      });
+      if (response.candidates?.[0]?.content?.parts) {
+        for (const part of response.candidates[0].content.parts) {
+          if (part.inlineData) {
+            const rawBase64 = `data:image/png;base64,${part.inlineData.data}`;
+            const resized = await resizeImageToSquare(rawBase64, 100);
+            return { url: resized };
+          }
+        }
+      }
+      return { error: "No image data returned from the model." };
+    }
+
+    const base64 = imageProvider === "openai"
+      ? await generateOpenAiImage(imageApiKey, resolveBaseUrl(imageProvider, proxyBaseUrl), imageModel, finalPrompt)
+      : await generateDoubaoImage(imageApiKey, resolveBaseUrl(imageProvider, proxyBaseUrl), imageModel, finalPrompt);
     if (!base64) {
       return { error: "No image data returned from the model." };
     }

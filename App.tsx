@@ -1,11 +1,11 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState } from './types';
 import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
 import StatBar from './components/StatBar';
-import { createPlayerCharacter, getNarrativeResponse, getStatusUpdate, auditInventoryWeights, recoverInventoryStatus, generateSceneImage, generateCompanionAvatar, compressMemory } from './services/modelService';
+import { createPlayerCharacter, getNarrativeResponse, getArenaNarration, getStatusUpdate, auditInventoryWeights, recoverInventoryStatus, generateSceneImage, generateArenaAvatar, generateCompanionAvatar, compressMemory } from './services/modelService';
 import wechatQr from './assets/wech.png';
 import alipayQr from './assets/zhif.png';
 import venmoQr from './assets/venm.png';
@@ -23,6 +23,7 @@ import {
 import type { ApRecoveryConfig } from './tierSettings';
 
 const SAVE_KEY_PREFIX = 'fallout_wasteland_save';
+const ARENA_SAVE_KEY_PREFIX = 'fallout_wasteland_arena_save';
 const USERS_DB_KEY = 'fallout_users_db';
 const USER_API_KEY_PREFIX = 'fallout_user_api_key';
 const USER_PROXY_KEY_PREFIX = 'fallout_user_proxy_key';
@@ -37,6 +38,10 @@ const DEFAULT_USER_PROMPT_ZH = `1. 请输出800 tokens左右
 const DEFAULT_USER_PROMPT_EN = `1. Output around 800 tokens.
 2. Provide three available actions each turn.
 3. The player wants a high-difficulty experience. Introduce more unexpected events and increase the failure rate of player actions.`;
+const DEFAULT_ARENA_PROMPT_ZH = `1. 输出约 1000 tokens。
+2. 基于逻辑与 Fallout 世界观，公平地模拟战斗。`;
+const DEFAULT_ARENA_PROMPT_EN = `1. Keep the output around 1000 tokens.
+2. Based on the logic and Fallout lore, simulate the battle fairly.`;
 const MODEL_PROVIDER_OPTIONS: { value: ModelProvider; label: string }[] = [
   { value: 'openai', label: 'OpenAI' },
   { value: 'gemini', label: 'Gemini' },
@@ -65,6 +70,7 @@ const syncApState = (
 };
 
 const getSaveKey = (username: string) => `${SAVE_KEY_PREFIX}_${username}`;
+const getArenaSaveKey = (username: string) => `${ARENA_SAVE_KEY_PREFIX}_${username}`;
 const getUserApiKeyKey = (username: string, provider: ModelProvider) =>
   `${USER_API_KEY_PREFIX}_${username}_${provider}`;
 const getUserProxyKeyKey = (username: string, provider: ModelProvider) =>
@@ -498,6 +504,27 @@ const applyDefaultUserPrompt = (settings: GameSettings, language: Language): Gam
   return settings;
 };
 
+const getDefaultArenaPrompt = (language: Language) =>
+  language === 'zh' ? DEFAULT_ARENA_PROMPT_ZH : DEFAULT_ARENA_PROMPT_EN;
+
+const applyDefaultArenaPrompt = (state: ArenaState, language: Language): ArenaState => {
+  if (state.userPromptCustom) return state;
+  const currentPrompt = (state.userPrompt || '').trim();
+  const defaultPrompt = getDefaultArenaPrompt(language);
+  if (
+    !currentPrompt ||
+    currentPrompt === DEFAULT_ARENA_PROMPT_ZH ||
+    currentPrompt === DEFAULT_ARENA_PROMPT_EN
+  ) {
+    return {
+      ...state,
+      userPrompt: defaultPrompt,
+      userPromptCustom: false
+    };
+  }
+  return state;
+};
+
 const clampCompressedMemory = (text: string, maxMemoryK: number, language: Language) => {
   if (!text) return text;
   const safeK = Math.max(1, Math.floor(maxMemoryK || 1));
@@ -884,6 +911,73 @@ const createInitialGameState = (
   };
 };
 
+const createInitialArenaState = (
+  settings: GameSettings,
+  language: Language = 'en'
+): ArenaState => {
+  const next: ArenaState = {
+    mode: 'scenario',
+    focus: '',
+    involvedParties: [{ description: '' }, { description: '' }],
+    history: [],
+    isThinking: false,
+    settings,
+    turnCount: 0,
+    tokenUsage: { sent: 0, received: 0, total: 0 },
+    finished: false,
+    briefingComplete: false,
+    userPrompt: getDefaultArenaPrompt(language),
+    userPromptCustom: false
+  };
+  return applyDefaultArenaPrompt(next, language);
+};
+
+const normalizeArenaState = (
+  state: any,
+  settings: GameSettings,
+  language: Language
+): ArenaState => {
+  const base = createInitialArenaState(settings, language);
+  if (!state || typeof state !== 'object') return base;
+  const rawMode = typeof state.mode === 'string' ? state.mode : '';
+  const mode = rawMode === 'wargame' ? 'wargame' : 'scenario';
+  const involvedParties = Array.isArray(state.involvedParties)
+    ? state.involvedParties.map((party: any) => {
+        if (party && typeof party === 'object') {
+          return {
+            description: typeof party.description === 'string' ? party.description : '',
+            forcePower: Number.isFinite(party.forcePower) ? Math.max(0, Math.floor(party.forcePower)) : undefined,
+            maxForcePower: Number.isFinite(party.maxForcePower) ? Math.max(0, Math.floor(party.maxForcePower)) : undefined,
+            avatarUrl: typeof party.avatarUrl === 'string' ? party.avatarUrl : undefined
+          };
+        }
+        return { description: String(party ?? '') };
+      })
+    : base.involvedParties;
+  const cappedParties = involvedParties.slice(0, 10);
+  const safeParties = cappedParties.length >= 2 ? cappedParties : [{ description: '' }, { description: '' }];
+  const history = Array.isArray(state.history) ? state.history : base.history;
+  const tokenUsage = normalizeTokenUsage(state.tokenUsage);
+  const merged: ArenaState = {
+    ...base,
+    mode,
+    focus: typeof state.focus === 'string' ? state.focus : base.focus,
+    involvedParties: safeParties,
+    history,
+    settings: state.settings && typeof state.settings === 'object'
+      ? normalizeProviderSettings(state.settings)
+      : settings,
+    turnCount: Number.isFinite(state.turnCount) ? Math.max(0, Math.floor(state.turnCount)) : base.turnCount,
+    tokenUsage,
+    finished: !!state.finished,
+    briefingComplete: !!state.briefingComplete,
+    userPrompt: typeof state.userPrompt === 'string' ? state.userPrompt : base.userPrompt,
+    userPromptCustom: !!state.userPromptCustom,
+    isThinking: false
+  };
+  return applyDefaultArenaPrompt(merged, language);
+};
+
 const stripAdminUser = (db: Record<string, UserRecord>) => {
   if (!db[RESERVED_ADMIN_USERNAME]) return db;
   const next = { ...db };
@@ -1036,13 +1130,17 @@ type LegacyInventoryPrompt = {
 type StageStatus = 'idle' | 'pending' | 'running' | 'done' | 'error' | 'skipped';
 
 const App: React.FC = () => {
-  const [view, setView] = useState<'auth' | 'start' | 'creation' | 'playing'>('auth');
+  const [view, setView] = useState<'auth' | 'start' | 'creation' | 'playing' | 'arena_setup' | 'arena_play'>('auth');
   const [gameState, setGameState] = useState<GameState>(
     createInitialGameState(DEFAULT_SETTINGS, NORMAL_MAX_AP, Date.now(), 'en')
+  );
+  const [arenaState, setArenaState] = useState<ArenaState>(
+    createInitialArenaState(DEFAULT_SETTINGS, 'en')
   );
   const [userInput, setUserInput] = useState('');
   const [charDescription, setCharDescription] = useState('');
   const [hasSave, setHasSave] = useState(false);
+  const [hasArenaSave, setHasArenaSave] = useState(false);
   const [systemError, setSystemError] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<LastActionState | null>(null);
   const [isCompressing, setIsCompressing] = useState(false);
@@ -1055,6 +1153,9 @@ const App: React.FC = () => {
   const [narrationStage, setNarrationStage] = useState<StageStatus>('idle');
   const [statusStage, setStatusStage] = useState<StageStatus>('idle');
   const [imageStage, setImageStage] = useState<StageStatus>('idle');
+  const [arenaNarrationStage, setArenaNarrationStage] = useState<StageStatus>('idle');
+  const [arenaImageStage, setArenaImageStage] = useState<StageStatus>('idle');
+  const [arenaAvatarStage, setArenaAvatarStage] = useState<StageStatus>('idle');
   const [statusManagerError, setStatusManagerError] = useState<string | null>(null);
   const [isManualCompressionConfirmOpen, setIsManualCompressionConfirmOpen] = useState(false);
   const [keyAlert, setKeyAlert] = useState(false);
@@ -1062,7 +1163,10 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isUserPromptOpen, setIsUserPromptOpen] = useState(false);
+  const [isArenaPromptOpen, setIsArenaPromptOpen] = useState(false);
   const [isTipOpen, setIsTipOpen] = useState(false);
+  const [arenaError, setArenaError] = useState<string | null>(null);
+  const [showArenaExportMenu, setShowArenaExportMenu] = useState(false);
   const [usersDb, setUsersDb] = useState<Record<string, UserRecord>>({});
   const [usersLoaded, setUsersLoaded] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
@@ -1243,10 +1347,13 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!currentUser || currentUser.tier === 'guest') {
       setHasSave(false);
+      setHasArenaSave(false);
       return;
     }
     const saved = localStorage.getItem(getSaveKey(currentUser.username));
     setHasSave(!!saved);
+    const arenaSaved = localStorage.getItem(getArenaSaveKey(currentUser.username));
+    setHasArenaSave(!!arenaSaved);
   }, [currentUser]);
 
   useEffect(() => {
@@ -1303,6 +1410,13 @@ const App: React.FC = () => {
   }, [currentUser, gameState.ap, gameState.apLastUpdated, gameState.settings, usersDb, invitationCode]);
 
   useEffect(() => {
+    setArenaState(prev => ({
+      ...prev,
+      settings: gameState.settings
+    }));
+  }, [gameState.settings]);
+
+  useEffect(() => {
     if (!isNormal || !currentUser) return;
     const currentMemory = gameState.compressedMemory || '';
     const currentRawOutput = gameState.rawOutputCache || '';
@@ -1325,6 +1439,22 @@ const App: React.FC = () => {
     localStorage.setItem(key, JSON.stringify(gameState));
     setHasSave(true);
   }, [gameState, isNormal, currentUser]);
+
+  useEffect(() => {
+    if (!isNormal || !currentUser) return;
+    const hasContent =
+      !!arenaState.focus.trim() ||
+      arenaState.involvedParties.some(party => party.description.trim()) ||
+      arenaState.history.length > 0;
+    const key = getArenaSaveKey(currentUser.username);
+    if (!hasContent) {
+      localStorage.removeItem(key);
+      setHasArenaSave(false);
+      return;
+    }
+    localStorage.setItem(key, JSON.stringify(arenaState));
+    setHasArenaSave(true);
+  }, [arenaState, isNormal, currentUser]);
 
   useEffect(() => {
     if (!currentUser || !isNormal) return;
@@ -1412,6 +1542,38 @@ const App: React.FC = () => {
       return;
     }
     const html = buildExportHtml(gameState.history, gameState.language);
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) {
+      alert(isZh ? '无法打开导出窗口，请检查浏览器拦截。' : 'Unable to open export window. Please check popup settings.');
+      return;
+    }
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    const triggerPrint = () => {
+      printWindow.focus();
+      printWindow.print();
+    };
+    printWindow.addEventListener('load', () => {
+      setTimeout(triggerPrint, 200);
+    });
+    printWindow.onafterprint = () => {
+      printWindow.close();
+    };
+  };
+
+  const exportArenaData = (format: 'log-md' | 'log-pdf') => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    if (!arenaState.history.length) {
+      alert(isZh ? '暂无斗兽场记录可导出。' : 'No arena history to export.');
+      return;
+    }
+    if (format === 'log-md') {
+      const content = buildExportMarkdown(arenaState.history, gameState.language);
+      downloadTextFile(content, `fallout-arena-${timestamp}.md`, 'text/markdown;charset=utf-8');
+      return;
+    }
+    const html = buildExportHtml(arenaState.history, gameState.language);
     const printWindow = window.open('', '_blank', 'width=900,height=700');
     if (!printWindow) {
       alert(isZh ? '无法打开导出窗口，请检查浏览器拦截。' : 'Unable to open export window. Please check popup settings.');
@@ -1619,7 +1781,9 @@ const App: React.FC = () => {
   const applySession = (session: UserSession) => {
     setCurrentUser(session);
     setGameState(createInitialGameState(session.settings, session.ap, session.apLastUpdated, gameState.language));
+    setArenaState(createInitialArenaState(session.settings, gameState.language));
     setHasSave(false);
+    setHasArenaSave(false);
     lastHistoryLength.current = 0;
     lastCompressedMemory.current = '';
     lastInventorySignature.current = '';
@@ -1630,6 +1794,9 @@ const App: React.FC = () => {
     setStatusStage('idle');
     setImageStage('idle');
     setStatusManagerError(null);
+    setArenaNarrationStage('idle');
+    setArenaImageStage('idle');
+    setArenaAvatarStage('idle');
     setShowGuestNotice(false);
     setSystemError(null);
     setLastAction(null);
@@ -1637,6 +1804,7 @@ const App: React.FC = () => {
     setCompressionError(null);
     setCompressionStatus(null);
     setLegacyCompressionPrompt(null);
+    setArenaError(null);
   };
 
   const handleLogin = () => {
@@ -1986,6 +2154,301 @@ const App: React.FC = () => {
             : `避难所科技错误：构建档案时连接超时。请重试。` 
         }]
       }));
+    }
+  };
+
+  const openArenaSetup = () => {
+    if (isNormal && !isModelConfigured) {
+      setIsSettingsOpen(true);
+      return;
+    }
+    setArenaState(prev => {
+      const hasContent =
+        !!prev.focus.trim() ||
+        prev.involvedParties.some(party => party.description.trim()) ||
+        prev.history.length > 0;
+      if (hasContent) return prev;
+      const base = createInitialArenaState(gameState.settings, gameState.language);
+      if (!prev.userPromptCustom) return base;
+      return {
+        ...base,
+        userPrompt: prev.userPrompt,
+        userPromptCustom: true
+      };
+    });
+    setArenaError(null);
+    setArenaNarrationStage('idle');
+    setArenaImageStage('idle');
+    setArenaAvatarStage('idle');
+    setView('arena_setup');
+  };
+
+  const updateArenaFocus = (value: string) => {
+    setArenaState(prev => ({ ...prev, focus: value }));
+  };
+
+  const updateArenaMode = (mode: 'scenario' | 'wargame') => {
+    setArenaState(prev => ({
+      ...prev,
+      mode,
+      involvedParties: mode === 'scenario'
+        ? prev.involvedParties.map(party => ({ ...party, forcePower: undefined, maxForcePower: undefined }))
+        : prev.involvedParties
+    }));
+  };
+
+  const updateArenaParty = (index: number, value: string) => {
+    setArenaState(prev => {
+      const next = [...prev.involvedParties];
+      const current = next[index] || { description: '' };
+      next[index] = { ...current, description: value };
+      return { ...prev, involvedParties: next };
+    });
+  };
+
+  const addArenaParty = () => {
+    setArenaState(prev => {
+      if (prev.involvedParties.length >= 10) return prev;
+      return { ...prev, involvedParties: [...prev.involvedParties, { description: '' }] };
+    });
+  };
+
+  const removeArenaParty = (index: number) => {
+    setArenaState(prev => {
+      if (prev.involvedParties.length <= 2) return prev;
+      const next = prev.involvedParties.filter((_, idx) => idx !== index);
+      return { ...prev, involvedParties: next };
+    });
+  };
+
+  const loadArena = () => {
+    if (!currentUser) return;
+    const saved = localStorage.getItem(getArenaSaveKey(currentUser.username));
+    if (!saved) return;
+    try {
+      const parsed = JSON.parse(saved);
+      const normalized = normalizeArenaState(parsed, gameState.settings, gameState.language);
+      const mergedSettings = applyDefaultUserPrompt(normalized.settings, gameState.language);
+      setGameState(prev => ({
+        ...prev,
+        settings: mergedSettings,
+        language: gameState.language
+      }));
+      setArenaState({ ...normalized, settings: mergedSettings });
+      setArenaError(null);
+      setArenaNarrationStage('idle');
+      setArenaImageStage('idle');
+      setArenaAvatarStage('idle');
+      setView(normalized.history.length > 0 ? 'arena_play' : 'arena_setup');
+    } catch (err) {
+      console.error(err);
+      alert(isZh ? '斗兽场存档读取失败。' : 'Failed to load arena save.');
+    }
+  };
+
+  const runArenaSimulation = async (finish: boolean, resetHistory: boolean) => {
+    if (isNormal && !isModelConfigured) {
+      setIsSettingsOpen(true);
+      return;
+    }
+    const focus = arenaState.focus.trim();
+    const filteredParties = arenaState.involvedParties
+      .map(party => ({ ...party, description: party.description.trim() }))
+      .filter(party => party.description);
+    const parties = filteredParties.map(party => party.description);
+    if (!focus) {
+      setArenaError(isZh ? '请先填写模拟焦点。' : 'Enter a focus question first.');
+      return;
+    }
+    if (parties.length < 2) {
+      setArenaError(isZh ? '请至少填写两个参战方。' : 'Provide at least two involved parties.');
+      return;
+    }
+    const baseHistory = resetHistory ? [] : arenaState.history;
+    const baseTokenUsage = resetHistory ? { sent: 0, received: 0, total: 0 } : arenaState.tokenUsage;
+    const arenaMode = arenaState.mode;
+    const phase = resetHistory ? 'briefing' : (arenaState.briefingComplete ? 'battle' : 'briefing');
+    const baseParties = resetHistory
+      ? filteredParties.map(party => ({
+          ...party,
+          forcePower: undefined,
+          maxForcePower: undefined
+        }))
+      : filteredParties;
+    setArenaError(null);
+    setArenaState(prev => ({
+      ...prev,
+      focus,
+      involvedParties: baseParties,
+      history: baseHistory,
+      finished: resetHistory ? false : prev.finished,
+      isThinking: true,
+      turnCount: resetHistory ? 0 : prev.turnCount,
+      tokenUsage: baseTokenUsage,
+      briefingComplete: resetHistory ? false : prev.briefingComplete
+    }));
+    setArenaNarrationStage('running');
+    setArenaImageStage('pending');
+    setArenaAvatarStage('pending');
+    if (resetHistory) {
+      setView('arena_play');
+    }
+    try {
+      const trimmedHistory = buildNarratorHistory(baseHistory, historyLimit, '', false);
+      const forcePowers = arenaMode === 'wargame'
+        ? baseParties.map(party => (Number.isFinite(party.forcePower) ? party.forcePower as number : null))
+        : undefined;
+      const response = await getArenaNarration(
+        focus,
+        parties,
+        trimmedHistory,
+        gameState.language,
+        {
+          tier: activeTier,
+          apiKey: currentUser?.textApiKey,
+          proxyApiKey: currentUser?.textProxyKey,
+          proxyBaseUrl: textProxyBaseUrl,
+          useProxy,
+          textModel: effectiveTextModel,
+          provider: textProvider,
+          userSystemPrompt: arenaState.userPrompt,
+          finish,
+          mode: arenaMode,
+          phase,
+          forcePowers
+        }
+      );
+      setArenaNarrationStage('done');
+      const nextHistory = [...baseHistory, { sender: 'narrator', text: response.storyText, imageUrl: undefined }];
+      const nextTurn = baseHistory.length === 0 ? 1 : arenaState.turnCount + 1;
+      const updatedParties = arenaMode === 'wargame' && response.forcePowers
+        ? baseParties.map((party, index) => {
+            const nextPower = Number.isFinite(response.forcePowers?.[index])
+              ? Math.max(0, Math.floor(response.forcePowers[index] as number))
+              : party.forcePower;
+            const prevMax = Number.isFinite(party.maxForcePower) ? party.maxForcePower : undefined;
+            const nextMax = Number.isFinite(nextPower)
+              ? (prevMax ? Math.max(prevMax, nextPower) : nextPower)
+              : prevMax;
+            return {
+              ...party,
+              forcePower: nextPower,
+              maxForcePower: nextMax
+            };
+          })
+        : baseParties;
+      const remainingForces = arenaMode === 'wargame'
+        ? updatedParties.filter(party => (party.forcePower ?? 0) > 0).length
+        : null;
+      const autoFinish = arenaMode === 'wargame' && phase === 'battle' && remainingForces !== null && remainingForces <= 1;
+
+      const lockedImageTurns = isNormal && !hasTextAuthKey
+        ? normalDefaultImageTurns
+        : (isGuest ? guestFixedImageTurns : null);
+      const imageEveryTurns = lockedImageTurns ?? Math.max(minImageTurns, Math.floor(arenaState.settings.imageEveryTurns || minImageTurns));
+      const shouldGenerateImage = imagesEnabled && !isGuest && nextTurn % imageEveryTurns === 0;
+      const imagePrompt = response.imagePrompt || response.storyText;
+
+      const scenePromise = shouldGenerateImage
+        ? generateSceneImage(imagePrompt, {
+            highQuality: arenaState.settings.highQualityImages,
+            tier: activeTier,
+            apiKey: currentUser?.imageApiKey,
+            proxyApiKey: currentUser?.imageProxyKey,
+            proxyBaseUrl: imageProxyBaseUrl,
+            useProxy,
+            imageModel: effectiveImageModel,
+            provider: imageProvider,
+            textProvider,
+            textApiKey: currentUser?.textApiKey,
+            textProxyApiKey: currentUser?.textProxyKey,
+            textModel: effectiveTextModel
+          }).catch(err => {
+            setArenaImageStage('error');
+            throw err;
+          })
+        : Promise.resolve(undefined);
+
+      const avatarPromises = imagesEnabled && !isGuest
+        ? updatedParties.map(async (party, index) => {
+            if (party.avatarUrl || !party.description.trim()) {
+              return { party };
+            }
+            const avatar = await generateArenaAvatar(`Party ${index + 1}`, party.description, {
+              highQuality: arenaState.settings.highQualityImages,
+              tier: activeTier,
+              apiKey: currentUser?.imageApiKey,
+              proxyApiKey: currentUser?.imageProxyKey,
+              proxyBaseUrl: imageProxyBaseUrl,
+              useProxy,
+              imageModel: effectiveImageModel,
+              provider: imageProvider,
+              textProvider,
+              textApiKey: currentUser?.textApiKey,
+              textProxyApiKey: currentUser?.textProxyKey,
+              textModel: effectiveTextModel
+            });
+            if (avatar?.url) {
+              return { party: { ...party, avatarUrl: avatar.url } };
+            }
+            return { party, error: avatar?.error || 'Avatar generation failed.' };
+          })
+        : updatedParties.map(party => Promise.resolve({ party }));
+
+      setArenaImageStage(shouldGenerateImage ? 'running' : 'skipped');
+      setArenaAvatarStage(imagesEnabled && !isGuest ? 'running' : 'skipped');
+
+      let sceneResult: { url?: string; sources?: any[] } | undefined;
+      try {
+        sceneResult = await scenePromise;
+        if (sceneResult?.url) {
+          nextHistory[nextHistory.length - 1] = {
+            ...nextHistory[nextHistory.length - 1],
+            imageUrl: sceneResult.url,
+            groundingSources: sceneResult.sources
+          };
+        }
+        setArenaImageStage(shouldGenerateImage ? 'done' : 'skipped');
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setArenaError(isZh ? `图像生成失败：${message}` : `Image generation failed: ${message}`);
+        setArenaImageStage('error');
+      }
+
+      let avatarFailed = false;
+      let nextParties: typeof updatedParties = updatedParties;
+      try {
+        const results = await Promise.all(avatarPromises);
+        avatarFailed = results.some(result => !!result.error);
+        nextParties = results.map(result => result.party);
+        if (avatarFailed) {
+          setArenaError(isZh ? '头像生成出现问题，请稍后再试。' : 'Avatar generation encountered issues. Try again later.');
+        }
+      } catch (err) {
+        avatarFailed = true;
+        const message = err instanceof Error ? err.message : String(err);
+        setArenaError(isZh ? `头像生成失败：${message}` : `Avatar generation failed: ${message}`);
+      }
+      setArenaAvatarStage(avatarFailed ? 'error' : (imagesEnabled && !isGuest ? 'done' : 'skipped'));
+
+      setArenaState(prev => ({
+        ...prev,
+        isThinking: false,
+        history: nextHistory,
+        turnCount: nextTurn,
+        tokenUsage: mergeTokenUsage(baseTokenUsage, response.tokenUsage),
+        involvedParties: nextParties,
+        finished: finish || autoFinish ? true : prev.finished,
+        briefingComplete: phase === 'briefing' ? true : prev.briefingComplete
+      }));
+    } catch (err) {
+      console.error(err);
+      setArenaState(prev => ({ ...prev, isThinking: false }));
+      setArenaNarrationStage('error');
+      setArenaImageStage('idle');
+      setArenaAvatarStage('idle');
+      const message = err instanceof Error ? err.message : String(err);
+      setArenaError(isZh ? `斗兽场故障：${message}` : `Arena error: ${message}`);
     }
   };
 
@@ -2712,6 +3175,7 @@ const App: React.FC = () => {
       language: lang,
       settings: applyDefaultUserPrompt(prev.settings, lang)
     }));
+    setArenaState(prev => applyDefaultArenaPrompt({ ...prev }, lang));
   };
 
   const toggleHighQualityImages = () => {
@@ -2868,6 +3332,14 @@ const App: React.FC = () => {
         userSystemPrompt: value,
         userSystemPromptCustom: true
       }
+    }));
+  };
+
+  const updateArenaSystemPrompt = (value: string) => {
+    setArenaState(prev => ({
+      ...prev,
+      userPrompt: value,
+      userPromptCustom: true
     }));
   };
 
@@ -3446,6 +3918,32 @@ const App: React.FC = () => {
       </div>
     </div>
   );
+  const arenaPromptModal = isArenaPromptOpen && (
+    <div className="fixed top-0 left-0 w-full h-full z-[3000] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-2xl font-bold uppercase">{isZh ? '斗兽场系统提示' : 'Arena System Prompt'}</h3>
+          <button
+            onClick={() => setIsArenaPromptOpen(false)}
+            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+          >
+            {isZh ? '关闭' : 'Close'}
+          </button>
+        </div>
+        <div className="text-xs opacity-70 mb-3">
+          {isZh
+            ? '用于控制斗兽场模拟行为，例如要求更长输出、特定叙事风格或更多战术细节。'
+            : 'Use this to control arena simulation behavior, e.g. longer output, specific narrative style, or more tactical detail.'}
+        </div>
+        <textarea
+          value={arenaState.userPrompt || ''}
+          onChange={(e) => updateArenaSystemPrompt(e.target.value)}
+          className="w-full h-40 md:h-48 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-xs focus:outline-none"
+          placeholder={isZh ? '输入斗兽场系统提示...' : 'Enter arena system prompt...'}
+        />
+      </div>
+    </div>
+  );
   const legacyCompressionModal = legacyCompressionPrompt && (
     <div className="fixed top-0 left-0 w-full h-full z-[3200] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
       <div className="max-w-md w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 bg-black">
@@ -3803,6 +4301,7 @@ const App: React.FC = () => {
         {settingsModal}
         {helpModal}
         {userPromptModal}
+        {arenaPromptModal}
         <div className="max-w-3xl w-full space-y-6 md:space-y-8 pip-boy-border p-6 md:p-12 bg-black/60 shadow-2xl relative">
           <div className="absolute top-4 right-4 flex space-x-2">
             <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
@@ -3851,6 +4350,15 @@ const App: React.FC = () => {
              >
               {gameState.language === 'en' ? 'Initialize New Simulation' : '初始化新模拟'}
              </button>
+             <button 
+              onClick={openArenaSetup}
+              disabled={!canPlay}
+              className={`w-full text-xl md:text-2xl border-2 border-[#1aff1a]/70 py-4 transition-all font-bold uppercase bg-[#1aff1a]/5 ${
+                canPlay ? 'hover:bg-[#1aff1a] hover:text-black' : 'opacity-40 cursor-not-allowed'
+              }`}
+             >
+              {gameState.language === 'en' ? 'Wasteland Smash Arena' : '废土斗兽场'}
+             </button>
              {hasSave && (
                <button 
                 onClick={loadGame}
@@ -3860,6 +4368,17 @@ const App: React.FC = () => {
                 }`}
                >
                 {gameState.language === 'en' ? 'Continue Last Save' : '继续上次存档'}
+               </button>
+             )}
+             {hasArenaSave && (
+               <button 
+                onClick={loadArena}
+                disabled={!canPlay}
+                className={`w-full text-xl md:text-2xl border-2 border-[#1aff1a]/40 py-4 transition-all font-bold uppercase bg-[#1aff1a]/5 ${
+                  canPlay ? 'hover:bg-[#1aff1a]/40 hover:text-black' : 'opacity-40 cursor-not-allowed'
+                }`}
+               >
+                {gameState.language === 'en' ? 'Continue Arena Save' : '继续斗兽场存档'}
                </button>
              )}
              {!canPlay && isNormal && (
@@ -3880,6 +4399,7 @@ const App: React.FC = () => {
       <div className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8">
         {guestNotice}
         {usersEditorModal}
+        {arenaPromptModal}
         {keyAlert && (
           <div className="fixed top-0 left-0 w-full h-full z-[2000] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
             <div className="max-w-md w-full max-h-[90vh] overflow-y-auto pip-boy-border p-8 bg-black">
@@ -3967,6 +4487,306 @@ const App: React.FC = () => {
     );
   }
 
+  if (view === 'arena_setup') {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-4 md:p-8">
+        {guestNotice}
+        {usersEditorModal}
+        {settingsModal}
+        {arenaPromptModal}
+        <div className="max-w-4xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black/80 space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-2xl md:text-3xl font-bold glow-text uppercase">
+              {isZh ? '废土斗兽场' : 'Wasteland Smash Arena'}
+            </h2>
+            <div className="flex items-center space-x-2">
+              <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
+              <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
+              <button
+                onClick={() => setIsSettingsOpen(true)}
+                className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              >
+                {isZh ? '设置' : 'SET'}
+              </button>
+              <button
+                onClick={() => setIsArenaPromptOpen(true)}
+                className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              >
+                {isZh ? '提示' : 'PROMPT'}
+              </button>
+            </div>
+          </div>
+          <p className="text-sm md:text-base opacity-70 leading-relaxed">
+            {isZh
+              ? '填写战斗焦点与参战方。系统将查阅 Fallout 世界观，并按逻辑分多轮模拟战局。'
+              : 'Provide a focus question and the involved parties. The system will consult Fallout lore and simulate the battle over multiple rounds.'}
+          </p>
+
+          <div className="space-y-2">
+            <div className="text-xs uppercase opacity-60">{isZh ? '模式' : 'Mode'}</div>
+            <div className="flex space-x-2 text-xs uppercase font-bold">
+              <button
+                onClick={() => updateArenaMode('scenario')}
+                className={`px-3 py-2 border ${arenaState.mode === 'scenario' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]/50 hover:bg-[#1aff1a]/20'}`}
+              >
+                {isZh ? '情景演绎' : 'Scenario'}
+              </button>
+              <button
+                onClick={() => updateArenaMode('wargame')}
+                className={`px-3 py-2 border ${arenaState.mode === 'wargame' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]/50 hover:bg-[#1aff1a]/20'}`}
+              >
+                {isZh ? '战争推演' : 'War Game Sim'}
+              </button>
+            </div>
+            <div className="text-xs opacity-70 leading-relaxed">
+              {arenaState.mode === 'scenario'
+                ? (isZh
+                  ? '情景演绎更注重叙事与场景描写。'
+                  : 'Scenario mode focuses on story and scene depiction.')
+                : (isZh
+                  ? '战争推演以专业口吻汇报战况，并追踪兵力值。'
+                  : 'War Game Sim reports the battle in a professional tone and tracks force power.')}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-xs uppercase opacity-60">{isZh ? '焦点问题' : 'Focus question'}</div>
+            <textarea
+              value={arenaState.focus}
+              onChange={(e) => updateArenaFocus(e.target.value)}
+              className="w-full h-20 md:h-24 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-sm md:text-base focus:outline-none"
+              placeholder={isZh ? '例如：弗兰克何瑞根不穿动力甲和拉尼厄斯打，胜率如何？' : 'e.g. Frank Horrigan without power armor vs Lanius — odds?'} 
+            />
+          </div>
+
+          <div className="space-y-3">
+            <div className="text-xs uppercase opacity-60">{isZh ? '参战方' : 'Involved parties'}</div>
+            <div className="text-xs opacity-70">
+              {isZh ? '填写单位、人数、阵营与背景。' : 'Describe unit type, numbers, faction, and background.'}
+            </div>
+            {arenaState.involvedParties.map((party, index) => (
+              <div key={index} className="space-y-2">
+                <textarea
+                  value={party.description}
+                  onChange={(e) => updateArenaParty(index, e.target.value)}
+                  className="w-full h-16 md:h-20 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-sm md:text-base focus:outline-none"
+                  placeholder={isZh ? `参战方 ${index + 1}` : `Party ${index + 1}`}
+                />
+                <button
+                  onClick={() => removeArenaParty(index)}
+                  disabled={arenaState.involvedParties.length <= 2}
+                  className="text-[10px] uppercase border border-[#1aff1a]/40 px-2 py-1 hover:bg-[#1aff1a]/20 transition-all disabled:opacity-40"
+                >
+                  {isZh ? '移除此方' : 'Remove party'}
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={addArenaParty}
+              disabled={arenaState.involvedParties.length >= 10}
+              className="text-xs border border-[#1aff1a]/50 px-3 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase disabled:opacity-40"
+            >
+              {isZh ? '添加参战方' : 'Add involved party'}
+            </button>
+          </div>
+
+          {arenaError && <div className="text-xs text-red-500">{arenaError}</div>}
+
+          <div className="space-y-3 pt-2">
+            <button
+              onClick={() => runArenaSimulation(false, true)}
+              disabled={arenaState.isThinking}
+              className="w-full text-lg md:text-xl border-2 border-[#1aff1a] py-3 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase disabled:opacity-50"
+            >
+              {isZh ? '生成战斗简报' : 'Generate Battle Briefing'}
+            </button>
+            <button
+              onClick={() => setView('start')}
+              className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+            >
+              {isZh ? '返回菜单' : 'Back to Start Menu'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'arena_play') {
+    return (
+      <div className="flex flex-col h-screen w-screen overflow-hidden relative">
+        {guestNotice}
+        {usersEditorModal}
+        {settingsModal}
+        {arenaPromptModal}
+        <header className="p-3 md:p-4 border-b border-[#1aff1a]/30 bg-black/60 flex justify-between items-center z-20">
+          <div className="flex items-center space-x-2 md:space-x-4">
+            <div className="w-8 h-8 md:w-10 md:h-10 border-2 border-[#1aff1a] flex items-center justify-center font-bold text-lg md:text-xl">13</div>
+            <h1 className="text-lg md:text-2xl font-bold tracking-widest uppercase truncate max-w-[200px] md:max-w-none">
+              {isZh ? '废土斗兽场' : 'Wasteland Smash Arena'}
+            </h1>
+          </div>
+          <div className="flex items-center space-x-2">
+            <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
+            <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            >
+              {isZh ? '设置' : 'SET'}
+            </button>
+            <button
+              onClick={() => setIsArenaPromptOpen(true)}
+              className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            >
+              {isZh ? '提示' : 'PROMPT'}
+            </button>
+          </div>
+        </header>
+
+        <div className="p-3 md:p-4 border-b border-[#1aff1a]/20 bg-black/50 space-y-2 text-sm">
+          <div className="uppercase opacity-60">{isZh ? '焦点' : 'Focus'}</div>
+          <div className="opacity-90">{arenaState.focus}</div>
+          <div className="uppercase opacity-60 pt-2">{isZh ? '参战方' : 'Involved parties'}</div>
+          <div className="space-y-1 text-xs md:text-sm opacity-80">
+            {arenaState.involvedParties.map((party, index) => (
+              <div key={index}>{index + 1}. {party.description}</div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-1 min-h-0">
+          <div className="flex flex-col flex-1 min-w-0 min-h-0">
+            <Terminal
+              history={arenaState.history}
+              isThinking={arenaState.isThinking}
+              progressStages={[
+                { label: isZh ? '叙事生成' : 'Narration', status: arenaNarrationStage },
+                { label: isZh ? '图像生成' : 'Image', status: arenaImageStage },
+                { label: isZh ? '头像生成' : 'Avatar', status: arenaAvatarStage }
+              ]}
+              stageStatusLabels={stageStatusLabels}
+              systemError={arenaError}
+              systemErrorLabel={isZh ? '> 系统日志' : '> SYSTEM LOG'}
+            />
+          </div>
+          <aside className="w-64 md:w-80 border-l border-[#1aff1a]/30 bg-black/60 p-3 md:p-4 overflow-y-auto min-h-0">
+            <div className="text-xs uppercase opacity-60 mb-2">
+              {isZh ? '参战方概览' : 'Involved Parties'}
+            </div>
+            <div className="space-y-3">
+              {arenaState.involvedParties.map((party, index) => {
+                const forcePower = Number.isFinite(party.forcePower) ? Math.max(0, Math.floor(party.forcePower as number)) : null;
+                const maxPower = Number.isFinite(party.maxForcePower)
+                  ? Math.max(1, Math.floor(party.maxForcePower as number))
+                  : (forcePower ?? 1);
+                const barWidth = forcePower === null ? 0 : Math.max(2, Math.round((forcePower / maxPower) * 100));
+                const isDefeated = arenaState.mode === 'wargame' && forcePower !== null && forcePower <= 0;
+                return (
+                  <div key={index} className="border border-[#1aff1a]/20 p-3 bg-black/40">
+                    <div className="flex items-start space-x-3">
+                      <div className="w-14 h-14 border border-[#1aff1a]/40 bg-black/60 flex items-center justify-center text-[10px] uppercase">
+                        {party.avatarUrl ? (
+                          <img src={party.avatarUrl} alt={`party-${index}`} className="w-full h-full object-cover opacity-90" />
+                        ) : (
+                          <span>{isZh ? '暂无头像' : 'No avatar'}</span>
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-sm font-bold uppercase">
+                          {isZh ? `参战方 ${index + 1}` : `Party ${index + 1}`}
+                        </div>
+                        <div className="text-xs opacity-70 whitespace-pre-wrap">
+                          {party.description}
+                        </div>
+                      </div>
+                    </div>
+                    {arenaState.mode === 'wargame' && (
+                      <div className="mt-2">
+                        <div className="flex items-center justify-between text-xs font-bold">
+                          <span>{isZh ? '兵力值' : 'Force Power'}</span>
+                          <span className={`text-base ${isDefeated ? 'text-[#ff6b6b]' : 'text-[#1aff1a]'}`}>
+                            {forcePower ?? 0}/{maxPower}
+                          </span>
+                        </div>
+                        <div className="mt-1 h-2 w-full bg-black border border-[#1aff1a]/30">
+                          <div
+                            className={`h-full ${isDefeated ? 'bg-[#ff6b6b]' : 'bg-[#1aff1a]'}`}
+                            style={{ width: `${barWidth}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </aside>
+        </div>
+
+        <div className="p-4 border-t border-[#1aff1a]/30 bg-black/60 flex flex-col md:flex-row gap-3 items-start md:items-center">
+          {!arenaState.finished ? (
+            <>
+              <button
+                onClick={() => runArenaSimulation(false, false)}
+                disabled={arenaState.isThinking}
+                className="flex-1 border-2 border-[#1aff1a] py-2 md:py-3 text-sm md:text-base font-bold uppercase hover:bg-[#1aff1a] hover:text-black transition-all disabled:opacity-50"
+              >
+                {arenaState.briefingComplete
+                  ? (isZh ? '继续模拟' : 'Continue Simulation')
+                  : (isZh ? '开始战斗' : 'Begin Battle')}
+              </button>
+              <button
+                onClick={() => runArenaSimulation(true, false)}
+                disabled={arenaState.isThinking || !arenaState.briefingComplete}
+                className="flex-1 border-2 border-[#1aff1a]/50 py-2 md:py-3 text-sm md:text-base font-bold uppercase hover:bg-[#1aff1a]/70 hover:text-black transition-all disabled:opacity-50"
+              >
+                {isZh ? '结束战斗' : 'Finish the Battle'}
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => setView('arena_setup')}
+              className="w-full border-2 border-[#1aff1a] py-2 md:py-3 text-sm md:text-base font-bold uppercase hover:bg-[#1aff1a] hover:text-black transition-all"
+            >
+              {isZh ? '返回斗兽场' : 'Back to Arena Setup'}
+            </button>
+          )}
+          <div className="relative md:ml-auto">
+            <button
+              onClick={() => setShowArenaExportMenu(prev => !prev)}
+              className="text-xs border border-[#1aff1a]/50 px-3 py-2 uppercase hover:bg-[#1aff1a] hover:text-black transition-all"
+            >
+              {isZh ? '导出记录' : 'Export Log'}
+            </button>
+            {showArenaExportMenu && (
+              <div className="absolute right-0 bottom-full mb-2 w-40 border border-[#1aff1a]/40 bg-black/90 text-xs uppercase shadow-lg">
+                <button
+                  onClick={() => {
+                    exportArenaData('log-md');
+                    setShowArenaExportMenu(false);
+                  }}
+                  className="w-full text-left px-3 py-2 hover:bg-[#1aff1a]/20"
+                >
+                  {isZh ? '导出 Markdown' : 'Export .md'}
+                </button>
+                <button
+                  onClick={() => {
+                    exportArenaData('log-pdf');
+                    setShowArenaExportMenu(false);
+                  }}
+                  className="w-full text-left px-3 py-2 hover:bg-[#1aff1a]/20"
+                >
+                  {isZh ? '导出 PDF' : 'Export PDF'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col md:flex-row h-screen w-screen overflow-hidden relative">
       {guestNotice}
@@ -3975,6 +4795,7 @@ const App: React.FC = () => {
       {rawOutputModal}
       {helpModal}
       {userPromptModal}
+      {arenaPromptModal}
       {legacyCompressionModal}
       {legacyInventoryModal}
       {manualCompressionModal}

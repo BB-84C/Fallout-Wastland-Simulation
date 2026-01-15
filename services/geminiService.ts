@@ -84,6 +84,19 @@ const memorySchema = {
   required: ["memory"]
 };
 
+const arenaSchema = {
+  type: Type.OBJECT,
+  properties: {
+    storyText: { type: Type.STRING },
+    imagePrompt: { type: Type.STRING },
+    forcePowers: {
+      type: Type.ARRAY,
+      items: { type: Type.NUMBER }
+    }
+  },
+  required: ["storyText"]
+};
+
 const DEFAULT_TEXT_MODEL = 'gemini-2.5-flash-lite';
 const DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image';
 const HARDCODED_GUEST_API_KEY = 'AIzaSyB71sniT0q7RrXq57S8899tfhSEq_u8jr4';
@@ -587,6 +600,100 @@ export async function getNarrativeResponse(
     parsed.tokenUsage = tokenUsage;
   }
   return parsed;
+}
+
+export async function getArenaNarration(
+  focus: string,
+  involvedParties: string[],
+  history: HistoryEntry[],
+  lang: Language,
+  options?: {
+    tier?: UserTier;
+    apiKey?: string;
+    textModel?: TextModelId;
+    userSystemPrompt?: string;
+    finish?: boolean;
+    mode?: 'scenario' | 'wargame';
+    phase?: 'briefing' | 'battle';
+    forcePowers?: Array<number | null>;
+  }
+): Promise<{ storyText: string; tokenUsage?: TokenUsage; forcePowers?: number[]; imagePrompt?: string }> {
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
+  const ai = new GoogleGenAI({ apiKey: apiKey || '' });
+  const targetLang = lang === 'zh' ? 'Chinese' : 'English';
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
+  const finish = !!options?.finish;
+  const mode = options?.mode === 'wargame' ? 'wargame' : 'scenario';
+  const phase = options?.phase === 'battle' ? 'battle' : 'briefing';
+
+  const prompt = `
+FOCUS QUESTION:
+${focus}
+
+INVOLVED PARTIES:
+${involvedParties.map((party, index) => `[${index + 1}] ${party}`).join("\n")}
+
+${mode === 'wargame' ? `CURRENT FORCE POWER:
+${(options?.forcePowers || []).map((value, index) => `[${index + 1}] ${value === null || value === undefined ? 'UNKNOWN' : value}`).join("\n")}` : ''}
+
+SIMULATION HISTORY:
+${history.map(entry => `${entry.sender.toUpperCase()}: ${entry.text}`).join("\n")}
+
+FINISH: ${finish ? "true" : "false"}
+PHASE: ${phase}
+
+TASK:
+${mode === 'wargame'
+  ? `If PHASE is briefing, provide a concise situation briefing only (no combat actions or damage). If CURRENT FORCE POWER is provided, return the same values unchanged; otherwise set initial forcePowers for each party (integer). If PHASE is battle, continue the battle as a war game report. Update forcePowers for each party (integer). If a party is a single unit, set forcePowers to that unit's HP. If a party is down to 0, mark them as defeated but keep narrating until FINISH or only one party remains.
+Return JSON with keys: storyText, forcePowers, imagePrompt (optional).`
+  : `If PHASE is briefing, provide a concise situation briefing only (no combat actions or damage). If PHASE is battle, continue the battle simulation with tactics, setbacks, and momentum shifts. If FINISH is true, conclude the battle with a decisive outcome and aftermath.
+Return JSON with keys: storyText, imagePrompt (optional).`}`;
+
+const systemInstruction = `You are the Wasteland Smash Arena simulator.
+1. LORE: Always consult the Fallout Wiki in English when possible. If a party is not in the wiki, infer from established Fallout lore.
+2. OUTPUT RULE: Never cite sources, URLs, or provenance in player-facing narration.
+3. LANGUAGE: Output must be in ${targetLang}.
+4. STRUCTURE: Do NOT conclude the battle unless FINISH is true. Continue the simulation round-by-round.
+5. FAIRNESS: Follow Fallout logic and make outcomes believable; avoid deterministic instant victories.
+6. MODE: ${mode === 'wargame'
+  ? 'War Game Sim: use a professional, concise tone, reporting actions, tactics, and damage. Always update forcePowers for each party.'
+  : 'Scenario: focus on story, atmosphere, and vivid scene depiction.'}
+7. BRIEFING: If PHASE is briefing, do NOT describe any attacks, damage, or exchanges. Only describe parties, location, time, surroundings, and the reason for conflict.
+${options?.userSystemPrompt?.trim() ? `8. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
+
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: arenaSchema,
+      systemInstruction
+    }
+  });
+
+  if (!response.text) throw new Error("Connection to the Wasteland lost.");
+  const parsed = safeJsonParse(response.text);
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: response.usageMetadata?.promptTokenCount,
+    completionTokens: response.usageMetadata?.candidatesTokenCount,
+    totalTokens: response.usageMetadata?.totalTokenCount
+  }, `${systemInstruction}\n${prompt}`, response.text);
+  if (parsed && typeof parsed === 'object') {
+    const storyText = typeof (parsed as any).storyText === 'string' ? (parsed as any).storyText : '';
+    if (!storyText.trim()) {
+      throw new Error('Invalid arena response.');
+    }
+    const imagePrompt = typeof (parsed as any).imagePrompt === 'string' ? (parsed as any).imagePrompt : undefined;
+    const forcePowers = Array.isArray((parsed as any).forcePowers)
+      ? (parsed as any).forcePowers.map((value: any) => Number(value))
+      : undefined;
+    if (mode === 'wargame' && (!forcePowers || forcePowers.length !== involvedParties.length)) {
+      throw new Error('Invalid force power output.');
+    }
+    (parsed as any).tokenUsage = tokenUsage;
+    return { storyText, tokenUsage, forcePowers, imagePrompt };
+  }
+  throw new Error('Invalid arena response.');
 }
 
 export async function getStatusUpdate(
