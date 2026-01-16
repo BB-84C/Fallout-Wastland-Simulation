@@ -112,6 +112,7 @@ const StatBar: React.FC<StatBarProps> = ({
   const [activeTab, setActiveTab] = useState<Tab>('STAT');
   const [expandedCompanion, setExpandedCompanion] = useState<string | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const isInventoryTab = activeTab === 'INV';
 
   const dateStr = new Date(time).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
     month: 'short',
@@ -377,24 +378,26 @@ const StatBar: React.FC<StatBarProps> = ({
 
       case 'INV':
         return (
-          <div className="space-y-1 animate-in slide-in-from-right-4 duration-300">
+          <div className="flex flex-col h-full min-h-0 animate-in slide-in-from-right-4 duration-300">
             <div className="flex justify-between text-[0.625rem] uppercase opacity-40 px-1 mb-2">
               <span>{language === 'en' ? 'Item' : '物品'}</span>
               <span>{language === 'en' ? 'Weight' : '重量'}</span>
             </div>
-            {player.inventory.map((item, idx) => (
-              <div key={idx} className="text-xs p-1.5 border-b border-[#1aff1a]/5 flex justify-between hover:bg-[#1aff1a]/5 group">
-                <div className="flex flex-col truncate pr-2">
-                  <span className="font-bold group-hover:text-white transition-colors">
-                    {item.name} {item.count > 1 ? `x${item.count}` : ''}
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+              {player.inventory.map((item, idx) => (
+                <div key={idx} className="text-xs p-1.5 border-b border-[#1aff1a]/5 flex justify-between hover:bg-[#1aff1a]/5 group">
+                  <div className="flex flex-col truncate pr-2">
+                    <span className="font-bold group-hover:text-white transition-colors">
+                      {item.name} {item.count > 1 ? `x${item.count}` : ''}
+                    </span>
+                    <span className="text-[0.5625rem] opacity-50 truncate">{item.type}</span>
+                  </div>
+                  <span className="opacity-40 whitespace-nowrap self-center">
+                    {(item.weight * item.count).toFixed(1)} lb
                   </span>
-                  <span className="text-[0.5625rem] opacity-50 truncate">{item.type}</span>
                 </div>
-                <span className="opacity-40 whitespace-nowrap self-center">
-                  {(item.weight * item.count).toFixed(1)} lb
-                </span>
-              </div>
-            ))}
+              ))}
+            </div>
             <div className="pt-4 text-[0.625rem] opacity-50 text-right">
                {language === 'en' ? 'Total Weight: ' : '总重: '}
                {player.inventory.reduce((acc, curr) => acc + curr.weight * curr.count, 0).toFixed(1)} / {player.special.Strength * 10 + 50} lb
@@ -425,7 +428,7 @@ const StatBar: React.FC<StatBarProps> = ({
           width: `${100 / clampedScale}%`,
           height: `${100 / clampedScale}%`
         }}
-        className="h-full"
+        className="h-full min-h-0 flex flex-col"
       >
         {/* Top Utility Header */}
         <div className="p-3 border-b border-[#1aff1a]/30 space-y-3 bg-black">
@@ -522,7 +525,9 @@ const StatBar: React.FC<StatBarProps> = ({
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-y-auto p-4 no-scrollbar">
+        <div
+          className={`flex-1 min-h-0 p-4 ${isInventoryTab ? 'overflow-hidden' : 'overflow-y-auto no-scrollbar'}`}
+        >
           {renderTabContent()}
         </div>
 
