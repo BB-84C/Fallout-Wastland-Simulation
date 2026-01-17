@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, TokenUsage, StatusUpdate, InventoryItem, HistoryEntry } from "../types";
+import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, TokenUsage, StatusUpdate, InventoryItem, HistoryEntry, EventOutcome, EventNarrationResponse } from "../types";
 
 const actorSchema = {
   type: Type.OBJECT,
@@ -263,6 +263,26 @@ const statusSchema = {
     currentYear: { type: Type.NUMBER },
     currentTime: { type: Type.STRING }
   }
+};
+
+const eventSchema = {
+  type: Type.OBJECT,
+  properties: {
+    outcomeSummary: { type: Type.STRING },
+    ruleViolation: { type: Type.STRING },
+    timePassedMinutes: { type: Type.NUMBER },
+    playerChange: playerChangeSchema,
+    questUpdates: questSchema,
+    companionUpdates: companionUpdatesSchema,
+    newNpc: {
+      type: Type.ARRAY,
+      items: actorSchema
+    },
+    location: { type: Type.STRING },
+    currentYear: { type: Type.NUMBER },
+    currentTime: { type: Type.STRING }
+  },
+  required: ["outcomeSummary", "timePassedMinutes"]
 };
 
 const inventoryItemSchema = {
@@ -604,6 +624,147 @@ export async function getNarrativeResponse(
     parsed.tokenUsage = tokenUsage;
   }
   return parsed;
+}
+
+export async function getEventOutcome(
+  player: Actor,
+  history: any[],
+  userInput: string,
+  year: number,
+  location: string,
+  currentTime: string,
+  quests: Quest[],
+  knownNpcs: Actor[],
+  lang: Language,
+  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId; userSystemPrompt?: string }
+): Promise<EventOutcome> {
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
+  const ai = new GoogleGenAI({ apiKey: apiKey || '' });
+  const targetLang = lang === 'zh' ? 'Chinese' : 'English';
+  const context = history.map(h => `${h.sender.toUpperCase()}: ${h.text}`).join('\n');
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
+
+  const prompt = `
+    Environment Year: ${year}
+    Environment Location: ${location}
+    Current Time: ${currentTime}
+    Current Player Status: ${JSON.stringify(player)}
+    Existing Quests: ${JSON.stringify(quests)}
+    Known NPCs: ${JSON.stringify(knownNpcs)}
+    Interaction Context:
+    ${context}
+    Player's current intent/action: "${userInput}"
+
+    TASK:
+    1. Determine the outcome of the action.
+    2. Define the concrete event outcomes and state changes (diff-only).
+    3. Avoid assuming the player is the protagonist, unless the user specified or the player background says so.
+    4. You are encouraged to create new events for the player that fit within the Fallout universe to enhance the story.
+    5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
+    6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, set the outcome where the player realizes they don't have the item.
+    Return strict JSON with keys: outcomeSummary, ruleViolation, timePassedMinutes, playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
+  `;
+  const systemInstruction = `You are the Vault-Tec Event Manager.
+          1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
+          1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing text.
+          2. MANDATORY LANGUAGE: You MUST output all text fields in ${targetLang}.
+          3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
+          4. RULE GUARD: Player can only dictate intent and action. If they dictate narrative outcomes or facts/result of their will-do action, set ruleViolation.
+          5. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
+          6. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
+          7. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
+          8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
+          9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+          ${options?.userSystemPrompt?.trim() ? `10. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
+
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: eventSchema,
+      systemInstruction
+    }
+  });
+
+  if (!response.text) throw new Error("Connection to the Wasteland lost.");
+  const parsed = safeJsonParse(response.text);
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: response.usageMetadata?.promptTokenCount,
+    completionTokens: response.usageMetadata?.candidatesTokenCount,
+    totalTokens: response.usageMetadata?.totalTokenCount
+  }, `${systemInstruction}\n${prompt}`, response.text);
+  if (parsed && typeof parsed === 'object') {
+    (parsed as any).tokenUsage = tokenUsage;
+    return parsed as EventOutcome;
+  }
+  return { outcomeSummary: '', timePassedMinutes: 0, tokenUsage } as EventOutcome;
+}
+
+export async function getEventNarration(
+  player: Actor,
+  year: number,
+  location: string,
+  eventOutcome: EventOutcome,
+  lang: Language,
+  options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId; userSystemPrompt?: string }
+): Promise<EventNarrationResponse> {
+  const { key: apiKey } = resolveApiKey(options?.apiKey);
+  const ai = new GoogleGenAI({ apiKey: apiKey || '' });
+  const targetLang = lang === 'zh' ? 'Chinese' : 'English';
+  const selectedTextModel = options?.textModel || DEFAULT_TEXT_MODEL;
+
+  const prompt = `
+    Environment Year: ${year}
+    Environment Location: ${location}
+    Current Player Profile: ${JSON.stringify(player)}
+
+    EVENT_OUTCOME:
+    ${JSON.stringify(eventOutcome)}
+
+    TASK:
+    1. Narrate the outcome strictly based on EVENT_OUTCOME. Do NOT add new outcomes or state changes.
+    2. Focus on vivid descriptions, character dialogues, and environmental details that align with the event.
+    Return JSON with keys: storyText, imagePrompt.
+  `;
+  const systemInstruction = `You are the Fallout Overseer.
+          1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
+          1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing narration. Keep the narration immersive.
+          2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
+          3. EVENT LOCK: Narrate ONLY what is contained in EVENT_OUTCOME. Do NOT invent or alter outcomes, items, NPCs, quests, or stats.
+          4. TRANSLATION: Use "Term (Original)" for unlocalized items.
+          5. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+          ${options?.userSystemPrompt?.trim() ? `6. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
+
+  const response = await ai.models.generateContent({
+    model: selectedTextModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          storyText: { type: Type.STRING },
+          imagePrompt: { type: Type.STRING }
+        },
+        required: ["storyText", "imagePrompt"]
+      },
+      systemInstruction
+    }
+  });
+
+  if (!response.text) throw new Error("Connection to the Wasteland lost.");
+  const parsed = safeJsonParse(response.text);
+  const tokenUsage = normalizeTokenUsage({
+    promptTokens: response.usageMetadata?.promptTokenCount,
+    completionTokens: response.usageMetadata?.candidatesTokenCount,
+    totalTokens: response.usageMetadata?.totalTokenCount
+  }, `${systemInstruction}\n${prompt}`, response.text);
+  if (parsed && typeof parsed === 'object') {
+    (parsed as any).tokenUsage = tokenUsage;
+    return parsed as EventNarrationResponse;
+  }
+  return { storyText: '', imagePrompt: '', tokenUsage };
 }
 
 export async function getArenaNarration(

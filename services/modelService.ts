@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, ModelProvider, SpecialAttr, Skill, TokenUsage, HistoryEntry, StatusUpdate, InventoryItem } from "../types";
+import { Actor, NarratorResponse, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, ModelProvider, SpecialAttr, Skill, TokenUsage, HistoryEntry, StatusUpdate, InventoryItem, EventOutcome, EventNarrationResponse } from "../types";
 import {
   createPlayerCharacter as createGeminiPlayer,
   getNarrativeResponse as getGeminiNarration,
@@ -8,6 +8,8 @@ import {
   generateCompanionAvatar as generateGeminiAvatar,
   compressMemory as compressGeminiMemory,
   getStatusUpdate as getGeminiStatusUpdate,
+  getEventOutcome as getGeminiEventOutcome,
+  getEventNarration as getGeminiEventNarration,
   refreshInventory as refreshGeminiInventory,
   auditInventoryWeights as auditGeminiInventoryWeights,
   recoverInventoryStatus as recoverGeminiInventoryStatus
@@ -285,6 +287,26 @@ const statusSchema = {
   }
 };
 
+const eventSchema = {
+  type: Type.OBJECT,
+  properties: {
+    outcomeSummary: { type: Type.STRING },
+    ruleViolation: { type: Type.STRING },
+    timePassedMinutes: { type: Type.NUMBER },
+    playerChange: playerChangeSchema,
+    questUpdates: questSchema,
+    companionUpdates: companionUpdatesSchema,
+    newNpc: {
+      type: Type.ARRAY,
+      items: actorSchema
+    },
+    location: { type: Type.STRING },
+    currentYear: { type: Type.NUMBER },
+    currentTime: { type: Type.STRING }
+  },
+  required: ["outcomeSummary", "timePassedMinutes"]
+};
+
 const inventoryItemSchema = {
   type: Type.OBJECT,
   properties: {
@@ -552,6 +574,38 @@ const jsonStatusSchema: JsonSchema = {
   additionalProperties: false
 };
 
+const jsonEventSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    outcomeSummary: { type: "string" },
+    ruleViolation: { type: ["string", "null"] },
+    timePassedMinutes: { type: "number" },
+    playerChange: jsonPlayerChangeSchema,
+    questUpdates: {
+      type: "array",
+      items: jsonQuestSchema
+    },
+    companionUpdates: jsonCompanionUpdatesSchema,
+    newNpc: {
+      type: "array",
+      items: jsonActorSchema
+    },
+    location: { type: "string" },
+    currentYear: { type: "number" },
+    currentTime: { type: "string" }
+  },
+  required: ["outcomeSummary", "timePassedMinutes"],
+  additionalProperties: false
+};
+
+const jsonEventSchemaDoubao: JsonSchema = {
+  ...jsonEventSchema,
+  properties: {
+    ...jsonEventSchema.properties,
+    ruleViolation: { type: "string" }
+  }
+};
+
 const jsonInventoryRefreshSchema: JsonSchema = {
   type: "object",
   properties: {
@@ -654,6 +708,28 @@ const buildNarratorSystem = (targetLang: string, year: number, location: string,
 6. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
 ${userSystemPrompt && userSystemPrompt.trim() ? `7. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
+const buildEventSystem = (targetLang: string, year: number, location: string, userSystemPrompt?: string) => `You are the Vault-Tec Event Manager.
+1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
+1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing text.
+2. MANDATORY LANGUAGE: You MUST output all text fields in ${targetLang}.
+3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
+4. RULE GUARD: Player can only dictate intent and action. If they dictate narrative outcomes or facts/result of their will-do action, set ruleViolation.
+5. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
+6. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
+7. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
+8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
+9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+${userSystemPrompt && userSystemPrompt.trim() ? `10. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+
+const buildEventNarratorSystem = (targetLang: string, year: number, location: string, userSystemPrompt?: string) => `You are the Fallout Overseer.
+1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
+1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing narration. Keep the narration immersive.
+2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
+3. EVENT LOCK: Narrate ONLY what is contained in EVENT_OUTCOME. Do NOT invent or alter outcomes, items, NPCs, quests, or stats.
+4. TRANSLATION: Use "Term (Original)" for unlocalized items.
+5. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+${userSystemPrompt && userSystemPrompt.trim() ? `6. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+
 const buildStatusSystem = (targetLang: string, year: number, location: string) => `You are the Vault-Tec Status Manager.
 1. PURPOSE: Emit ONLY status changes shown in the status bar (player stats, inventory, caps, quests, known NPCs/companions, location/year/time).
 2. INPUTS: Use the CURRENT STATUS and the LAST NARRATION only. Do NOT infer changes that are not explicitly stated or clearly implied by the narration.
@@ -705,6 +781,53 @@ TASK:
 5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
 6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, narrate how the player realizes they don't have the item.
 Return strict JSON with keys: storyText, ruleViolation, timePassedMinutes, imagePrompt.`;
+
+const buildEventPrompt = (
+  player: Actor,
+  history: any[],
+  userInput: string,
+  year: number,
+  location: string,
+  currentTime: string,
+  quests: Quest[],
+  knownNpcs: Actor[]
+) => `
+Environment Year: ${year}
+Environment Location: ${location}
+Current Time: ${currentTime}
+Current Player Status: ${JSON.stringify(player)}
+Existing Quests: ${JSON.stringify(quests)}
+Known NPCs: ${JSON.stringify(knownNpcs)}
+Interaction Context:
+${history.map(h => `${h.sender.toUpperCase()}: ${h.text}`).join("\n")}
+Player's current intent/action: "${userInput}"
+
+TASK:
+1. Determine the outcome of the action.
+2. Define the concrete event outcomes and state changes (diff-only).
+3. Avoid assuming the player is the protagonist, unless the user specified or the player background says so.
+4. You are encouraged to create new events for the player that fit within the Fallout universe to enhance the story.
+5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
+6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, set the outcome where the player realizes they don't have the item.
+Return strict JSON with keys: outcomeSummary, ruleViolation, timePassedMinutes, playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.`;
+
+const buildEventNarratorPrompt = (
+  player: Actor,
+  year: number,
+  location: string,
+  eventOutcome: EventOutcome
+) => `
+Environment Year: ${year}
+Environment Location: ${location}
+Current Player Profile: ${JSON.stringify(player)}
+
+EVENT_OUTCOME:
+${JSON.stringify(eventOutcome)}
+
+TASK:
+1. Narrate the outcome strictly based on EVENT_OUTCOME. Do NOT add new outcomes or state changes.
+2. Focus on vivid descriptions, character dialogues, and environmental details that align with the event.
+Return JSON with keys: storyText, imagePrompt.`;
 
 const buildArenaPrompt = (
   focus: string,
@@ -951,6 +1074,33 @@ const parseNarrator = (raw: any, fallbackPrompt: string): NarratorResponse => {
     timePassedMinutes,
     imagePrompt: raw?.imagePrompt || fallbackPrompt
   };
+};
+
+const parseEventOutcome = (raw: any) => {
+  const outcomeSummary = typeof raw?.outcomeSummary === "string" ? raw.outcomeSummary : "";
+  const timePassedMinutes = typeof raw?.timePassedMinutes === "number" ? raw.timePassedMinutes : 0;
+  const ruleViolationRaw = typeof raw?.ruleViolation === "string" ? raw.ruleViolation.trim() : "";
+  const normalizedRuleViolation = ruleViolationRaw && ruleViolationRaw.toLowerCase() !== "null"
+    ? ruleViolationRaw
+    : null;
+  return {
+    outcomeSummary,
+    ruleViolation: normalizedRuleViolation,
+    timePassedMinutes,
+    playerChange: raw?.playerChange,
+    questUpdates: raw?.questUpdates,
+    companionUpdates: raw?.companionUpdates,
+    newNpc: raw?.newNpc,
+    location: raw?.location,
+    currentYear: raw?.currentYear,
+    currentTime: raw?.currentTime
+  };
+};
+
+const parseEventNarration = (raw: any, fallbackPrompt: string) => {
+  const storyText = typeof raw?.storyText === "string" ? raw.storyText : "";
+  const imagePrompt = typeof raw?.imagePrompt === "string" ? raw.imagePrompt : fallbackPrompt;
+  return { storyText, imagePrompt };
 };
 
 const buildImagePrompt = (prompt: string, highQuality: boolean) => {
@@ -1551,6 +1701,193 @@ export async function getNarrativeResponse(
   const response = parseNarrator(parsed, userInput);
   response.tokenUsage = result.tokenUsage;
   return response;
+}
+
+export async function getEventOutcome(
+  player: Actor,
+  history: any[],
+  userInput: string,
+  year: number,
+  location: string,
+  currentTime: string,
+  quests: Quest[],
+  knownNpcs: Actor[],
+  lang: Language,
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string }
+): Promise<EventOutcome> {
+  const provider = normalizeProvider(options?.provider);
+  const useProxy = !!options?.useProxy;
+  const targetLang = lang === "zh" ? "Chinese" : "English";
+  const system = buildEventSystem(targetLang, year, location, options?.userSystemPrompt);
+  const prompt = buildEventPrompt(player, history, userInput, year, location, currentTime, quests, knownNpcs);
+
+  if (provider === "gemini") {
+    if (options?.tier === "guest") {
+      const response = await getGeminiEventOutcome(
+        player,
+        history,
+        userInput,
+        year,
+        location,
+        currentTime,
+        quests,
+        knownNpcs,
+        lang,
+        { tier: options?.tier, apiKey: options?.apiKey, textModel: options?.textModel, userSystemPrompt: options?.userSystemPrompt }
+      );
+      return response;
+    }
+    const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+    if (useProxy && !proxyBaseUrl) {
+      throw new Error("Missing proxy base URL.");
+    }
+    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const model = options?.textModel || "";
+    if (!model) {
+      throw new Error("Missing text model name.");
+    }
+    const ai = new GoogleGenAI({
+      apiKey,
+      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+    });
+    const response = await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: eventSchema,
+        systemInstruction: system
+      }
+    });
+    if (!response.text) {
+      throw new Error("Connection to the Wasteland lost.");
+    }
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: response.usageMetadata?.promptTokenCount,
+      completionTokens: response.usageMetadata?.candidatesTokenCount,
+      totalTokens: response.usageMetadata?.totalTokenCount
+    }, `${system}\n${prompt}`, response.text);
+    const parsed = safeJsonParse(response.text);
+    const outcome = { ...parseEventOutcome(parsed), tokenUsage };
+    return outcome as EventOutcome;
+  }
+
+  const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
+  if (useProxy && !baseUrl) {
+    throw new Error("Missing proxy base URL.");
+  }
+  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+  const model = options?.textModel || "";
+  if (!model) {
+    throw new Error("Missing text model name.");
+  }
+
+  const eventSchemaForProvider = provider === "doubao" ? jsonEventSchemaDoubao : jsonEventSchema;
+  const result = provider === "openai"
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, eventSchemaForProvider, "event_outcome")
+    : provider === "claude"
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, eventSchemaForProvider)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, eventSchemaForProvider, "event_outcome");
+
+  const parsed = safeJsonParse(result.content);
+  const outcome = { ...parseEventOutcome(parsed), tokenUsage: result.tokenUsage };
+  return outcome as EventOutcome;
+}
+
+export async function getEventNarration(
+  player: Actor,
+  year: number,
+  location: string,
+  eventOutcome: EventOutcome,
+  lang: Language,
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string }
+): Promise<EventNarrationResponse> {
+  const provider = normalizeProvider(options?.provider);
+  const useProxy = !!options?.useProxy;
+  const targetLang = lang === "zh" ? "Chinese" : "English";
+  const system = buildEventNarratorSystem(targetLang, year, location, options?.userSystemPrompt);
+  const prompt = buildEventNarratorPrompt(player, year, location, eventOutcome);
+
+  if (provider === "gemini") {
+    if (options?.tier === "guest") {
+      return getGeminiEventNarration(player, year, location, eventOutcome, lang, {
+        tier: options?.tier,
+        apiKey: options?.apiKey,
+        textModel: options?.textModel,
+        userSystemPrompt: options?.userSystemPrompt
+      });
+    }
+    const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+    if (useProxy && !proxyBaseUrl) {
+      throw new Error("Missing proxy base URL.");
+    }
+    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const model = options?.textModel || "";
+    if (!model) {
+      throw new Error("Missing text model name.");
+    }
+    const ai = new GoogleGenAI({
+      apiKey,
+      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+    });
+    const response = await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            storyText: { type: Type.STRING },
+            imagePrompt: { type: Type.STRING }
+          },
+          required: ["storyText", "imagePrompt"]
+        },
+        systemInstruction: system
+      }
+    });
+    if (!response.text) {
+      throw new Error("Connection to the Wasteland lost.");
+    }
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: response.usageMetadata?.promptTokenCount,
+      completionTokens: response.usageMetadata?.candidatesTokenCount,
+      totalTokens: response.usageMetadata?.totalTokenCount
+    }, `${system}\n${prompt}`, response.text);
+    const parsed = safeJsonParse(response.text);
+    const narration = { ...parseEventNarration(parsed, eventOutcome.outcomeSummary || ""), tokenUsage };
+    return narration as EventNarrationResponse;
+  }
+
+  const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
+  if (useProxy && !baseUrl) {
+    throw new Error("Missing proxy base URL.");
+  }
+  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+  const model = options?.textModel || "";
+  if (!model) {
+    throw new Error("Missing text model name.");
+  }
+
+  const eventNarrationSchema: JsonSchema = {
+    type: "object",
+    properties: {
+      storyText: { type: "string" },
+      imagePrompt: { type: "string" }
+    },
+    required: ["storyText", "imagePrompt"],
+    additionalProperties: false
+  };
+
+  const result = provider === "openai"
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema, "event_narration")
+    : provider === "claude"
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema, "event_narration");
+
+  const parsed = safeJsonParse(result.content);
+  const narration = { ...parseEventNarration(parsed, eventOutcome.outcomeSummary || ""), tokenUsage: result.tokenUsage };
+  return narration as EventNarrationResponse;
 }
 
 export async function getArenaNarration(

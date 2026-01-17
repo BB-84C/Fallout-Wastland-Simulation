@@ -131,6 +131,8 @@ export type ImageModelId = string;
 
 export type ModelProvider = 'openai' | 'gemini' | 'claude' | 'doubao';
 
+export type PipelineMode = 'legacy' | 'event';
+
 export interface GameSettings {
   highQualityImages: boolean;
   imagesEnabled?: boolean;
@@ -149,6 +151,7 @@ export interface GameSettings {
   userSystemPromptCustom?: boolean;
   maxCompressedMemoryK?: number;
   textScale?: number;
+  pipelineMode?: PipelineMode;
 }
 
 export type UserTier = 'admin' | 'normal' | 'guest';
@@ -225,6 +228,26 @@ export interface NarratorResponse {
   timePassedMinutes: number;
   tokenUsage?: TokenUsage;
   imagePrompt?: string;
+}
+
+export interface EventOutcome {
+  outcomeSummary: string;
+  ruleViolation?: string | null;
+  timePassedMinutes: number;
+  playerChange?: PlayerChange;
+  questUpdates?: Quest[];
+  companionUpdates?: CompanionUpdate[];
+  newNpc?: Actor[];
+  location?: string;
+  currentYear?: number;
+  currentTime?: string;
+  tokenUsage?: TokenUsage;
+}
+
+export interface EventNarrationResponse {
+  storyText: string;
+  imagePrompt?: string;
+  tokenUsage?: TokenUsage;
 }
 
 export type ArenaMode = 'scenario' | 'wargame';
