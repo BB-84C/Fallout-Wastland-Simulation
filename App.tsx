@@ -32,16 +32,38 @@ const RESERVED_ADMIN_USERNAME = 'admin';
 const GUEST_COOLDOWN_KEY = 'fallout_guest_cooldown_until';
 const GUEST_COOLDOWN_MS = 30 * 60 * 1000;
 const MEMORY_ENTRY_TAG = 'COMPRESSED MEMORY';
-const DEFAULT_USER_PROMPT_ZH = `1. 请输出800 tokens左右
-2. 每轮给出三个可选行动
-3. 用户想要追求高难度的游玩体验，请安排更加离奇的事件，同时提高玩家各种行为的判定失败几率。`;
-const DEFAULT_USER_PROMPT_EN = `1. Output around 800 tokens.
-2. Provide three available actions each turn.
-3. The player wants a high-difficulty experience. Introduce more unexpected events and increase the failure rate of player actions.`;
-const DEFAULT_ARENA_PROMPT_ZH = `1. 输出约 1000 tokens。
-2. 基于逻辑与 Fallout 世界观，公平地模拟战斗。`;
-const DEFAULT_ARENA_PROMPT_EN = `1. Keep the output around 1000 tokens.
-2. Based on the logic and Fallout lore, simulate the battle fairly.`;
+const DEFAULT_USER_PROMPT_ZH = `1. 输出约 800 tokens 的叙事内容。
+2. 每轮给出三个可选行动，行动应体现不同的风险结构，而不是简单的“成功率高低”。
+3. 玩家追求高难度体验：
+   - 成功通常伴随代价或长期后果。
+   - 失败不一定立刻致命，但会改变局势或资源结构。
+4. 鼓励出现看似非常规、但事后逻辑自洽的情节发展。
+5. 避免直接依赖运气或奇迹；如果出现偶然因素，其作用必须有限。除非玩家角色的某个SPECIAL属性很高（>7） 。`;
+const DEFAULT_USER_PROMPT_EN = `1. Generate approximately 800 tokens of narrative content.
+2. Present three action options per round, each reflecting distinct risk structures rather than simple "success rate variations."
+3. Players seek high-difficulty experiences:
+   - Success often comes with costs or long-term consequences.
+   - Failure isn't immediately fatal but alters the situation or resource dynamics.
+4. Encourage plot developments that seem unconventional but become logically consistent in hindsight.
+5. Avoid direct reliance on luck or miracles; if random elements occur, their impact must be limited. Exceptions apply only if a player character possesses an exceptionally high SPECIAL attribute (>7). `;
+const DEFAULT_ARENA_PROMPT_ZH = `1. 输出约 1000 tokens，完整描述冲突的展开与结果。
+2. 不仅比较军力规模与装备，还需考虑：
+   - 地形与基础设施
+   - 情报不对称
+   - 后勤与补给
+   - 阵营文化与战术偏好
+3. 如果一方处于明显劣势，应优先探索非正面对抗手段。
+4. 决定胜负前，应至少发生一次改变局势的关键行动或失误。
+5. 战斗结果必须可被复盘为一条因果链，而非简单的“谁更强”。`;
+const DEFAULT_ARENA_PROMPT_EN = `1. Output approximately 1000 tokens, fully describing the conflict's progression and outcome.
+2. Consider not only military strength and equipment, but also:
+   - Terrain and infrastructure
+   - Information asymmetry
+   - Logistics and supply chains
+   - Faction culture and tactical preferences
+3. If one side is at a significant disadvantage, prioritize exploring non-confrontational approaches.
+4. At least one pivotal action or critical error must occur before determining the outcome.
+5. The battle result must be traceable as a chain of causality, not merely "who was stronger.".`;
 const MODEL_PROVIDER_OPTIONS: { value: ModelProvider; label: string }[] = [
   { value: 'openai', label: 'OpenAI' },
   { value: 'gemini', label: 'Gemini' },
@@ -405,7 +427,10 @@ const applyPlayerChange = (base: Actor, change?: PlayerChange | null) => {
   const next: Actor = { ...base };
   if (Number.isFinite(change.health)) next.health = Math.max(0, change.health as number);
   if (Number.isFinite(change.maxHealth)) next.maxHealth = Math.max(1, change.maxHealth as number);
-  if (Number.isFinite(change.caps)) next.caps = Math.max(0, change.caps as number);
+  if (Number.isFinite(change.caps)) {
+    const delta = change.caps as number;
+    next.caps = Math.max(0, (Number.isFinite(next.caps) ? next.caps : 0) + delta);
+  }
   if (Number.isFinite(change.karma)) next.karma = Math.max(-100, Math.min(100, change.karma as number));
   if (change.special) {
     next.special = normalizeSpecial({ ...base.special, ...change.special });
@@ -2996,13 +3021,7 @@ const App: React.FC = () => {
           : Promise.resolve(undefined);
 
         const eventStatusChange: StatusChange = {
-          playerChange: eventOutcome.playerChange,
-          questUpdates: eventOutcome.questUpdates,
-          companionUpdates: eventOutcome.companionUpdates,
-          newNpc: eventOutcome.newNpc,
-          location: eventOutcome.location,
-          currentYear: eventOutcome.currentYear,
-          currentTime: eventOutcome.currentTime
+          ...eventOutcomeForNarration
         };
 
         const questUpdates = eventStatusChange.questUpdates;
@@ -4921,6 +4940,28 @@ const App: React.FC = () => {
           {isZh
             ? '用于控制模型行为，例如：要求每次给出 3 个可选行动、输出超过 2000 token，或将输出限制在 1000 token 内。'
             : 'Use this to control model behavior, e.g. always give 3 available actions, output more than 2000 tokens, or keep the output within 1000 tokens.'}
+        </div>
+        <div className="text-xs opacity-70 mb-4">
+          <div className="uppercase tracking-widest opacity-60 mb-2">
+            {isZh ? '建议结构' : 'Suggested structure'}
+          </div>
+          <div className="space-y-1">
+            {isZh ? (
+              <>
+                <div>- 世界观约束：</div>
+                <div>- 禁止或惩罚的显而易见解：</div>
+                <div>- 鼓励使用的间接手段：</div>
+                <div>- 结果必须满足的条件：</div>
+              </>
+            ) : (
+              <>
+                <div>- World rules:</div>
+                <div>- Banned or penalized obvious solutions:</div>
+                <div>- Indirect approaches to encourage:</div>
+                <div>- Outcome requirements:</div>
+              </>
+            )}
+          </div>
         </div>
         <textarea
           value={gameState.settings.userSystemPrompt || ''}

@@ -63,7 +63,7 @@ export interface PlayerChange {
   health?: number;
   maxHealth?: number;
   karma?: number;
-  caps?: number;
+  caps?: number; // delta change (positive or negative)
   special?: Partial<SpecialSet>;
   skills?: Partial<SkillSet>;
   perksAdd?: Perk[];
@@ -72,6 +72,9 @@ export interface PlayerChange {
 }
 
 export interface StatusChange {
+  outcomeSummary?: string;
+  ruleViolation?: string | null;
+  timePassedMinutes?: number;
   playerChange?: PlayerChange;
   questUpdates?: Quest[];
   companionUpdates?: CompanionUpdate[];

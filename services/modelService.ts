@@ -710,16 +710,23 @@ ${userSystemPrompt && userSystemPrompt.trim() ? `7. USER DIRECTIVE: ${userSystem
 
 const buildEventSystem = (targetLang: string, year: number, location: string, userSystemPrompt?: string) => `You are the Vault-Tec Event Manager.
 1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
-1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing text.
+1.1. OUTPUT RULE:
+- Never cite sources, URLs, or parenthetical provenance in player-facing text.
+- The world adheres to Fallout's physics, technology, social dynamics, and faction logic.
+- Event outcomes must be explainable through environment, resources, motivations, and constraints—not simply "because the plot demands it."
+- Avoid obvious optimal strategies; if present, explain why they weren't adopted or failed.
+- Encourage using indirect means, environmental factors, deception, sabotage, timing, and psychological tactics to alter situations.
+- Storylines should reflect 3–6 steps of implied causality chains, but avoid presenting reasoning as a list.
 2. MANDATORY LANGUAGE: You MUST output all text fields in ${targetLang}.
 3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
 4. RULE GUARD: Player can only dictate intent and action. If they dictate narrative outcomes or facts/result of their will-do action, set ruleViolation.
 5. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
 6. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
-7. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
-8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-9. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
-${userSystemPrompt && userSystemPrompt.trim() ? `10. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+7. CAPS: playerChange.caps is a DELTA (positive or negative), not the final total.
+8. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
+9. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
+10. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+${userSystemPrompt && userSystemPrompt.trim() ? `11. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildEventNarratorSystem = (targetLang: string, year: number, location: string, userSystemPrompt?: string) => `You are the Fallout Overseer.
 1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
@@ -735,11 +742,12 @@ const buildStatusSystem = (targetLang: string, year: number, location: string) =
 2. INPUTS: Use the CURRENT STATUS and the LAST NARRATION only. Do NOT infer changes that are not explicitly stated or clearly implied by the narration.
 3. CONSISTENCY: Keep existing items, caps, perks, SPECIAL, skills, and quests unless the narration clearly changes them. Never invent trades or items.
 4. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
-5. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
-6. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
-7. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-8. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
-9. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
+5. CAPS: playerChange.caps is a DELTA (positive or negative), not the final total.
+6. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
+7. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
+8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
+9. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
+10. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
 const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', userSystemPrompt?: string) => `You are the Wasteland Smash Arena simulator.
 1. LORE: Always consult the Fallout Wiki in English when possible. If a party is not in the wiki, infer from established Fallout lore.
@@ -753,7 +761,13 @@ const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', user
 7. FORCE POWERS FORMAT (War Game only): forcePowers MUST be a JSON array of integers with the same length and order as INVOLVED PARTIES. Do NOT output an object/map.
 8. IMAGE PROMPT: Always include imagePrompt as a concise, vivid visual description for a single scene.
 9. BRIEFING: If PHASE is briefing, do NOT describe any attacks, damage, or exchanges. Only describe parties, location, time, surroundings, and the reason for conflict.
-${userSystemPrompt && userSystemPrompt.trim() ? `10. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+10. Simulation rules:
+  - The world adheres to Fallout's physics, technology, social dynamics, and faction logic.
+  - Event outcomes must be explainable through environment, resources, motivations, and constraints—not simply "because the plot demands it."
+  - Avoid obvious optimal strategies; if present, explain why they weren't adopted or failed.
+  - Encourage using indirect means, environmental factors, deception, sabotage, timing, and psychological tactics to alter situations.
+  - Storylines should reflect 3–6 steps of implied causality chains, but avoid presenting reasoning as a list.
+${userSystemPrompt && userSystemPrompt.trim() ? `11. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildNarratorPrompt = (
   player: Actor,
@@ -809,6 +823,7 @@ TASK:
 4. You are encouraged to create new events for the player that fit within the Fallout universe to enhance the story.
 5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
 6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, set the outcome where the player realizes they don't have the item.
+7. playerChange.caps must be a delta (positive or negative), not the final total.
 Return strict JSON with keys: outcomeSummary, ruleViolation, timePassedMinutes, playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.`;
 
 const buildEventNarratorPrompt = (
@@ -926,6 +941,7 @@ TASK:
 Update status fields based on the narration. Return JSON with optional keys:
 playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
 playerChange should contain only changed fields (new values), plus inventoryChange with add/remove lists.
+playerChange.caps must be a delta (positive or negative), not the final total.
 Each newNpc entry MUST include appearance (short physical description).
 If no changes are needed, return {}.`;
 
