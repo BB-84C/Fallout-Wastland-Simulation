@@ -254,7 +254,10 @@ const statusSchema = {
     playerChange: playerChangeSchema,
     questUpdates: questSchema,
     companionUpdates: companionUpdatesSchema,
-    newNpc: actorSchema,
+    newNpc: {
+      type: Type.ARRAY,
+      items: actorSchema
+    },
     location: { type: Type.STRING },
     currentYear: { type: Type.NUMBER },
     currentTime: { type: Type.STRING }
@@ -730,7 +733,7 @@ export async function getStatusUpdate(
 
     TASK:
     Update status fields based on the narration. Return JSON with optional keys:
-    playerChange, questUpdates, companionUpdates, newNpc, location, currentYear, currentTime.
+    playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
     playerChange should contain only changed fields (new values), plus inventoryChange with add/remove lists.
     If no changes are needed, return {}.
   `;

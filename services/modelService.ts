@@ -274,7 +274,10 @@ const statusSchema = {
     playerChange: playerChangeSchema,
     questUpdates: questSchema,
     companionUpdates: companionUpdatesSchema,
-    newNpc: actorSchema,
+    newNpc: {
+      type: Type.ARRAY,
+      items: actorSchema
+    },
     location: { type: Type.STRING },
     currentYear: { type: Type.NUMBER },
     currentTime: { type: Type.STRING }
@@ -326,6 +329,262 @@ const inventoryRecoverySchema = {
     }
   },
   required: ["initialInventory", "inventoryChanges"]
+};
+
+type JsonSchema = Record<string, any>;
+
+const specialJsonProperties = Object.values(SpecialAttr).reduce((acc: Record<string, any>, attr) => {
+  acc[attr] = { type: "number" };
+  return acc;
+}, {});
+
+const skillsJsonProperties = Object.values(Skill).reduce((acc: Record<string, any>, skill) => {
+  acc[skill] = { type: "number" };
+  return acc;
+}, {});
+
+const jsonPerkSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    description: { type: "string" },
+    rank: { type: "number" }
+  },
+  required: ["name", "description", "rank"],
+  additionalProperties: false
+};
+
+const jsonInventoryItemSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    type: { type: "string" },
+    description: { type: "string" },
+    weight: { type: "number" },
+    value: { type: "number" },
+    count: { type: "number" },
+    isConsumable: { type: "boolean" }
+  },
+  required: ["name", "type", "description", "weight", "value", "count", "isConsumable"],
+  additionalProperties: false
+};
+
+const jsonInventoryChangeSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    add: {
+      type: "array",
+      items: jsonInventoryItemSchema
+    },
+    remove: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          count: { type: "number" }
+        },
+        required: ["name"],
+        additionalProperties: false
+      }
+    }
+  },
+  additionalProperties: false
+};
+
+const jsonPlayerChangeSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    health: { type: "number" },
+    maxHealth: { type: "number" },
+    karma: { type: "number" },
+    caps: { type: "number" },
+    special: {
+      type: "object",
+      properties: specialJsonProperties,
+      additionalProperties: false
+    },
+    skills: {
+      type: "object",
+      properties: skillsJsonProperties,
+      additionalProperties: false
+    },
+    perksAdd: { type: "array", items: jsonPerkSchema },
+    perksRemove: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+        additionalProperties: false
+      }
+    },
+    inventoryChange: jsonInventoryChangeSchema
+  },
+  additionalProperties: false
+};
+
+const jsonQuestSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    name: { type: "string" },
+    objective: { type: "string" },
+    status: { type: "string", enum: ["active", "completed", "failed"] },
+    hiddenProgress: { type: "string" }
+  },
+  required: ["id", "name", "objective", "status", "hiddenProgress"],
+  additionalProperties: false
+};
+
+const jsonCompanionUpdatesSchema: JsonSchema = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      ifCompanion: { type: "boolean" },
+      reason: { type: "string" }
+    },
+    required: ["name", "ifCompanion"],
+    additionalProperties: false
+  }
+};
+
+const jsonActorSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    age: { type: "number" },
+    gender: { type: "string" },
+    faction: { type: "string" },
+    special: {
+      type: "object",
+      properties: specialJsonProperties,
+      required: Object.values(SpecialAttr),
+      additionalProperties: false
+    },
+    skills: {
+      type: "object",
+      properties: skillsJsonProperties,
+      additionalProperties: false
+    },
+    perks: { type: "array", items: jsonPerkSchema },
+    inventory: { type: "array", items: jsonInventoryItemSchema },
+    lore: { type: "string" },
+    health: { type: "number" },
+    maxHealth: { type: "number" },
+    karma: { type: "number" },
+    caps: { type: "number" },
+    ifCompanion: { type: "boolean" },
+    avatarUrl: { type: "string" }
+  },
+  required: ["name", "age", "faction", "special", "skills", "lore", "health", "maxHealth", "caps"],
+  additionalProperties: false
+};
+
+const jsonPlayerCreationSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    ...jsonActorSchema.properties,
+    companions: {
+      type: "array",
+      items: jsonActorSchema
+    }
+  },
+  required: [...jsonActorSchema.required, "companions"],
+  additionalProperties: false
+};
+
+const jsonNarratorSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    storyText: { type: "string" },
+    ruleViolation: { type: ["string", "null"] },
+    timePassedMinutes: { type: "number" },
+    imagePrompt: { type: "string" }
+  },
+  required: ["storyText", "timePassedMinutes", "imagePrompt"],
+  additionalProperties: false
+};
+
+const jsonArenaSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    storyText: { type: "string" },
+    imagePrompt: { type: "string" },
+    forcePowers: {
+      type: "array",
+      items: { type: "number" }
+    }
+  },
+  required: ["storyText", "imagePrompt"],
+  additionalProperties: false
+};
+
+const jsonStatusSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    playerChange: jsonPlayerChangeSchema,
+    questUpdates: {
+      type: "array",
+      items: jsonQuestSchema
+    },
+    companionUpdates: jsonCompanionUpdatesSchema,
+    newNpc: {
+      type: "array",
+      items: jsonActorSchema
+    },
+    location: { type: "string" },
+    currentYear: { type: "number" },
+    currentTime: { type: "string" }
+  },
+  additionalProperties: false
+};
+
+const jsonInventoryRefreshSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    inventory: {
+      type: "array",
+      items: jsonInventoryItemSchema
+    }
+  },
+  required: ["inventory"],
+  additionalProperties: false
+};
+
+const jsonInventoryRecoverySchema: JsonSchema = {
+  type: "object",
+  properties: {
+    initialInventory: {
+      type: "array",
+      items: jsonInventoryItemSchema
+    },
+    inventoryChanges: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          narration_index: { type: "number" },
+          inventoryChange: jsonInventoryChangeSchema
+        },
+        required: ["narration_index", "inventoryChange"],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ["initialInventory", "inventoryChanges"],
+  additionalProperties: false
+};
+
+const jsonMemorySchema: JsonSchema = {
+  type: "object",
+  properties: {
+    memory: { type: "string" }
+  },
+  required: ["memory"],
+  additionalProperties: false
 };
 
 const buildInventoryWeightSystem = (targetLang: string) => `You are the Vault-Tec Inventory Auditor.
@@ -531,7 +790,7 @@ ${narration}
 
 TASK:
 Update status fields based on the narration. Return JSON with optional keys:
-playerChange, questUpdates, companionUpdates, newNpc, location, currentYear, currentTime.
+playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
 playerChange should contain only changed fields (new values), plus inventoryChange with add/remove lists.
 If no changes are needed, return {}.`;
 
@@ -734,25 +993,55 @@ async function resizeImageToSquare(base64: string, size: number): Promise<string
   });
 }
 
-const callOpenAiJson = async (apiKey: string, baseUrl: string, model: string, system: string, prompt: string) => {
-  const res = await fetch(`${baseUrl}/chat/completions`, {
+const callOpenAiJson = async (
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  system: string,
+  prompt: string,
+  schema?: JsonSchema,
+  schemaName = "response"
+) => {
+  const baseBody = {
+    model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: prompt }
+    ],
+    max_completion_tokens: 2048
+  };
+  const responseFormat = schema
+    ? { type: "json_schema", json_schema: { name: schemaName, schema, strict: true } }
+    : { type: "json_object" };
+  let res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: prompt }
-      ],
-      response_format: { type: "json_object" },
-      max_completion_tokens: 2048
-    })
+    body: JSON.stringify({ ...baseBody, response_format: responseFormat })
   });
   if (!res.ok) {
-    throw new Error(await formatHttpError(res, "OpenAI request failed"));
+    const text = await res.text();
+    const formatRejected = text.includes("response_format") || text.includes("json_schema");
+    if (schema && formatRejected) {
+      res = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({ ...baseBody, response_format: { type: "json_object" } })
+      });
+      if (!res.ok) {
+        throw new Error(await formatHttpError(res, "OpenAI request failed"));
+      }
+    } else {
+      const message = text
+        ? `OpenAI request failed (HTTP ${res.status}): ${text}`
+        : `OpenAI request failed (HTTP ${res.status}).`;
+      throw new Error(message);
+    }
   }
   const data = await res.json();
   const content = data?.choices?.[0]?.message?.content || "";
@@ -765,23 +1054,63 @@ const callOpenAiJson = async (apiKey: string, baseUrl: string, model: string, sy
   return { content, tokenUsage };
 };
 
-const callClaudeJson = async (apiKey: string, baseUrl: string, model: string, system: string, prompt: string) => {
-  const res = await fetch(`${baseUrl}/messages`, {
+const callClaudeJson = async (
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  system: string,
+  prompt: string,
+  schema?: JsonSchema
+) => {
+  const baseBody: Record<string, any> = {
+    model,
+    max_tokens: 4096,
+    system,
+    messages: [{ role: "user", content: prompt }]
+  };
+  if (schema) {
+    baseBody.output_format = {
+      type: "json_schema",
+      schema
+    };
+    baseBody.betas = ["structured-outputs-2025-11-13"];
+  }
+  let res = await fetch(`${baseUrl}/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01"
     },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      system,
-      messages: [{ role: "user", content: prompt }]
-    })
+    body: JSON.stringify(baseBody)
   });
   if (!res.ok) {
-    throw new Error(await formatHttpError(res, "Claude request failed"));
+    const text = await res.text();
+    const formatRejected = text.includes("output_format") || text.includes("json_schema") || text.includes("structured");
+    if (schema && formatRejected) {
+      res = await fetch(`${baseUrl}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 4096,
+          system,
+          messages: [{ role: "user", content: prompt }]
+        })
+      });
+      if (!res.ok) {
+        throw new Error(await formatHttpError(res, "Claude request failed"));
+      }
+    } else {
+      const message = text
+        ? `Claude request failed (HTTP ${res.status}): ${text}`
+        : `Claude request failed (HTTP ${res.status}).`;
+      throw new Error(message);
+    }
   }
   const data = await res.json();
   const content = data?.content?.find((part: any) => part?.text)?.text;
@@ -794,25 +1123,55 @@ const callClaudeJson = async (apiKey: string, baseUrl: string, model: string, sy
   return { content: content || "", tokenUsage };
 };
 
-const callDoubaoJson = async (apiKey: string, baseUrl: string, model: string, system: string, prompt: string) => {
-  const res = await fetch(`${baseUrl}/chat/completions`, {
+const callDoubaoJson = async (
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  system: string,
+  prompt: string,
+  schema?: JsonSchema,
+  schemaName = "response"
+) => {
+  const baseBody = {
+    model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: prompt }
+    ],
+    max_tokens: 2048
+  };
+  const responseFormat = schema
+    ? { type: "json_schema", json_schema: { name: schemaName, schema, strict: true } }
+    : { type: "json_object" };
+  let res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: prompt }
-      ],
-      response_format: { type: "json_object" },
-      max_tokens: 2048
-    })
+    body: JSON.stringify({ ...baseBody, response_format: responseFormat })
   });
   if (!res.ok) {
-    throw new Error(await formatHttpError(res, "Doubao request failed"));
+    const text = await res.text();
+    const formatRejected = text.includes("response_format") || text.includes("json_schema");
+    if (schema && formatRejected) {
+      res = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({ ...baseBody, response_format: { type: "json_object" } })
+      });
+      if (!res.ok) {
+        throw new Error(await formatHttpError(res, "Doubao request failed"));
+      }
+    } else {
+      const message = text
+        ? `Doubao request failed (HTTP ${res.status}): ${text}`
+        : `Doubao request failed (HTTP ${res.status}).`;
+      throw new Error(message);
+    }
   }
   const data = await res.json();
   const content = data?.choices?.[0]?.message?.content || "";
@@ -986,10 +1345,10 @@ export async function createPlayerCharacter(
   const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
 
   const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonPlayerCreationSchema, "player_creation")
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonPlayerCreationSchema)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonPlayerCreationSchema, "player_creation");
 
   const parsed = safeJsonParse(result.content);
   if (parsed && typeof parsed === "object") {
@@ -1083,10 +1442,10 @@ export async function getNarrativeResponse(
   const prompt = buildNarratorPrompt(player, history, userInput, year, location, quests, knownNpcs);
 
   const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonNarratorSchema, "narrator")
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonNarratorSchema)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonNarratorSchema, "narrator");
 
   const parsed = safeJsonParse(result.content);
   const response = parseNarrator(parsed, userInput);
@@ -1196,10 +1555,10 @@ export async function getArenaNarration(
   const prompt = buildArenaPrompt(focus, involvedParties, history, finish, mode, phase, options?.forcePowers);
 
   const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonArenaSchema, "arena")
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonArenaSchema)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonArenaSchema, "arena");
 
   const parsed = safeJsonParse(result.content);
   const storyText = parsed?.storyText ? String(parsed.storyText) : "";
@@ -1296,10 +1655,10 @@ export async function getStatusUpdate(
   }
 
   const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonStatusSchema, "status_update")
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonStatusSchema)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonStatusSchema, "status_update");
 
   const parsed = safeJsonParse(result.content);
   const update = parsed && typeof parsed === "object" ? (parsed as StatusUpdate) : {};
@@ -1373,10 +1732,10 @@ export async function refreshInventory(
   }
 
   const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_refresh")
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_refresh");
 
   const parsed = safeJsonParse(result.content);
   const items = parsed && typeof parsed === "object" && Array.isArray(parsed.inventory) ? parsed.inventory : [];
@@ -1450,10 +1809,10 @@ export async function auditInventoryWeights(
   }
 
   const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_audit")
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_audit");
 
   const parsed = safeJsonParse(result.content);
   const items = parsed && typeof parsed === "object" && Array.isArray(parsed.inventory) ? parsed.inventory : [];
@@ -1535,10 +1894,10 @@ export async function recoverInventoryStatus(
   }
 
   const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRecoverySchema, "inventory_recovery")
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRecoverySchema)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRecoverySchema, "inventory_recovery");
 
   const parsed = safeJsonParse(result.content);
   return {
@@ -1633,10 +1992,10 @@ Return JSON: {"memory": "..."} only.`;
   }
 
   const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt)
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonMemorySchema, "memory")
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt);
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonMemorySchema)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonMemorySchema, "memory");
 
   const parsed = safeJsonParse(result.content);
   const memory = typeof parsed?.memory === "string" ? parsed.memory.trim() : "";

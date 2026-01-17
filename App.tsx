@@ -2825,10 +2825,14 @@ const App: React.FC = () => {
         ...npc,
         ifCompanion: npc.ifCompanion ?? false
       }));
-      const newNpc = statusChange?.newNpc;
-      if (newNpc) {
-        nextKnownNpcs = upsertNpc(nextKnownNpcs, newNpc);
-      }
+      const newNpcList = Array.isArray(statusChange?.newNpc)
+        ? statusChange?.newNpc
+        : (statusChange?.newNpc ? [statusChange.newNpc] : []);
+      newNpcList.forEach(npc => {
+        if (npc) {
+          nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
+        }
+      });
       const companionUpdates = statusChange?.companionUpdates;
       nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, companionUpdates);
 

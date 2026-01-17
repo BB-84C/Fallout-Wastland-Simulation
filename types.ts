@@ -75,7 +75,7 @@ export interface StatusChange {
   playerChange?: PlayerChange;
   questUpdates?: Quest[];
   companionUpdates?: CompanionUpdate[];
-  newNpc?: Actor;
+  newNpc?: Actor[];
   location?: string;
   currentYear?: number;
   currentTime?: string;
