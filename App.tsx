@@ -3072,18 +3072,31 @@ const App: React.FC = () => {
           groundingSources: imgData?.sources
         };
         const nextHistory = [...updatedHistory, narratorEntry];
-        const nextStatusTrack = state.status_track
+        const baseStatusTrack: StatusTrack | null = state.status_track || (state.player
           ? {
-            ...state.status_track,
+            initial_status: buildStatusSnapshot(
+              state.player,
+              state.quests,
+              state.knownNpcs,
+              state.location,
+              state.currentYear,
+              state.currentTime
+            ),
+            status_change: []
+          }
+          : null);
+        const nextStatusTrack = baseStatusTrack
+          ? {
+            ...baseStatusTrack,
             status_change: [
-              ...state.status_track.status_change,
+              ...baseStatusTrack.status_change,
               {
                 narration_index: countNarrations(nextHistory),
                 ...(eventStatusChange && typeof eventStatusChange === 'object' ? eventStatusChange : {})
               }
             ]
           }
-          : state.status_track;
+          : null;
         const compressionActive = !!historyLimitAction && state.compressionEnabled !== false;
         const nextCounter = compressionActive ? (state.compressionTurnCounter || 0) + 1 : 0;
         const statusPlayer = eventStatusChange.playerChange
