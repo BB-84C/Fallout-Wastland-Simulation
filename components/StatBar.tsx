@@ -24,6 +24,9 @@ interface StatBarProps {
   showSave: boolean;
   onRefreshInventory: () => void;
   inventoryRefreshing: boolean;
+  onRebuildStatus: () => void;
+  statusRebuilding: boolean;
+  canRebuildStatus: boolean;
   onClose: () => void;
   panelScale?: number;
 }
@@ -106,6 +109,9 @@ const StatBar: React.FC<StatBarProps> = ({
   showSave,
   onRefreshInventory,
   inventoryRefreshing,
+  onRebuildStatus,
+  statusRebuilding,
+  canRebuildStatus,
   onClose,
   panelScale
 }) => {
@@ -462,6 +468,15 @@ const StatBar: React.FC<StatBarProps> = ({
                 {inventoryRefreshing
                   ? (language === 'en' ? 'REFRESH...' : '刷新中...')
                   : (language === 'en' ? 'INV REFRESH' : '库存刷新')}
+              </button>
+              <button
+                onClick={onRebuildStatus}
+                disabled={!canRebuildStatus || statusRebuilding}
+                className="text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold disabled:opacity-40"
+              >
+                {statusRebuilding
+                  ? (language === 'en' ? 'REBUILD...' : '重建中...')
+                  : (language === 'en' ? 'STAT REBUILD' : '状态重建')}
               </button>
               <div className="relative">
                 <button 

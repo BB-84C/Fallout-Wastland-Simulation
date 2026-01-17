@@ -457,8 +457,10 @@ const buildStatusSnapshot = (
   currentTime
 });
 
-const countNarrations = (history: HistoryEntry[]) =>
-  history.filter(entry => entry.sender === 'narrator' && entry.meta !== 'memory').length;
+const getNarrationEntries = (history: HistoryEntry[]) =>
+  history.filter(entry => entry.sender === 'narrator' && entry.meta !== 'memory');
+
+const countNarrations = (history: HistoryEntry[]) => getNarrationEntries(history).length;
 
 const getPendingPlayerAction = (history: HistoryEntry[]) => {
   if (history.length === 0) return null;
@@ -476,6 +478,59 @@ const rebuildInventoryFromStatusTrack = (track: StatusTrack) => {
     inventory = applyInventoryChange(inventory, change.playerChange?.inventoryChange);
   });
   return inventory;
+};
+
+const rebuildStatusFromTrack = (track: StatusTrack) => {
+  const initialKnownNpcs = normalizeKnownNpcList(track.initial_status.knownNpcs).cleaned;
+  let player = normalizeActor(track.initial_status.player);
+  let quests = Array.isArray(track.initial_status.quests) ? track.initial_status.quests : [];
+  let knownNpcs: Actor[] = initialKnownNpcs.map(withCompanionFlag);
+  let location = typeof track.initial_status.location === 'string' ? track.initial_status.location : '';
+  let currentYear = typeof track.initial_status.currentYear === 'number'
+    ? Math.trunc(track.initial_status.currentYear)
+    : 0;
+  let currentTime = typeof track.initial_status.currentTime === 'string' ? track.initial_status.currentTime : '';
+  const changes = Array.isArray(track.status_change) ? [...track.status_change] : [];
+  changes.sort((a, b) => a.narration_index - b.narration_index);
+  changes.forEach(change => {
+    if (change.playerChange) {
+      player = applyPlayerChange(player, change.playerChange);
+    }
+    if (change.questUpdates) {
+      const result = applyQuestUpdates(quests, change.questUpdates);
+      quests = result.merged;
+    }
+    let nextKnownNpcs: Actor[] = knownNpcs;
+    const newNpcList = Array.isArray(change.newNpc)
+      ? change.newNpc
+      : (change.newNpc ? [change.newNpc] : []);
+    newNpcList.forEach(npc => {
+      if (npc) {
+        nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
+      }
+    });
+    if (change.companionUpdates) {
+      nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, change.companionUpdates);
+    }
+    knownNpcs = nextKnownNpcs.map(npc => normalizeActor(npc));
+    if (typeof change.location === 'string' && change.location.trim()) {
+      location = change.location.trim();
+    }
+    if (typeof change.currentYear === 'number' && Number.isFinite(change.currentYear)) {
+      currentYear = Math.trunc(change.currentYear);
+    }
+    if (typeof change.currentTime === 'string' && change.currentTime.trim()) {
+      currentTime = change.currentTime.trim();
+    }
+  });
+  return {
+    player,
+    quests,
+    knownNpcs,
+    location,
+    currentYear,
+    currentTime
+  };
 };
 
 const mergeInventoryWeights = (base: InventoryItem[], audited: InventoryItem[]) => {
@@ -587,13 +642,14 @@ const buildNarratorHistory = (
   limit: number | null,
   compressedMemory: string | undefined,
   useMemory = true
-) => {
+): HistoryEntry[] => {
   const nonMemory = history.filter(item => item.meta !== 'memory' && !isErrorHistoryEntry(item));
   const recent = limit ? nonMemory.slice(-limit) : nonMemory;
   const memoryText = (compressedMemory || '').trim();
   if (!memoryText || !useMemory) return recent;
+  const memoryEntry: HistoryEntry = { sender: 'narrator', text: `${MEMORY_ENTRY_TAG}:\n${memoryText}` };
   return [
-    { sender: 'narrator', text: `${MEMORY_ENTRY_TAG}:\n${memoryText}` },
+    memoryEntry,
     ...recent
   ];
 };
@@ -1134,6 +1190,77 @@ const applyCompanionUpdates = (list: Actor[], updates?: CompanionUpdate[]): Acto
   });
 };
 
+const withCompanionFlag = (npc: Actor): Actor => ({
+  ...npc,
+  ifCompanion: npc.ifCompanion ?? false
+});
+
+const upsertNpcByKey = (list: Actor[], npc: Actor): Actor[] => {
+  const key = normalizeKey(npc.name);
+  if (!key) return list;
+  const index = list.findIndex(entry => normalizeKey(entry.name) === key);
+  if (index === -1) {
+    return [...list, npc];
+  }
+  const next = [...list];
+  next[index] = mergeNpc(next[index], npc);
+  return next;
+};
+
+const normalizeKnownNpcList = (raw: unknown) => {
+  let fixed = false;
+  let cleaned: Actor[] = [];
+  const pushActor = (actor: Actor) => {
+    if (!actor || typeof actor !== 'object' || typeof actor.name !== 'string') {
+      fixed = true;
+      return;
+    }
+    const normalized = normalizeActor({ ...actor, ifCompanion: actor.ifCompanion ?? false });
+    const beforeLen = cleaned.length;
+    cleaned = upsertNpcByKey(cleaned, normalized);
+    if (cleaned.length === beforeLen) {
+      fixed = true;
+    }
+  };
+  const walk = (entry: unknown) => {
+    if (!entry || typeof entry !== 'object') {
+      fixed = true;
+      return;
+    }
+    if (Array.isArray(entry)) {
+      fixed = true;
+      entry.forEach(walk);
+      return;
+    }
+    if ('name' in entry && typeof (entry as Actor).name === 'string') {
+      pushActor(entry as Actor);
+      return;
+    }
+    const keys = Object.keys(entry as Record<string, unknown>);
+    const numericKeys = keys.filter(key => /^\d+$/.test(key));
+    if (numericKeys.length > 0) {
+      fixed = true;
+      numericKeys.forEach(key => walk((entry as Record<string, unknown>)[key]));
+      return;
+    }
+    fixed = true;
+  };
+  if (Array.isArray(raw)) {
+    raw.forEach(walk);
+    return { cleaned, fixed };
+  }
+  if (raw && typeof raw === 'object') {
+    const keys = Object.keys(raw as Record<string, unknown>);
+    const numericKeys = keys.filter(key => /^\d+$/.test(key));
+    if (numericKeys.length > 0) {
+      fixed = true;
+      numericKeys.forEach(key => walk((raw as Record<string, unknown>)[key]));
+      return { cleaned, fixed };
+    }
+  }
+  return { cleaned: [], fixed: raw != null };
+};
+
 type UserSession = {
   username: string;
   tier: UserTier;
@@ -1164,6 +1291,14 @@ type LegacyInventoryPrompt = {
   reason: 'missing-status-track' | 'missing-counts';
 };
 
+type LegacyKnownNpcPrompt = {
+  state: GameState;
+};
+
+type StatusRebuildPrompt = {
+  step: 'choose' | 'llm-confirm';
+};
+
 type StageStatus = 'idle' | 'pending' | 'running' | 'done' | 'error' | 'skipped';
 
 const App: React.FC = () => {
@@ -1185,8 +1320,11 @@ const App: React.FC = () => {
   const [compressionStatus, setCompressionStatus] = useState<string | null>(null);
   const [legacyCompressionPrompt, setLegacyCompressionPrompt] = useState<LegacyCompressionPrompt | null>(null);
   const [legacyInventoryPrompt, setLegacyInventoryPrompt] = useState<LegacyInventoryPrompt | null>(null);
+  const [legacyKnownNpcPrompt, setLegacyKnownNpcPrompt] = useState<LegacyKnownNpcPrompt | null>(null);
   const [isInventoryRefreshing, setIsInventoryRefreshing] = useState(false);
   const [inventoryRefreshError, setInventoryRefreshError] = useState<string | null>(null);
+  const [isStatusRebuilding, setIsStatusRebuilding] = useState(false);
+  const [statusRebuildPrompt, setStatusRebuildPrompt] = useState<StatusRebuildPrompt | null>(null);
   const [narrationStage, setNarrationStage] = useState<StageStatus>('idle');
   const [statusStage, setStatusStage] = useState<StageStatus>('idle');
   const [imageStage, setImageStage] = useState<StageStatus>('idle');
@@ -1282,6 +1420,7 @@ const App: React.FC = () => {
   const canManualSave = isAdmin || normalKeyUnlocked;
   const canAdjustImageFrequency = isAdmin || normalKeyUnlocked;
   const arenaTokenUsage = normalizeTokenUsage(arenaState.tokenUsage);
+  const statusRebuildNarrationCount = countNarrations(gameState.history);
   const textScale = Number.isFinite(gameState.settings.textScale)
     ? clampNumber(gameState.settings.textScale as number, 0.8, 5)
     : 1;
@@ -1305,8 +1444,9 @@ const App: React.FC = () => {
   const canPlay = isGuest || isAdmin || isModelConfigured;
   const compressionLocked = isCompressing || !!compressionError || !!legacyCompressionPrompt || isManualCompressionConfirmOpen;
   const inventoryLocked = isInventoryRefreshing || !!legacyInventoryPrompt;
-  const canReroll = !!lastAction && !gameState.isThinking && !compressionLocked && !inventoryLocked;
-  const inputLocked = gameState.isThinking || compressionLocked || inventoryLocked;
+  const statusRebuildLocked = isStatusRebuilding || !!statusRebuildPrompt;
+  const canReroll = !!lastAction && !gameState.isThinking && !compressionLocked && !inventoryLocked && !statusRebuildLocked;
+  const inputLocked = gameState.isThinking || compressionLocked || inventoryLocked || statusRebuildLocked;
   const progressVisible = gameState.isThinking || narrationStage === 'error' || statusStage === 'error' || imageStage === 'error';
   const progressStages = progressVisible ? [
     {
@@ -1759,13 +1899,13 @@ const App: React.FC = () => {
     if (saved) {
       const parsed = JSON.parse(saved);
       const parsedPlayer = parsed?.player ? normalizeActor(parsed.player) : null;
-      const parsedKnownNpcs = Array.isArray(parsed?.knownNpcs)
-        ? parsed.knownNpcs.map((npc: Actor) => normalizeActor(npc))
-        : [];
+      const knownNpcNormalization = normalizeKnownNpcList(parsed?.knownNpcs);
+      const parsedKnownNpcs = knownNpcNormalization.cleaned;
       const rawStatusTrack = parsed?.status_track ?? parsed?.statusTrack;
       const initialStatusPlayer = rawStatusTrack?.initial_status?.player
         ? normalizeActor(rawStatusTrack.initial_status.player)
         : null;
+      const statusKnownNpcNormalization = normalizeKnownNpcList(rawStatusTrack?.initial_status?.knownNpcs);
       const normalizedStatusTrack: StatusTrack | null = initialStatusPlayer
         ? {
           initial_status: {
@@ -1773,9 +1913,7 @@ const App: React.FC = () => {
             quests: Array.isArray(rawStatusTrack.initial_status?.quests)
               ? rawStatusTrack.initial_status.quests
               : [],
-            knownNpcs: Array.isArray(rawStatusTrack.initial_status?.knownNpcs)
-              ? rawStatusTrack.initial_status.knownNpcs.map((npc: Actor) => normalizeActor(npc))
-              : [],
+            knownNpcs: statusKnownNpcNormalization.cleaned,
             location: typeof rawStatusTrack.initial_status?.location === 'string'
               ? rawStatusTrack.initial_status.location
               : parsed?.location || gameState.location,
@@ -1791,6 +1929,7 @@ const App: React.FC = () => {
             : []
         }
         : null;
+      const needsKnownNpcCleanup = knownNpcNormalization.fixed || statusKnownNpcNormalization.fixed;
       const legacyExtracted = Array.isArray(parsed?.history)
         ? extractLegacyCompressedMemory(parsed.history as HistoryEntry[])
         : { memoryText: '', cleanedHistory: parsed?.history || [] };
@@ -1864,6 +2003,10 @@ const App: React.FC = () => {
         setLastAction(null);
       }
       setView('playing');
+
+      if (needsKnownNpcCleanup) {
+        setLegacyKnownNpcPrompt({ state: nextState });
+      }
 
       if (!normalizedStatusTrack) {
         setLegacyInventoryPrompt({ state: nextState, reason: 'missing-status-track' });
@@ -3272,10 +3415,185 @@ const App: React.FC = () => {
     }
   };
 
+  const handleLegacyKnownNpcCleanupNow = () => {
+    if (!legacyKnownNpcPrompt) return;
+    if (currentUser) {
+      try {
+        localStorage.setItem(getSaveKey(currentUser.username), JSON.stringify(legacyKnownNpcPrompt.state));
+      } catch {
+        // Ignore storage errors.
+      }
+    }
+    setLegacyKnownNpcPrompt(null);
+    setSystemError(isZh ? '已清理旧存档的 NPC 列表。' : 'Save cleanup applied to known NPCs.');
+  };
+
+  const handleLegacyKnownNpcCleanupLater = () => {
+    if (!legacyKnownNpcPrompt) return;
+    setLegacyKnownNpcPrompt(null);
+  };
+
   const cacheRawOutput = (err: unknown) => {
     const raw = getRawOutputFromError(err);
     if (!raw) return;
     setGameState(prev => ({ ...prev, rawOutputCache: raw }));
+  };
+
+  const runStatusRebuild = async (mode: 'track' | 'llm') => {
+    if (!gameState.status_track || !gameState.player) {
+      setSystemError(isZh ? '无法重建状态：缺少状态轨迹。' : 'Status rebuild unavailable: missing status track.');
+      return;
+    }
+    if (mode === 'llm' && isNormal && !isModelConfigured) {
+      setIsSettingsOpen(true);
+      return;
+    }
+    setIsStatusRebuilding(true);
+    setStatusManagerError(null);
+    try {
+      let nextTrack = gameState.status_track;
+      let tokenDelta = normalizeTokenUsage(null);
+      if (mode === 'llm') {
+        const narrations = getNarrationEntries(gameState.history);
+        const total = narrations.length;
+        if (total === 0) {
+          setSystemError(isZh ? '没有可重建的叙事回合。' : 'No narration turns available for rebuild.');
+        } else {
+          const baseOptions = {
+            tier: activeTier,
+            apiKey: currentUser?.textApiKey,
+            proxyApiKey: currentUser?.textProxyKey,
+            proxyBaseUrl: textProxyBaseUrl,
+            useProxy,
+            textModel: effectiveTextModel,
+            provider: textProvider
+          };
+          let player = normalizeActor(nextTrack.initial_status.player);
+          let quests = Array.isArray(nextTrack.initial_status.quests) ? nextTrack.initial_status.quests : [];
+          let knownNpcs: Actor[] = normalizeKnownNpcList(nextTrack.initial_status.knownNpcs).cleaned.map(withCompanionFlag);
+          let location = typeof nextTrack.initial_status.location === 'string'
+            ? nextTrack.initial_status.location
+            : gameState.location;
+          let currentYear = typeof nextTrack.initial_status.currentYear === 'number'
+            ? Math.trunc(nextTrack.initial_status.currentYear)
+            : gameState.currentYear;
+          let currentTime = typeof nextTrack.initial_status.currentTime === 'string'
+            ? nextTrack.initial_status.currentTime
+            : gameState.currentTime;
+          const rebuiltChanges: StatusChangeEntry[] = [];
+          for (let index = 0; index < narrations.length; index += 1) {
+            const narrationIndex = index + 1;
+            setSystemError(isZh
+              ? `状态重建中 (${narrationIndex}/${total})...`
+              : `Rebuilding status (${narrationIndex}/${total})...`);
+            const statusKnownNpcs = knownNpcs.map(({ avatarUrl, ...rest }) => rest);
+            const statusResult = await getStatusUpdate(
+              player,
+              quests,
+              statusKnownNpcs,
+              currentYear,
+              location,
+              currentTime,
+              narrations[index].text,
+              gameState.language,
+              baseOptions
+            );
+            tokenDelta = mergeTokenUsage(tokenDelta, statusResult.tokenUsage);
+            const update = statusResult.update || null;
+            rebuiltChanges.push({
+              narration_index: narrationIndex,
+              ...(update && typeof update === 'object' ? update : {})
+            });
+            if (update?.playerChange) {
+              player = applyPlayerChange(player, update.playerChange);
+            }
+            if (update?.questUpdates) {
+              const result = applyQuestUpdates(quests, update.questUpdates);
+              quests = result.merged;
+            }
+            let nextKnownNpcs: Actor[] = knownNpcs.map(withCompanionFlag);
+            const newNpcList = Array.isArray(update?.newNpc)
+              ? update.newNpc
+              : (update?.newNpc ? [update.newNpc] : []);
+            newNpcList.forEach(npc => {
+              if (npc) {
+                nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
+              }
+            });
+            nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, update?.companionUpdates);
+            knownNpcs = nextKnownNpcs.map(npc => normalizeActor(npc));
+            if (typeof update?.location === 'string' && update.location.trim()) {
+              location = update.location.trim();
+            }
+            if (typeof update?.currentYear === 'number' && Number.isFinite(update.currentYear)) {
+              currentYear = Math.trunc(update.currentYear);
+            }
+            if (typeof update?.currentTime === 'string' && update.currentTime.trim()) {
+              currentTime = update.currentTime.trim();
+            }
+          }
+          nextTrack = {
+            ...nextTrack,
+            status_change: rebuiltChanges
+          };
+        }
+      }
+      const rebuilt = rebuildStatusFromTrack(nextTrack);
+      setGameState(prev => ({
+        ...prev,
+        player: rebuilt.player,
+        quests: rebuilt.quests,
+        knownNpcs: rebuilt.knownNpcs,
+        location: rebuilt.location,
+        currentYear: rebuilt.currentYear,
+        currentTime: rebuilt.currentTime,
+        status_track: nextTrack,
+        tokenUsage: mode === 'llm' ? mergeTokenUsage(prev.tokenUsage, tokenDelta) : prev.tokenUsage
+      }));
+      setSystemError(isZh ? '状态重建完成。' : 'Status rebuild complete.');
+    } catch (err) {
+      cacheRawOutput(err);
+      const detail = err instanceof Error ? err.message : String(err);
+      setSystemError(isZh ? `状态重建失败：${detail}` : `Status rebuild failed: ${detail}`);
+    } finally {
+      setIsStatusRebuilding(false);
+    }
+  };
+
+  const handleStatusRebuildRequest = () => {
+    if (!gameState.status_track || !gameState.player) {
+      setSystemError(isZh ? '无法重建状态：缺少状态轨迹。' : 'Status rebuild unavailable: missing status track.');
+      return;
+    }
+    if (isStatusRebuilding) return;
+    setStatusRebuildPrompt({ step: 'choose' });
+  };
+
+  const handleStatusRebuildQuick = () => {
+    setStatusRebuildPrompt(null);
+    runStatusRebuild('track');
+  };
+
+  const handleStatusRebuildLlmPrompt = () => {
+    setStatusRebuildPrompt({ step: 'llm-confirm' });
+  };
+
+  const handleStatusRebuildLlmContinue = () => {
+    setStatusRebuildPrompt(null);
+    runStatusRebuild('llm');
+  };
+
+  const handleStatusRebuildLlmSettings = () => {
+    setStatusRebuildPrompt(null);
+    setIsSettingsOpen(true);
+  };
+
+  const handleStatusRebuildClose = () => {
+    setStatusRebuildPrompt(null);
+  };
+
+  const handleStatusRebuildBack = () => {
+    setStatusRebuildPrompt({ step: 'choose' });
   };
 
   const handleCopyRawOutput = async () => {
@@ -4419,6 +4737,119 @@ const App: React.FC = () => {
       </div>
     </div>
   );
+  const legacyKnownNpcModal = legacyKnownNpcPrompt && (
+    <div className="fixed top-0 left-0 w-full h-full z-[3200] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-md w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 bg-black">
+        <h3 className="text-xl font-bold uppercase mb-3">
+          {isZh ? '存档清理提示' : 'Save Cleanup'}
+        </h3>
+        <div className="text-sm opacity-80 space-y-2">
+          <div>
+            {isZh
+              ? '检测到旧存档的已知 NPC 列表结构异常，已在本次加载中自动修复。'
+              : 'Malformed known NPC entries were detected and cleaned for this session.'}
+          </div>
+          <div>
+            {isZh
+              ? '是否覆盖存档以永久保存修复结果？'
+              : 'Overwrite the save to apply the cleanup permanently?'}
+          </div>
+        </div>
+        <div className="mt-4 space-y-2">
+          <button
+            onClick={handleLegacyKnownNpcCleanupNow}
+            className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+          >
+            {isZh ? '立即覆盖' : 'Overwrite now'}
+          </button>
+          <button
+            onClick={handleLegacyKnownNpcCleanupLater}
+            className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+          >
+            {isZh ? '稍后再说' : 'Not now'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+  const statusRebuildModal = statusRebuildPrompt && (
+    <div className="fixed top-0 left-0 w-full h-full z-[3200] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-md w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 bg-black">
+        {statusRebuildPrompt.step === 'choose' ? (
+          <>
+            <h3 className="text-xl font-bold uppercase mb-3">
+              {isZh ? '状态重建' : 'Status Rebuild'}
+            </h3>
+            <div className="text-sm opacity-80 space-y-2">
+              <div>
+                {isZh
+                  ? '请选择重建方式：无 LLM 或使用 LLM 重新计算每回合状态变更。'
+                  : 'Choose a rebuild mode: no LLM calls, or recalculate each narration with the LLM.'}
+              </div>
+            </div>
+            <div className="mt-4 space-y-2">
+              <button
+                onClick={handleStatusRebuildQuick}
+                className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+              >
+                {isZh ? '无 LLM 重建' : 'Rebuild (no LLM)'}
+              </button>
+              <button
+                onClick={handleStatusRebuildLlmPrompt}
+                className="w-full border border-[#1aff1a]/60 py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+              >
+                {isZh ? '使用 LLM 重建' : 'Rebuild with LLM'}
+              </button>
+              <button
+                onClick={handleStatusRebuildClose}
+                className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+              >
+                {isZh ? '取消' : 'Cancel'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <h3 className="text-xl font-bold uppercase mb-3">
+              {isZh ? 'LLM 重建提示' : 'LLM Rebuild Warning'}
+            </h3>
+            <div className="text-sm opacity-80 space-y-2">
+              <div>
+                {isZh
+                  ? `该操作将根据叙事回合调用 LLM ${statusRebuildNarrationCount} 次，建议先切换到更便宜的文本模型。`
+                  : `This will call the LLM ${statusRebuildNarrationCount} times (one per narration turn). Consider switching to a cheaper text model first.`}
+              </div>
+              <div>
+                {isZh
+                  ? '可进入设置修改文本模型名称或 API 配置。'
+                  : 'You can open settings to adjust the text model or API configuration.'}
+              </div>
+            </div>
+            <div className="mt-4 space-y-2">
+              <button
+                onClick={handleStatusRebuildLlmContinue}
+                className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+              >
+                {isZh ? '继续重建' : 'Continue'}
+              </button>
+              <button
+                onClick={handleStatusRebuildLlmSettings}
+                className="w-full border border-[#1aff1a]/60 py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+              >
+                {isZh ? '打开设置' : 'Open settings'}
+              </button>
+              <button
+                onClick={handleStatusRebuildBack}
+                className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+              >
+                {isZh ? '返回' : 'Back'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
   const tipModal = isTipOpen && (
     <div className="fixed top-0 left-0 w-full h-full z-[3000] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
       <div className="max-w-xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-10 bg-black">
@@ -5172,6 +5603,8 @@ const App: React.FC = () => {
       {arenaPromptModal}
       {legacyCompressionModal}
       {legacyInventoryModal}
+      {legacyKnownNpcModal}
+      {statusRebuildModal}
       {manualCompressionModal}
       {/* Main Terminal Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-black/40 h-full overflow-hidden">
@@ -5306,6 +5739,9 @@ const App: React.FC = () => {
             showSave={canManualSave}
             onRefreshInventory={handleInventoryRefresh}
             inventoryRefreshing={isInventoryRefreshing}
+            onRebuildStatus={handleStatusRebuildRequest}
+            statusRebuilding={isStatusRebuilding}
+            canRebuildStatus={!!gameState.status_track && !gameState.isThinking}
             onClose={() => setIsSidebarOpen(false)}
             panelScale={statPanelScale}
           />

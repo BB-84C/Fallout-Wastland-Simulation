@@ -508,6 +508,14 @@ const jsonNarratorSchema: JsonSchema = {
   additionalProperties: false
 };
 
+const jsonNarratorSchemaDoubao: JsonSchema = {
+  ...jsonNarratorSchema,
+  properties: {
+    ...jsonNarratorSchema.properties,
+    ruleViolation: { type: "string" }
+  }
+};
+
 const jsonArenaSchema: JsonSchema = {
   type: "object",
   properties: {
@@ -929,9 +937,13 @@ function safeJsonParse(text: string): any {
 const parseNarrator = (raw: any, fallbackPrompt: string): NarratorResponse => {
   const storyText = typeof raw?.storyText === "string" ? raw.storyText : "";
   const timePassedMinutes = typeof raw?.timePassedMinutes === "number" ? raw.timePassedMinutes : 0;
+  const ruleViolationRaw = typeof raw?.ruleViolation === "string" ? raw.ruleViolation.trim() : "";
+  const normalizedRuleViolation = ruleViolationRaw && ruleViolationRaw.toLowerCase() !== "null"
+    ? ruleViolationRaw
+    : null;
   return {
     storyText,
-    ruleViolation: raw?.ruleViolation ?? null,
+    ruleViolation: normalizedRuleViolation,
     timePassedMinutes,
     imagePrompt: raw?.imagePrompt || fallbackPrompt
   };
@@ -1441,11 +1453,12 @@ export async function getNarrativeResponse(
   const system = buildNarratorSystem(targetLang, year, location, options?.userSystemPrompt);
   const prompt = buildNarratorPrompt(player, history, userInput, year, location, quests, knownNpcs);
 
+  const narratorSchema = provider === "doubao" ? jsonNarratorSchemaDoubao : jsonNarratorSchema;
   const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonNarratorSchema, "narrator")
+    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, narratorSchema, "narrator")
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonNarratorSchema)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonNarratorSchema, "narrator");
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, narratorSchema)
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, narratorSchema, "narrator");
 
   const parsed = safeJsonParse(result.content);
   const response = parseNarrator(parsed, userInput);
