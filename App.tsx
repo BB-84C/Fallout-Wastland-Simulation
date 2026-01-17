@@ -501,9 +501,7 @@ const rebuildStatusFromTrack = (track: StatusTrack) => {
       quests = result.merged;
     }
     let nextKnownNpcs: Actor[] = knownNpcs;
-    const newNpcList = Array.isArray(change.newNpc)
-      ? change.newNpc
-      : (change.newNpc ? [change.newNpc] : []);
+    const newNpcList = normalizeNewNpcList(change.newNpc);
     newNpcList.forEach(npc => {
       if (npc) {
         nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
@@ -1140,6 +1138,7 @@ const normalizeActor = (actor: Actor): Actor => {
   const nextSpecial = normalizeSpecial(actor.special);
   return {
     ...actor,
+    appearance: typeof actor.appearance === 'string' ? actor.appearance.trim() : '',
     special: nextSpecial,
     skills: normalizeSkills(actor.skills, nextSpecial, true),
     perks: Array.isArray(actor.perks) ? actor.perks : [],
@@ -1153,6 +1152,7 @@ const mergeActor = (base: Actor, update: Actor): Actor => {
   return {
     ...base,
     ...update,
+    appearance: typeof update.appearance === 'string' ? update.appearance.trim() : base.appearance,
     special: nextSpecial,
     skills: update.skills ? { ...base.skills, ...updateSkills } : base.skills,
     perks: Array.isArray(update.perks) ? update.perks : base.perks,
@@ -1261,6 +1261,23 @@ const normalizeKnownNpcList = (raw: unknown) => {
   return { cleaned: [], fixed: raw != null };
 };
 
+const normalizeNewNpcList = (value: unknown) => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value as Actor[];
+  if (typeof value === 'object') {
+    if ('name' in value && typeof (value as Actor).name === 'string') {
+      return [value as Actor];
+    }
+    const entries = Object.entries(value as Record<string, unknown>);
+    const numeric = entries
+      .filter(([key, entry]) => /^\d+$/.test(key) && entry && typeof entry === 'object');
+    if (numeric.length > 0) {
+      return numeric.map(([, entry]) => entry as Actor);
+    }
+  }
+  return [];
+};
+
 type UserSession = {
   username: string;
   tier: UserTier;
@@ -1323,6 +1340,7 @@ const App: React.FC = () => {
   const [legacyKnownNpcPrompt, setLegacyKnownNpcPrompt] = useState<LegacyKnownNpcPrompt | null>(null);
   const [isInventoryRefreshing, setIsInventoryRefreshing] = useState(false);
   const [inventoryRefreshError, setInventoryRefreshError] = useState<string | null>(null);
+  const [companionAvatarPending, setCompanionAvatarPending] = useState<Record<string, boolean>>({});
   const [isStatusRebuilding, setIsStatusRebuilding] = useState(false);
   const [statusRebuildPrompt, setStatusRebuildPrompt] = useState<StatusRebuildPrompt | null>(null);
   const [narrationStage, setNarrationStage] = useState<StageStatus>('idle');
@@ -1421,6 +1439,11 @@ const App: React.FC = () => {
   const canAdjustImageFrequency = isAdmin || normalKeyUnlocked;
   const arenaTokenUsage = normalizeTokenUsage(arenaState.tokenUsage);
   const statusRebuildNarrationCount = countNarrations(gameState.history);
+  const canRegenerateCompanionAvatar = imagesEnabled
+    && !isGuest
+    && imageProvider !== 'claude'
+    && !!effectiveImageModel
+    && (isAdmin || hasImageAuthKey);
   const textScale = Number.isFinite(gameState.settings.textScale)
     ? clampNumber(gameState.settings.textScale as number, 0.8, 5)
     : 1;
@@ -2968,9 +2991,7 @@ const App: React.FC = () => {
         ...npc,
         ifCompanion: npc.ifCompanion ?? false
       }));
-      const newNpcList = Array.isArray(statusChange?.newNpc)
-        ? statusChange?.newNpc
-        : (statusChange?.newNpc ? [statusChange.newNpc] : []);
+      const newNpcList = normalizeNewNpcList(statusChange?.newNpc);
       newNpcList.forEach(npc => {
         if (npc) {
           nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
@@ -3433,6 +3454,61 @@ const App: React.FC = () => {
     setLegacyKnownNpcPrompt(null);
   };
 
+  const handleRegenerateCompanionAvatar = async (npcName: string) => {
+    const target = gameState.knownNpcs.find(npc => npc.ifCompanion && npc.name === npcName);
+    if (!target) return;
+    if (!imagesEnabled) {
+      setSystemError(isZh ? '已关闭头像生成。请在设置中开启图像。' : 'Image generation is disabled. Enable it in settings.');
+      return;
+    }
+    if (imageProvider === 'claude') {
+      setSystemError(isZh ? 'Claude 不支持图像生成。' : 'Claude image generation is not supported.');
+      return;
+    }
+    if (!effectiveImageModel) {
+      setSystemError(isZh ? '未设置图像模型。请先在设置中选择。' : 'Missing image model. Select one in settings.');
+      setIsSettingsOpen(true);
+      return;
+    }
+    if (!isAdmin && !hasImageAuthKey) {
+      setSystemError(isZh ? '缺少图像 API Key。请在设置中配置。' : 'Missing image API key. Configure it in settings.');
+      setIsSettingsOpen(true);
+      return;
+    }
+    setCompanionAvatarPending(prev => ({ ...prev, [npcName]: true }));
+    try {
+      const result = await generateCompanionAvatar(target, {
+        tier: activeTier,
+        apiKey: currentUser?.imageApiKey,
+        proxyApiKey: currentUser?.imageProxyKey,
+        proxyBaseUrl: imageProxyBaseUrl,
+        useProxy,
+        imageModel: effectiveImageModel,
+        provider: imageProvider
+      });
+      if (result?.url) {
+        setGameState(prev => ({
+          ...prev,
+          knownNpcs: prev.knownNpcs.map(npc =>
+            npc.name === npcName ? { ...npc, avatarUrl: result.url } : npc
+          )
+        }));
+        return;
+      }
+      const errorMessage = result?.error || (isZh ? '头像生成失败。' : 'Avatar generation failed.');
+      setSystemError(errorMessage);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setSystemError(isZh ? `头像生成失败：${detail}` : `Avatar generation failed: ${detail}`);
+    } finally {
+      setCompanionAvatarPending(prev => {
+        const next = { ...prev };
+        delete next[npcName];
+        return next;
+      });
+    }
+  };
+
   const cacheRawOutput = (err: unknown) => {
     const raw = getRawOutputFromError(err);
     if (!raw) return;
@@ -3512,9 +3588,7 @@ const App: React.FC = () => {
               quests = result.merged;
             }
             let nextKnownNpcs: Actor[] = knownNpcs.map(withCompanionFlag);
-            const newNpcList = Array.isArray(update?.newNpc)
-              ? update.newNpc
-              : (update?.newNpc ? [update.newNpc] : []);
+            const newNpcList = normalizeNewNpcList(update?.newNpc);
             newNpcList.forEach(npc => {
               if (npc) {
                 nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
@@ -5742,6 +5816,9 @@ const App: React.FC = () => {
             onRebuildStatus={handleStatusRebuildRequest}
             statusRebuilding={isStatusRebuilding}
             canRebuildStatus={!!gameState.status_track && !gameState.isThinking}
+            onRegenerateCompanionAvatar={handleRegenerateCompanionAvatar}
+            companionAvatarPending={companionAvatarPending}
+            canRegenerateCompanionAvatar={canRegenerateCompanionAvatar}
             onClose={() => setIsSidebarOpen(false)}
             panelScale={statPanelScale}
           />

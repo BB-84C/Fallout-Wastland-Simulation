@@ -104,6 +104,7 @@ export interface Actor {
   age: number;
   gender: string;
   faction: string;
+  appearance?: string;
   special: SpecialSet;
   skills: SkillSet;
   perks: Perk[];

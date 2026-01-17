@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Actor, Language, Quest, SpecialAttr, Skill, TokenUsage } from '../types';
 import { localizeLocation } from '../localization';
 import type { ApRecoveryConfig } from '../tierSettings';
@@ -27,6 +27,9 @@ interface StatBarProps {
   onRebuildStatus: () => void;
   statusRebuilding: boolean;
   canRebuildStatus: boolean;
+  onRegenerateCompanionAvatar: (name: string) => void;
+  companionAvatarPending: Record<string, boolean>;
+  canRegenerateCompanionAvatar: boolean;
   onClose: () => void;
   panelScale?: number;
 }
@@ -112,13 +115,27 @@ const StatBar: React.FC<StatBarProps> = ({
   onRebuildStatus,
   statusRebuilding,
   canRebuildStatus,
+  onRegenerateCompanionAvatar,
+  companionAvatarPending,
+  canRegenerateCompanionAvatar,
   onClose,
   panelScale
 }) => {
   const [activeTab, setActiveTab] = useState<Tab>('STAT');
   const [expandedCompanion, setExpandedCompanion] = useState<string | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [openTooltipId, setOpenTooltipId] = useState<string | null>(null);
   const isInventoryTab = activeTab === 'INV';
+
+  useEffect(() => {
+    const handlePointerDown = () => setOpenTooltipId(null);
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, []);
+
+  useEffect(() => {
+    setOpenTooltipId(null);
+  }, [activeTab]);
 
   const dateStr = new Date(time).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
     month: 'short',
@@ -250,6 +267,7 @@ const StatBar: React.FC<StatBarProps> = ({
             )}
             {companions.map((companion) => {
               const isExpanded = expandedCompanion === companion.name;
+              const isRegenerating = !!companionAvatarPending[companion.name];
               return (
                 <div key={companion.name} className="border border-[#1aff1a]/20 p-2 bg-[#1aff1a]/5">
                   <div className="flex gap-3">
@@ -282,6 +300,16 @@ const StatBar: React.FC<StatBarProps> = ({
                       <div className="text-[0.5625rem] uppercase opacity-40 mt-2">
                         {language === 'en' ? 'Tap avatar for dossier' : '点击头像展开档案'}
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => onRegenerateCompanionAvatar(companion.name)}
+                        disabled={!canRegenerateCompanionAvatar || isRegenerating}
+                        className="mt-2 text-[0.5625rem] border border-[#1aff1a]/40 px-2 py-1 uppercase hover:bg-[#1aff1a]/20 transition-colors disabled:opacity-40"
+                      >
+                        {isRegenerating
+                          ? (language === 'en' ? 'Rebuilding...' : '生成中...')
+                          : (language === 'en' ? 'Regen Avatar' : '重生成像')}
+                      </button>
                     </div>
                   </div>
                   {isExpanded && (
@@ -289,6 +317,12 @@ const StatBar: React.FC<StatBarProps> = ({
                       <div>
                         <div className="text-[0.625rem] uppercase opacity-60 mb-1">{language === 'en' ? 'Lore' : '背景'}</div>
                         <div className="opacity-80 leading-tight">{companion.lore}</div>
+                      </div>
+                      <div>
+                        <div className="text-[0.625rem] uppercase opacity-60 mb-1">{language === 'en' ? 'Appearance' : '外貌'}</div>
+                        <div className="opacity-80 leading-tight">
+                          {companion.appearance ? companion.appearance : (language === 'en' ? 'Unknown' : '未知')}
+                        </div>
                       </div>
                       <div>
                         <div className="text-[0.625rem] uppercase opacity-60 mb-1">SPECIAL</div>
@@ -333,14 +367,34 @@ const StatBar: React.FC<StatBarProps> = ({
                           <div className="opacity-40 italic">{language === 'en' ? 'Empty' : '空'}</div>
                         ) : (
                           <div className="space-y-1">
-                            {companion.inventory.map((item, idx) => (
-                              <div key={`${item.name}-${idx}`} className="text-[0.625rem]">
-                                <span className="font-bold">
-                                  {item.name} {item.count > 1 ? `x${item.count}` : ''}
-                                </span>
-                                <span className="opacity-70"> · {item.type} · {(item.weight * item.count).toFixed(1)} lb</span>
-                              </div>
-                            ))}
+                            {companion.inventory.map((item, idx) => {
+                              const tooltipId = `comp-${companion.name}-${idx}`;
+                              const tooltipOpen = openTooltipId === tooltipId;
+                              const tooltipVisibility = tooltipOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100';
+                              return (
+                                <div
+                                  key={`${item.name}-${idx}`}
+                                  className="text-[0.625rem] relative group cursor-pointer"
+                                  onPointerDown={(event) => event.stopPropagation()}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setOpenTooltipId(prev => (prev === tooltipId ? null : tooltipId));
+                                  }}
+                                >
+                                  <span className="font-bold">
+                                    {item.name} {item.count > 1 ? `x${item.count}` : ''}
+                                  </span>
+                                  <span className="opacity-70"> · {item.type} · {(item.weight * item.count).toFixed(1)} lb</span>
+                                  {item.description && (
+                                    <div
+                                      className={`pointer-events-none absolute left-0 top-full mt-1 w-56 rounded border border-[#1aff1a]/70 bg-black px-2 py-1 text-[0.5625rem] text-[#1aff1a] shadow-[0_0_14px_rgba(26,255,26,0.25)] transition-opacity duration-150 z-50 ${tooltipVisibility}`}
+                                    >
+                                      <div className="opacity-80">{item.description}</div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -390,19 +444,39 @@ const StatBar: React.FC<StatBarProps> = ({
               <span>{language === 'en' ? 'Weight' : '重量'}</span>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-              {player.inventory.map((item, idx) => (
-                <div key={idx} className="text-xs p-1.5 border-b border-[#1aff1a]/5 flex justify-between hover:bg-[#1aff1a]/5 group">
-                  <div className="flex flex-col truncate pr-2">
-                    <span className="font-bold group-hover:text-white transition-colors">
-                      {item.name} {item.count > 1 ? `x${item.count}` : ''}
+              {player.inventory.map((item, idx) => {
+                const tooltipId = `player-${idx}`;
+                const tooltipOpen = openTooltipId === tooltipId;
+                const tooltipVisibility = tooltipOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100';
+                return (
+                  <div
+                    key={idx}
+                    className="text-xs p-1.5 border-b border-[#1aff1a]/5 flex justify-between hover:bg-[#1aff1a]/5 group relative cursor-pointer"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setOpenTooltipId(prev => (prev === tooltipId ? null : tooltipId));
+                    }}
+                  >
+                    <div className="flex flex-col truncate pr-2">
+                      <span className="font-bold group-hover:text-white transition-colors">
+                        {item.name} {item.count > 1 ? `x${item.count}` : ''}
+                      </span>
+                      <span className="text-[0.5625rem] opacity-50 truncate">{item.type}</span>
+                    </div>
+                    <span className="opacity-40 whitespace-nowrap self-center">
+                      {(item.weight * item.count).toFixed(1)} lb
                     </span>
-                    <span className="text-[0.5625rem] opacity-50 truncate">{item.type}</span>
+                    {item.description && (
+                      <div
+                        className={`pointer-events-none absolute left-0 top-full mt-1 w-64 rounded border border-[#1aff1a]/70 bg-black px-2 py-1 text-[0.5625rem] text-[#1aff1a] shadow-[0_0_14px_rgba(26,255,26,0.25)] transition-opacity duration-150 z-50 ${tooltipVisibility}`}
+                      >
+                        <div className="opacity-80">{item.description}</div>
+                      </div>
+                    )}
                   </div>
-                  <span className="opacity-40 whitespace-nowrap self-center">
-                    {(item.weight * item.count).toFixed(1)} lb
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <div className="pt-4 text-[0.625rem] opacity-50 text-right">
                {language === 'en' ? 'Total Weight: ' : '总重: '}

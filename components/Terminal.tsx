@@ -1,5 +1,7 @@
 
 import React, { useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { HistoryEntry } from '../types';
 
 interface TerminalProps {
@@ -44,6 +46,61 @@ const Terminal: React.FC<TerminalProps> = ({
   const scrollRef = useRef<HTMLDivElement>(null);
   const displayHistory = history.filter(entry => entry.meta !== 'memory');
   const scrollClass = forceScrollbar ? 'overflow-y-scroll' : 'overflow-y-auto';
+  const markdownComponents = {
+    p: (props: React.HTMLAttributes<HTMLParagraphElement>) => (
+      <p className="mb-3 last:mb-0" {...props} />
+    ),
+    strong: (props: React.HTMLAttributes<HTMLElement>) => (
+      <strong className="text-[#1aff1a]" {...props} />
+    ),
+    em: (props: React.HTMLAttributes<HTMLElement>) => (
+      <em className="text-[#c9ffc9]" {...props} />
+    ),
+    ul: (props: React.HTMLAttributes<HTMLUListElement>) => (
+      <ul className="list-disc list-inside space-y-1 ml-2" {...props} />
+    ),
+    ol: (props: React.OlHTMLAttributes<HTMLOListElement>) => (
+      <ol className="list-decimal list-inside space-y-1 ml-2" {...props} />
+    ),
+    li: (props: React.LiHTMLAttributes<HTMLLIElement>) => (
+      <li className="leading-relaxed" {...props} />
+    ),
+    a: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-[#1aff1a] underline underline-offset-2 hover:text-white transition-colors"
+        {...props}
+      >
+        {children}
+      </a>
+    ),
+    code: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
+      <code
+        className="px-1 py-0.5 rounded border border-[#1aff1a]/40 bg-[#1aff1a]/10 text-[0.9em]"
+        {...props}
+      >
+        {children}
+      </code>
+    ),
+    pre: ({ children, ...props }: React.HTMLAttributes<HTMLPreElement>) => (
+      <pre
+        className="mt-2 mb-3 p-3 border border-[#1aff1a]/40 bg-black/60 overflow-x-auto text-sm"
+        {...props}
+      >
+        {children}
+      </pre>
+    ),
+    blockquote: ({ children, ...props }: React.BlockquoteHTMLAttributes<HTMLQuoteElement>) => (
+      <blockquote className="border-l-2 border-[#1aff1a]/40 pl-3 text-[#c9ffc9]" {...props}>
+        {children}
+      </blockquote>
+    ),
+    hr: (props: React.HTMLAttributes<HTMLHRElement>) => (
+      <hr className="my-3 border-[#1aff1a]/30" {...props} />
+    )
+  };
   const lastPlayerIndex = (() => {
     for (let i = displayHistory.length - 1; i >= 0; i -= 1) {
       if (displayHistory[i].sender === 'player') return i;
@@ -93,7 +150,13 @@ const Terminal: React.FC<TerminalProps> = ({
               {msg.sender === 'player' ? '> USER LOG' : '> SYSTEM NARRATION'}
             </div>
             <div className="text-xl leading-relaxed whitespace-pre-wrap">
-              {msg.text}
+              {msg.sender === 'narrator' ? (
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  {msg.text}
+                </ReactMarkdown>
+              ) : (
+                msg.text
+              )}
             </div>
           </div>
           {msg.imageUrl && (

@@ -9,6 +9,7 @@ const actorSchema = {
     age: { type: Type.NUMBER },
     gender: { type: Type.STRING },
     faction: { type: Type.STRING },
+    appearance: { type: Type.STRING },
     special: {
       type: Type.OBJECT,
       properties: {
@@ -61,7 +62,7 @@ const actorSchema = {
     karma: { type: Type.NUMBER },
     caps: { type: Type.NUMBER }
   },
-  required: ["name", "age", "faction", "special", "skills", "lore", "health", "maxHealth", "caps"]
+  required: ["name", "age", "faction", "appearance", "special", "skills", "lore", "health", "maxHealth", "caps"]
 };
 
 const playerCreationSchema = {
@@ -493,9 +494,9 @@ export async function createPlayerCharacter(
           5. PERK SYSTEM: Assign 1-2 starting perks. Each perk MUST include name, rank, and a non-empty description.
           6. COMPANIONS: Always include a 'companions' array (empty if none). If the user specifies existing companions, include full NPC profiles and set ifCompanion=true for each.
           7. SKILLS: The skills object must include all skills with numeric values (do not omit any skill).
-          8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
+      8. FIELDS TO LOCALIZE: name, faction, appearance, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].appearance, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
           ${options?.userSystemPrompt?.trim() ? `9. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
-  const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
+  const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). Include a short appearance description for the player and any companions. If the user mentions starting companions, include them.`;
 
   emit(`API key: ${source} (${describeApiKey(apiKey)})`);
   emit(`Requesting character profile from ${selectedTextModel}...`);
@@ -735,6 +736,7 @@ export async function getStatusUpdate(
     Update status fields based on the narration. Return JSON with optional keys:
     playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
     playerChange should contain only changed fields (new values), plus inventoryChange with add/remove lists.
+    Each newNpc entry MUST include appearance (short physical description).
     If no changes are needed, return {}.
   `;
   const systemInstruction = `You are the Vault-Tec Status Manager.
@@ -744,8 +746,9 @@ export async function getStatusUpdate(
           4. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
           5. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
           6. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
-          7. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
-          8. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
+          7. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
+          8. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
+          9. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
   const response = await ai.models.generateContent({
     model: selectedTextModel,
@@ -976,7 +979,9 @@ export async function generateCompanionAvatar(
 ): Promise<{ url?: string; error?: string } | undefined> {
   const selectedImageModel = options?.imageModel || DEFAULT_IMAGE_MODEL;
   const { key: apiKey } = resolveApiKey(options?.apiKey);
-  const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
+  const appearance = npc.appearance?.trim() || npc.lore?.trim();
+  const appearanceLine = appearance ? `Appearance: ${appearance}.` : '';
+  const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. ${appearanceLine} Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
 
   try {
     const imageAi = new GoogleGenAI({ apiKey: apiKey || '' });

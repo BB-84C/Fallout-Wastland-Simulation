@@ -51,7 +51,7 @@ const normalizeTokenUsage = (
 };
 
 const actorSchemaHint = `Return JSON with keys:
-name, age, gender, faction, special, skills, perks, inventory, lore, health, maxHealth, karma, caps, ifCompanion (optional), avatarUrl (optional).
+name, age, gender, faction, appearance, special, skills, perks, inventory, lore, health, maxHealth, karma, caps, ifCompanion (optional), avatarUrl (optional).
 Perks must include name, rank, and a non-empty description.
 Inventory items must include count (number) and isConsumable (boolean).
 Skills must include numeric values for: Small Guns, Big Guns, Energy Weapons, Unarmed, Melee Weapons, Medicine, Repair, Science, Sneak, Lockpick, Steal, Speech, Barter, Survival.`;
@@ -63,6 +63,7 @@ const actorSchema = {
     age: { type: Type.NUMBER },
     gender: { type: Type.STRING },
     faction: { type: Type.STRING },
+    appearance: { type: Type.STRING },
     special: {
       type: Type.OBJECT,
       properties: {
@@ -118,7 +119,7 @@ const actorSchema = {
     karma: { type: Type.NUMBER },
     caps: { type: Type.NUMBER }
   },
-  required: ["name", "age", "faction", "special", "skills", "lore", "health", "maxHealth", "caps"]
+  required: ["name", "age", "faction", "appearance", "special", "skills", "lore", "health", "maxHealth", "caps"]
 };
 
 const playerCreationSchema = {
@@ -458,6 +459,7 @@ const jsonActorSchema: JsonSchema = {
     age: { type: "number" },
     gender: { type: "string" },
     faction: { type: "string" },
+    appearance: { type: "string" },
     special: {
       type: "object",
       properties: specialJsonProperties,
@@ -479,7 +481,7 @@ const jsonActorSchema: JsonSchema = {
     ifCompanion: { type: "boolean" },
     avatarUrl: { type: "string" }
   },
-  required: ["name", "age", "faction", "special", "skills", "lore", "health", "maxHealth", "caps"],
+  required: ["name", "age", "faction", "appearance", "special", "skills", "lore", "health", "maxHealth", "caps"],
   additionalProperties: false
 };
 
@@ -638,7 +640,7 @@ const buildCharacterSystem = (targetLang: string, userSystemPrompt?: string) => 
 5. PERK SYSTEM: Assign 1-2 starting perks. And 1 perk particularly relevant to the character background. Each perk MUST include name, rank, and a non-empty description.
 6. COMPANIONS: Always include a 'companions' array (empty if none). If the user specifies existing companions, include full NPC profiles (even animals or any creatures) and set ifCompanion=true for each.
 7. SKILLS: The skills object must include all skills with numeric values (do not omit any skill).
-8. FIELDS TO LOCALIZE: name, faction, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
+8. FIELDS TO LOCALIZE: name, faction, appearance, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].appearance, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
 ${userSystemPrompt && userSystemPrompt.trim() ? `9. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}
 ${actorSchemaHint}`;
 
@@ -659,8 +661,9 @@ const buildStatusSystem = (targetLang: string, year: number, location: string) =
 4. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
 5. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
 6. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
-7. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
-8. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
+7. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
+8. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
+9. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
 const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', userSystemPrompt?: string) => `You are the Wasteland Smash Arena simulator.
 1. LORE: Always consult the Fallout Wiki in English when possible. If a party is not in the wiki, infer from established Fallout lore.
@@ -800,6 +803,7 @@ TASK:
 Update status fields based on the narration. Return JSON with optional keys:
 playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
 playerChange should contain only changed fields (new values), plus inventoryChange with add/remove lists.
+Each newNpc entry MUST include appearance (short physical description).
 If no changes are needed, return {}.`;
 
 const buildInventoryRefreshSystem = (targetLang: string) => `You are the Vault-Tec Inventory Auditor.
@@ -1014,48 +1018,144 @@ const callOpenAiJson = async (
   schema?: JsonSchema,
   schemaName = "response"
 ) => {
+  const responseFormatChat = schema
+    ? { type: "json_schema", json_schema: { name: schemaName, schema, strict: true } }
+    : { type: "json_object" };
+  const responseFormatResponses = schema
+    ? { type: "json_schema", name: schemaName, schema, strict: false }
+    : { type: "json_object" };
+  const baseHeaders = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`
+  };
+  const isResponsesOnlyModel = /^gpt-5/i.test(model);
+  const buildResponsesBody = (formatOverride?: any) => ({
+    model,
+    instructions: system,
+    input: [
+      { role: "user", content: prompt }
+    ],
+    text: { format: formatOverride ?? responseFormatResponses },
+    reasoning: { effort: "low" }
+  });
+  const extractResponsesContent = (data: any) => {
+    if (typeof data?.output_text === "string" && data.output_text.trim()) {
+      return data.output_text;
+    }
+    let text = "";
+    let jsonPayload: any = null;
+    const outputs = Array.isArray(data?.output) ? data.output : [];
+    outputs.forEach((entry: any) => {
+      const parts = Array.isArray(entry?.content) ? entry.content : [];
+      parts.forEach((part: any) => {
+        if (!part || typeof part !== "object") return;
+        if (part.type === "output_json" && part.json != null) {
+          jsonPayload = part.json;
+        }
+        if (typeof part.text === "string") {
+          text += part.text;
+        }
+      });
+    });
+    if (jsonPayload != null) {
+      return JSON.stringify(jsonPayload);
+    }
+    return text;
+  };
+  let res = await fetch(`${baseUrl}/responses`, {
+    method: "POST",
+    headers: baseHeaders,
+    body: JSON.stringify(buildResponsesBody())
+  });
+  if (res.ok) {
+    const data = await res.json();
+    const content = extractResponsesContent(data);
+    if (data?.status === "incomplete" && data?.incomplete_details?.reason) {
+      const error = new Error(`OpenAI response incomplete: ${data.incomplete_details.reason}`);
+      (error as { rawOutput?: string }).rawOutput = JSON.stringify(data);
+      throw error;
+    }
+    if (!content.trim()) {
+      const error = new Error("OpenAI response contained no output.");
+      (error as { rawOutput?: string }).rawOutput = JSON.stringify(data);
+      throw error;
+    }
+    const usage = data?.usage;
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: usage?.input_tokens,
+      completionTokens: usage?.output_tokens,
+      totalTokens: usage?.total_tokens
+    }, `${system}\n${prompt}`, content);
+    return { content, tokenUsage };
+  }
+
+  const errorText = await res.text();
+    const formatRejected = schema && (errorText.includes("json_schema") || errorText.includes("text.format"));
+  if (formatRejected) {
+    const retryBody = buildResponsesBody({ type: "json_object" });
+    res = await fetch(`${baseUrl}/responses`, {
+      method: "POST",
+      headers: baseHeaders,
+      body: JSON.stringify(retryBody)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const content = extractResponsesContent(data);
+      if (!content.trim()) {
+        const error = new Error("OpenAI response contained no output.");
+        (error as { rawOutput?: string }).rawOutput = JSON.stringify(data);
+        throw error;
+      }
+      const usage = data?.usage;
+      const tokenUsage = normalizeTokenUsage({
+        promptTokens: usage?.input_tokens,
+        completionTokens: usage?.output_tokens,
+        totalTokens: usage?.total_tokens
+      }, `${system}\n${prompt}`, content);
+      return { content, tokenUsage };
+    }
+  }
+
+  const shouldFallback = !isResponsesOnlyModel && (res.status === 404 || res.status === 405);
+  if (!shouldFallback) {
+    const message = errorText
+      ? `OpenAI request failed (HTTP ${res.status}): ${errorText}`
+      : `OpenAI request failed (HTTP ${res.status}).`;
+    throw new Error(message);
+  }
+
   const baseBody = {
     model,
     messages: [
       { role: "system", content: system },
       { role: "user", content: prompt }
-    ],
-    max_completion_tokens: 2048
+    ]
   };
-  const responseFormat = schema
-    ? { type: "json_schema", json_schema: { name: schemaName, schema, strict: true } }
-    : { type: "json_object" };
-  let res = await fetch(`${baseUrl}/chat/completions`, {
+  let chatRes = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({ ...baseBody, response_format: responseFormat })
+    headers: baseHeaders,
+    body: JSON.stringify({ ...baseBody, response_format: responseFormatChat })
   });
-  if (!res.ok) {
-    const text = await res.text();
+  if (!chatRes.ok) {
+    const text = await chatRes.text();
     const formatRejected = text.includes("response_format") || text.includes("json_schema");
     if (schema && formatRejected) {
-      res = await fetch(`${baseUrl}/chat/completions`, {
+      chatRes = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`
-        },
+        headers: baseHeaders,
         body: JSON.stringify({ ...baseBody, response_format: { type: "json_object" } })
       });
-      if (!res.ok) {
-        throw new Error(await formatHttpError(res, "OpenAI request failed"));
+      if (!chatRes.ok) {
+        throw new Error(await formatHttpError(chatRes, "OpenAI request failed"));
       }
     } else {
       const message = text
-        ? `OpenAI request failed (HTTP ${res.status}): ${text}`
-        : `OpenAI request failed (HTTP ${res.status}).`;
+        ? `OpenAI request failed (HTTP ${chatRes.status}): ${text}`
+        : `OpenAI request failed (HTTP ${chatRes.status}).`;
       throw new Error(message);
     }
   }
-  const data = await res.json();
+  const data = await chatRes.json();
   const content = data?.choices?.[0]?.message?.content || "";
   const usage = data?.usage;
   const tokenUsage = normalizeTokenUsage({
@@ -1211,11 +1311,13 @@ const fetchImageAsBase64 = async (url: string) => {
 };
 
 const generateOpenAiImage = async (apiKey: string, baseUrl: string, model: string, prompt: string) => {
+  if (!/^(gpt-image-|dall-e-)/i.test(model)) {
+    throw new Error(`OpenAI image model "${model}" is not supported. Use gpt-image-1 or a DALL·E model.`);
+  }
   const requestBody = {
     model,
     prompt,
-    size: "1024x1024",
-    response_format: "b64_json"
+    size: "1024x1024"
   };
   let res = await fetch(`${baseUrl}/images/generations`, {
     method: "POST",
@@ -1227,25 +1329,10 @@ const generateOpenAiImage = async (apiKey: string, baseUrl: string, model: strin
   });
   if (!res.ok) {
     const text = await res.text();
-    if (text.includes("Unknown parameter: 'response_format'")) {
-      const { response_format: _omit, ...retryBody } = requestBody;
-      res = await fetch(`${baseUrl}/images/generations`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(retryBody)
-      });
-      if (!res.ok) {
-        throw new Error(await formatHttpError(res, "OpenAI image request failed"));
-      }
-    } else {
-      const message = text
-        ? `OpenAI image request failed (HTTP ${res.status}): ${text}`
-        : `OpenAI image request failed (HTTP ${res.status}).`;
-      throw new Error(message);
-    }
+    const message = text
+      ? `OpenAI image request failed (HTTP ${res.status}): ${text}`
+      : `OpenAI image request failed (HTTP ${res.status}).`;
+    throw new Error(message);
   }
   const data = await res.json();
   const b64 = data?.data?.[0]?.b64_json as string | undefined;
@@ -1310,7 +1397,7 @@ export async function createPlayerCharacter(
     const emit = (message: string) => options?.onProgress?.(message);
     const targetLang = lang === "zh" ? "Chinese" : "English";
     const system = buildCharacterSystem(targetLang, options?.userSystemPrompt);
-    const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
+    const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). Include a short appearance description for the player and any companions. If the user mentions starting companions, include them.`;
     const ai = new GoogleGenAI({
       apiKey,
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
@@ -1354,7 +1441,7 @@ export async function createPlayerCharacter(
 
   const targetLang = lang === "zh" ? "Chinese" : "English";
   const system = buildCharacterSystem(targetLang, options?.userSystemPrompt);
-  const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). If the user mentions starting companions, include them.`;
+  const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). Include a short appearance description for the player and any companions. If the user mentions starting companions, include them.`;
 
   const result = provider === "openai"
     ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonPlayerCreationSchema, "player_creation")
@@ -2041,7 +2128,9 @@ export async function generateCompanionAvatar(
     if (!model) {
       return { error: "Missing image model name." };
     }
-    const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
+    const appearance = npc.appearance?.trim() || npc.lore?.trim();
+    const appearanceLine = appearance ? `Appearance: ${appearance}.` : '';
+    const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. ${appearanceLine} Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
     try {
       const imageAi = new GoogleGenAI({
         apiKey,
@@ -2084,7 +2173,9 @@ export async function generateCompanionAvatar(
     return { error: "Missing image model name." };
   }
 
-  const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
+  const appearance = npc.appearance?.trim() || npc.lore?.trim();
+  const appearanceLine = appearance ? `Appearance: ${appearance}.` : '';
+  const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. ${appearanceLine} Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
   try {
     const base64 = provider === "openai"
       ? await generateOpenAiImage(apiKey, baseUrl, model, prompt)
