@@ -704,11 +704,12 @@ const buildNarratorSystem = (targetLang: string, year: number, location: string,
 1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing narration. Keep the narration immersive.
 2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
 3. STATUS CONTROL: Do NOT update quests, inventory, caps, perks, companions, location, or any player/NPC stats. A separate status manager handles all status updates.
-4. RULE GUARD: Player can only dictates what they think and what action will take. If player dictates narrative outcomes or facts/result of their will-do action, return 'ruleViolation'.
-5. TRANSLATION: Use "Term (Original)" for unlocalized items.
-6. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
-7. When generating the text for "storyText", use markdown format for better readability. For example, use '>' for dialogues. Use bullet points or numbered lists where appropriate. Use **bold** to highlight important terms. Use *italics* for emphasis. Use underline for key actions or items. Use * for listing available choices.
-${userSystemPrompt && userSystemPrompt.trim() ? `8. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts (e.g., "I succeed and get the item," "the guard is dead because I say so"). If they only state intent/attempts, do NOT set ruleViolation, even if the attempt fails or goes badly. If the action fails due to missing tools/items or unmet conditions, describe that in storyText/outcomeSummary instead of using ruleViolation. If no violation, set ruleViolation to "false".
+5. CONTINUITY CORRECTION: If the player says prior narration missed/forgot plot or lore, comply and correct the continuity in the response.
+6. TRANSLATION: Use "Term (Original)" for unlocalized items.
+7. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+8. When generating the text for "storyText", use markdown format for better readability. For example, use '>' for dialogues. Use bullet points or numbered lists where appropriate. Use **bold** to highlight important terms. Use *italics* for emphasis. Use underline for key actions or items. Use * for listing available choices.
+${userSystemPrompt && userSystemPrompt.trim() ? `9. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildEventSystem = (targetLang: string, year: number, location: string, userSystemPrompt?: string) => `You are the Vault-Tec Event Manager.
 1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
@@ -722,14 +723,15 @@ const buildEventSystem = (targetLang: string, year: number, location: string, us
 - The text in the "outcomeSummary" must remain short but obey the logic above. For example, "Someone done something because of reasons, leading to results." or "A causes B by doing C, resulting in D."
 2. MANDATORY LANGUAGE: You MUST output all text fields in ${targetLang}.
 3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
-4. RULE GUARD: Player can only dictate intent and action. If they dictate narrative outcomes or facts/result of their will-do action, set ruleViolation.
-5. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
-6. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
-7. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
-8. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
-9. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-10. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
-${userSystemPrompt && userSystemPrompt.trim() ? `11. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts. Do NOT use ruleViolation for unlucky/partial results, missing tools/items, or to justify item quality; handle those in outcomeSummary/playerChange. If no violation, set ruleViolation to "false".
+5. CONTINUITY CORRECTION: If the player says prior narration missed/forgot plot or lore, comply and correct the continuity in the outcomeSummary (do not flag ruleViolation).
+6. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
+7. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
+8. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
+9. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
+10. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
+11. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+${userSystemPrompt && userSystemPrompt.trim() ? `12. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildEventNarratorSystem = (targetLang: string, year: number, location: string, userSystemPrompt?: string) => `You are the Fallout Overseer.
 1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
@@ -799,6 +801,8 @@ TASK:
 4. You are encouraged to create new events for the player that fit within the Fallout universe to enhance the story.
 5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
 6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, narrate how the player realizes they don't have the item.
+7. Only set ruleViolation when the player explicitly dictates outcomes or facts; missing tools/items or unmet conditions are not violations. If no violation, set ruleViolation to "false".
+8. If the player notes that prior narration missed/forgot plot or lore, comply and correct the continuity in your narration.
 Return strict JSON with keys: storyText, ruleViolation, timePassedMinutes, imagePrompt.`;
 
 const buildEventPrompt = (
@@ -828,7 +832,9 @@ TASK:
 4. You are encouraged to create new events for the player that fit within the Fallout universe to enhance the story.
 5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
 6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, set the outcome where the player realizes they don't have the item.
-7. All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
+7. Only set ruleViolation when the player explicitly dictates outcomes or facts; missing tools/items or unmet conditions are not violations. If no violation, set ruleViolation to "false".
+8. If the player notes that prior narration missed/forgot plot or lore, comply and correct the continuity in outcomeSummary.
+9. All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
 Return strict JSON with keys: outcomeSummary, ruleViolation, timePassedMinutes, playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.`;
 
 const buildEventNarratorPrompt = (
@@ -1086,7 +1092,9 @@ const parseNarrator = (raw: any, fallbackPrompt: string): NarratorResponse => {
   const storyText = typeof raw?.storyText === "string" ? raw.storyText : "";
   const timePassedMinutes = typeof raw?.timePassedMinutes === "number" ? raw.timePassedMinutes : 0;
   const ruleViolationRaw = typeof raw?.ruleViolation === "string" ? raw.ruleViolation.trim() : "";
-  const normalizedRuleViolation = ruleViolationRaw && ruleViolationRaw.toLowerCase() !== "null"
+  const normalizedRuleViolation = ruleViolationRaw
+    && ruleViolationRaw.toLowerCase() !== "null"
+    && ruleViolationRaw.toLowerCase() !== "false"
     ? ruleViolationRaw
     : null;
   return {
@@ -1113,7 +1121,9 @@ const parseEventOutcome = (raw: any) => {
   const outcomeSummary = typeof normalized?.outcomeSummary === "string" ? normalized.outcomeSummary : "";
   const timePassedMinutes = typeof normalized?.timePassedMinutes === "number" ? normalized.timePassedMinutes : 0;
   const ruleViolationRaw = typeof normalized?.ruleViolation === "string" ? normalized.ruleViolation.trim() : "";
-  const normalizedRuleViolation = ruleViolationRaw && ruleViolationRaw.toLowerCase() !== "null"
+  const normalizedRuleViolation = ruleViolationRaw
+    && ruleViolationRaw.toLowerCase() !== "null"
+    && ruleViolationRaw.toLowerCase() !== "false"
     ? ruleViolationRaw
     : null;
   return {

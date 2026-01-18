@@ -505,6 +505,15 @@ const normalizeInventoryChangeCarrier = (raw: any) => {
   return { ...rest, playerChange: nextPlayerChange };
 };
 
+const normalizeRuleViolationFlag = (value: unknown) => {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const lowered = trimmed.toLowerCase();
+  if (lowered === 'false' || lowered === 'null') return null;
+  return value;
+};
+
 export async function createPlayerCharacter(
   userInput: string,
   year: number,
@@ -594,16 +603,19 @@ export async function getNarrativeResponse(
     TASK:
     1. Determine the outcome of the action.
     2. Narrate the outcome as a DM of a Fallout RPG, focusing on vivid descriptions, character dialogues, and environmental details.
+    3. Only return ruleViolation when the player explicitly dictates outcomes or facts; otherwise set ruleViolation to "false". Missing tools/items or unmet conditions should be described in the narrative, not flagged as a rule violation.
+    4. If the player notes that prior narration missed/forgot plot or lore, comply and correct the continuity in your response.
   `;
   const systemInstruction = `You are the Fallout Overseer. 
           1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
           1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing narration. Keep the narration immersive.
           2. MANDATORY LANGUAGE: You MUST output all text presented to the player in ${targetLang}.
       3. STATUS CONTROL: Do NOT update quests, inventory, caps, perks, companions, location, or any player/NPC stats. A separate status manager handles all status updates.
-      4. RULE GUARD: If player dictates narrative outcomes, return 'ruleViolation'.
-      5. TRANSLATION: Use "Term (Original)" for unlocalized items.
-      6. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
-      ${options?.userSystemPrompt?.trim() ? `7. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
+      4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts (e.g., "I succeed and get the item," "the guard is dead because I say so"). If they only state intent/attempts, do NOT set ruleViolation, even if the attempt fails or goes badly. If the action fails due to missing tools/items or unmet conditions, describe that in storyText/outcomeSummary instead of using ruleViolation. If no violation, set ruleViolation to "false".
+      5. CONTINUITY CORRECTION: If the player says prior narration missed/forgot plot or lore, comply and correct the continuity in the response.
+      6. TRANSLATION: Use "Term (Original)" for unlocalized items.
+      7. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+      ${options?.userSystemPrompt?.trim() ? `8. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
 
   const response = await ai.models.generateContent({
     model: selectedTextModel,
@@ -626,6 +638,12 @@ export async function getNarrativeResponse(
 
   if (!response.text) throw new Error("Connection to the Wasteland lost.");
   const parsed = safeJsonParse(response.text);
+  if (parsed && typeof parsed === 'object') {
+    const normalizedRuleViolation = normalizeRuleViolationFlag((parsed as any).ruleViolation);
+    if (normalizedRuleViolation === null) {
+      (parsed as any).ruleViolation = null;
+    }
+  }
   const tokenUsage = normalizeTokenUsage({
     promptTokens: response.usageMetadata?.promptTokenCount,
     completionTokens: response.usageMetadata?.candidatesTokenCount,
@@ -674,6 +692,8 @@ export async function getEventOutcome(
     5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
     6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, set the outcome where the player realizes they don't have the item.
     7. All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
+    8. Only return ruleViolation when the player explicitly dictates outcomes or facts; otherwise set ruleViolation to "false". If required tools/items are missing, narrate the failure or workaround instead of flagging ruleViolation.
+    9. If the player notes that prior narration missed/forgot plot or lore, comply and correct the continuity in your outcomeSummary.
     Return strict JSON with keys: outcomeSummary, ruleViolation, timePassedMinutes, playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
   `;
   const systemInstruction = `You are the Vault-Tec Event Manager.
@@ -681,14 +701,15 @@ export async function getEventOutcome(
           1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing text.
           2. MANDATORY LANGUAGE: You MUST output all text fields in ${targetLang}.
           3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
-          4. RULE GUARD: Player can only dictate intent and action. If they dictate narrative outcomes or facts/result of their will-do action, set ruleViolation.
-          5. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
-          6. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
-          7. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
-          8. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
-          9. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-          10. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
-          ${options?.userSystemPrompt?.trim() ? `11. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
+          4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts. Do NOT use ruleViolation for unlucky/partial results, missing tools/items, or to justify item quality; handle those in outcomeSummary/playerChange. If no violation, set ruleViolation to "false".
+          5. CONTINUITY CORRECTION: If the player says prior narration missed/forgot plot or lore, comply and correct the continuity in the outcomeSummary (do not flag ruleViolation).
+          6. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
+          7. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
+          8. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
+          9. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
+          10. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
+          11. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+          ${options?.userSystemPrompt?.trim() ? `12. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
 
   const response = await ai.models.generateContent({
     model: selectedTextModel,
@@ -703,6 +724,12 @@ export async function getEventOutcome(
   if (!response.text) throw new Error("Connection to the Wasteland lost.");
     const parsed = safeJsonParse(response.text);
     const normalized = normalizeInventoryChangeCarrier(parsed);
+    if (normalized && typeof normalized === 'object') {
+      const normalizedRuleViolation = normalizeRuleViolationFlag((normalized as any).ruleViolation);
+      if (normalizedRuleViolation === null) {
+        (normalized as any).ruleViolation = null;
+      }
+    }
     const tokenUsage = normalizeTokenUsage({
       promptTokens: response.usageMetadata?.promptTokenCount,
       completionTokens: response.usageMetadata?.candidatesTokenCount,
