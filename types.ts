@@ -163,6 +163,7 @@ export interface GameSettings {
   textScale?: number;
   pipelineMode?: PipelineMode;
   interfaceColor?: InterfaceColor;
+  autoSaveEnabled?: boolean;
 }
 
 export type UserTier = 'admin' | 'normal' | 'guest';

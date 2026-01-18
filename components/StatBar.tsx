@@ -19,6 +19,8 @@ interface StatBarProps {
   apRecovery?: ApRecoveryConfig | null;
   tokenUsage: TokenUsage;
   onLanguageToggle: (lang: Language) => void;
+  autoSaveEnabled: boolean;
+  onToggleAutoSave: () => void;
   onSave: () => void;
   onExport: (format: 'log-md' | 'log-pdf' | 'save-json') => void;
   showSave: boolean;
@@ -107,6 +109,8 @@ const StatBar: React.FC<StatBarProps> = ({
   apRecovery,
   tokenUsage,
   onLanguageToggle,
+  autoSaveEnabled,
+  onToggleAutoSave,
   onSave,
   onExport,
   showSave,
@@ -526,6 +530,20 @@ const StatBar: React.FC<StatBarProps> = ({
               >
                 {language === 'en' ? 'EN / 中' : '中 / EN'}
               </button>
+              {showSave && (
+                <button
+                  onClick={onToggleAutoSave}
+                  className={`text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 font-bold uppercase transition-colors ${
+                    autoSaveEnabled
+                      ? 'bg-[color:var(--pip-color)] text-black'
+                      : 'bg-[color:rgba(var(--pip-color-rgb),0.1)] hover:bg-[color:var(--pip-color)] hover:text-black'
+                  }`}
+                >
+                  {language === 'en'
+                    ? `AUTO SAVE ${autoSaveEnabled ? 'ON' : 'OFF'}`
+                    : `自动保存 ${autoSaveEnabled ? '开' : '关'}`}
+                </button>
+              )}
               {showSave && (
                 <button 
                   onClick={onSave}

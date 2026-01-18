@@ -909,6 +909,7 @@ const normalizeProviderSettings = (settings: GameSettings): GameSettings => {
     userSystemPrompt: settings.userSystemPrompt ?? '',
     userSystemPromptCustom: settings.userSystemPromptCustom ?? false,
     pipelineMode: settings.pipelineMode ?? 'event',
+    autoSaveEnabled: settings.autoSaveEnabled ?? false,
     textScale,
     interfaceColor
   };
@@ -1874,7 +1875,8 @@ const App: React.FC = () => {
   }, [gameState.settings]);
 
   useEffect(() => {
-    if (!isNormal || !currentUser) return;
+    if (!currentUser || !canManualSave) return;
+    if (!gameState.settings.autoSaveEnabled) return;
     const currentMemory = gameState.compressedMemory || '';
     const currentRawOutput = gameState.rawOutputCache || '';
     const currentInventorySignature = gameState.player
@@ -1895,7 +1897,7 @@ const App: React.FC = () => {
     const key = getSaveKey(currentUser.username);
     localStorage.setItem(key, JSON.stringify(gameState));
     setHasSave(true);
-  }, [gameState, isNormal, currentUser]);
+  }, [gameState, currentUser, canManualSave]);
 
   useEffect(() => {
     if (!isNormal || !currentUser) return;
@@ -4263,6 +4265,16 @@ const App: React.FC = () => {
     setArenaState(prev => applyDefaultArenaPrompt({ ...prev }, lang));
   };
 
+  const toggleAutoSave = () => {
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        autoSaveEnabled: !(prev.settings.autoSaveEnabled ?? false)
+      }
+    }));
+  };
+
   const toggleHighQualityImages = () => {
     if (!imagesEnabled) return;
     setGameState(prev => ({
@@ -6567,6 +6579,8 @@ const App: React.FC = () => {
             apRecovery={apRecovery}
             tokenUsage={gameState.tokenUsage}
             onLanguageToggle={toggleLanguage}
+            autoSaveEnabled={gameState.settings.autoSaveEnabled ?? false}
+            onToggleAutoSave={toggleAutoSave}
             onSave={saveGame}
             onExport={exportData}
             showSave={canManualSave}
