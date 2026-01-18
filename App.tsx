@@ -226,6 +226,25 @@ const normalizeSavedSnapshot = (raw: any, fallback: GameState): SavedStatusSnaps
   };
 };
 
+const isLikelyJsonParseError = (detail: string) => {
+  const normalized = detail.toLowerCase();
+  return (
+    normalized.includes("expected ',' or ']'") ||
+    normalized.includes('unexpected end of json input') ||
+    normalized.includes('unexpected token') ||
+    normalized.includes('json at position') ||
+    normalized.includes('json parse failed')
+  );
+};
+
+const appendJsonParseGuidance = (detail: string, isZh: boolean) => {
+  if (!isLikelyJsonParseError(detail)) return detail;
+  const guidance = isZh
+    ? '请打开设置，复制「原始输出缓存」并发给我。这通常是设备与模型提供方的连接中断导致（例如外出乘车使用蜂窝数据、启用 VPN，或当前网络不稳定）。'
+    : 'Open Settings, copy the Raw Output Cache, and send it to me. This is most likely caused by an interrupted connection between your device and the model provider (e.g., mobile data while commuting, VPN usage, or an unstable network).';
+  return `${detail}\n${guidance}`;
+};
+
 const clampColorChannel = (value: number, fallback: number) => {
   if (!Number.isFinite(value)) return fallback;
   return Math.round(clampNumber(value, 0, 255));
@@ -1156,7 +1175,10 @@ const formatCreationProgress = (message: string, isZh: boolean, showDebug: boole
       : 'Profile integrity verified.';
   }
   if (message.startsWith('JSON parse failed:')) {
-    const detail = message.replace('JSON parse failed:', '').trim();
+    const detail = appendJsonParseGuidance(
+      message.replace('JSON parse failed:', '').trim(),
+      isZh
+    );
     return isZh ? `数据完整性错误：${detail}` : `Data integrity error: ${detail}`;
   }
   if (message.startsWith('Response preview:')) {
@@ -3185,7 +3207,10 @@ const App: React.FC = () => {
         } catch (eventErr) {
           setStatusStage('error');
           cacheRawOutput(eventErr);
-          const detail = eventErr instanceof Error ? eventErr.message : String(eventErr);
+          const detail = appendJsonParseGuidance(
+            eventErr instanceof Error ? eventErr.message : String(eventErr),
+            isZhAction
+          );
           const statusErrorMessage = state.language === 'en'
             ? `VAULT-TEC ERROR: Event manager failed.\n[LOG] ${detail}`
             : `避难所科技错误：事件管理失败。\n[日志] ${detail}`;
@@ -3500,7 +3525,10 @@ const App: React.FC = () => {
       } catch (statusErr) {
         setStatusStage('error');
         cacheRawOutput(statusErr);
-        const detail = statusErr instanceof Error ? statusErr.message : String(statusErr);
+        const detail = appendJsonParseGuidance(
+          statusErr instanceof Error ? statusErr.message : String(statusErr),
+          isZhAction
+        );
         const statusErrorMessage = state.language === 'en'
           ? `VAULT-TEC ERROR: Status manager failed.\n[LOG] ${detail}`
           : `避难所科技错误：状态管理失败。\n[日志] ${detail}`;
@@ -3630,7 +3658,10 @@ const App: React.FC = () => {
     } catch (err) {
       console.error(err);
       cacheRawOutput(err);
-      const errorDetail = err instanceof Error ? err.message : String(err);
+      const errorDetail = appendJsonParseGuidance(
+        err instanceof Error ? err.message : String(err),
+        isZhAction
+      );
       setNarrationStage('error');
       setStatusStage(prev => (prev === 'error' ? 'error' : 'idle'));
       setImageStage('idle');
@@ -3725,7 +3756,10 @@ const App: React.FC = () => {
       setCompressionError(null);
     } catch (err) {
       cacheRawOutput(err);
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = appendJsonParseGuidance(
+        err instanceof Error ? err.message : String(err),
+        isZhCompression
+      );
       setCompressionStatus(null);
       setIsCompressing(false);
       setCompressionError(isZhCompression ? `记忆压缩失败：${detail}` : `Memory compression failed: ${detail}`);
@@ -3908,7 +3942,10 @@ const App: React.FC = () => {
         : 'Inventory recovery complete.');
     } catch (err) {
       cacheRawOutput(err);
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = appendJsonParseGuidance(
+        err instanceof Error ? err.message : String(err),
+        isZhRefresh
+      );
       setInventoryRefreshError(detail);
       setSystemError(state.language === 'zh'
         ? `库存刷新失败：${detail}`
@@ -4026,7 +4063,10 @@ const App: React.FC = () => {
       const errorMessage = result?.error || (isZh ? '头像生成失败。' : 'Avatar generation failed.');
       setSystemError(errorMessage);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = appendJsonParseGuidance(
+        err instanceof Error ? err.message : String(err),
+        isZh
+      );
       setSystemError(isZh ? `头像生成失败：${detail}` : `Avatar generation failed: ${detail}`);
     } finally {
       setCompanionAvatarPending(prev => {
@@ -4156,7 +4196,10 @@ const App: React.FC = () => {
       setSystemError(isZh ? '状态重建完成。' : 'Status rebuild complete.');
     } catch (err) {
       cacheRawOutput(err);
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = appendJsonParseGuidance(
+        err instanceof Error ? err.message : String(err),
+        isZh
+      );
       setSystemError(isZh ? `状态重建失败：${detail}` : `Status rebuild failed: ${detail}`);
     } finally {
       setIsStatusRebuilding(false);
