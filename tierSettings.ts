@@ -37,7 +37,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   userSystemPromptCustom: false,
   maxCompressedMemoryK: 25,
   textScale: 1,
-  pipelineMode: 'legacy'
+  pipelineMode: 'event',
+  interfaceColor: { r: 26, g: 255, b: 26 }
 };
 
 export const getTierSettings = (tier: UserTier) => TIER_SETTINGS[tier];

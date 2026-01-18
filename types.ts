@@ -19,6 +19,12 @@ export interface SpecialSet {
   [SpecialAttr.Luck]: number;
 }
 
+export interface InterfaceColor {
+  r: number;
+  g: number;
+  b: number;
+}
+
 export enum Skill {
   SmallGuns = 'Small Guns',
   BigGuns = 'Big Guns',
@@ -60,12 +66,12 @@ export interface InventoryChange {
 }
 
 export interface PlayerChange {
-  health?: number;
-  maxHealth?: number;
-  karma?: number;
+  health?: number; // delta change (positive or negative)
+  maxHealth?: number; // delta change (positive or negative)
+  karma?: number; // delta change (positive or negative)
   caps?: number; // delta change (positive or negative)
-  special?: Partial<SpecialSet>;
-  skills?: Partial<SkillSet>;
+  special?: Partial<SpecialSet>; // delta change per attribute
+  skills?: Partial<SkillSet>; // delta change per skill
   perksAdd?: Perk[];
   perksRemove?: { name: string }[];
   inventoryChange?: InventoryChange;
@@ -86,6 +92,7 @@ export interface StatusChange {
 
 export interface StatusChangeEntry extends StatusChange {
   narration_index: number;
+  isSaved?: boolean;
 }
 
 export interface StatusSnapshot {
@@ -155,6 +162,7 @@ export interface GameSettings {
   maxCompressedMemoryK?: number;
   textScale?: number;
   pipelineMode?: PipelineMode;
+  interfaceColor?: InterfaceColor;
 }
 
 export type UserTier = 'admin' | 'normal' | 'guest';
@@ -195,6 +203,7 @@ export interface HistoryEntry {
   imageUrl?: string;
   groundingSources?: GroundingSource[];
   meta?: 'memory';
+  isSaved?: boolean;
 }
 
 export interface TokenUsage {
@@ -221,8 +230,22 @@ export interface GameState {
   compressedMemory?: string;
   rawOutputCache?: string;
   status_track?: StatusTrack | null;
+  savedSnapshot?: SavedStatusSnapshot;
   compressionTurnCounter: number;
   compressionEnabled: boolean;
+}
+
+export interface SavedStatusSnapshot {
+  compressedMemory?: string;
+  compressionTurnCounter?: number;
+  currentTime?: string;
+  currentYear?: number;
+  knownNpcs?: Actor[];
+  location?: string;
+  player?: Actor | null;
+  quests?: Quest[];
+  tokenUsage?: TokenUsage;
+  turnCount?: number;
 }
 
 export interface NarratorResponse {

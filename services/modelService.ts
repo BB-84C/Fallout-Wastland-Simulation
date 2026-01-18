@@ -695,7 +695,8 @@ const buildCharacterSystem = (targetLang: string, userSystemPrompt?: string) => 
 6. COMPANIONS: Always include a 'companions' array (empty if none). If the user specifies existing companions, include full NPC profiles (even animals or any creatures) and set ifCompanion=true for each.
 7. SKILLS: The skills object must include all skills with numeric values (do not omit any skill).
 8. FIELDS TO LOCALIZE: name, faction, appearance, lore, perks[].name, perks[].description, inventory[].name, inventory[].description, companions[].name, companions[].faction, companions[].appearance, companions[].lore, companions[].perks[].name, companions[].perks[].description, companions[].inventory[].name, companions[].inventory[].description.
-${userSystemPrompt && userSystemPrompt.trim() ? `9. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}
+9. When generating the text in "lore", use markdown format for better readability. Use * for listing if needed.
+${userSystemPrompt && userSystemPrompt.trim() ? `10. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}
 ${actorSchemaHint}`;
 
 const buildNarratorSystem = (targetLang: string, year: number, location: string, userSystemPrompt?: string) => `You are the Fallout Overseer.
@@ -706,7 +707,8 @@ const buildNarratorSystem = (targetLang: string, year: number, location: string,
 4. RULE GUARD: Player can only dictates what they think and what action will take. If player dictates narrative outcomes or facts/result of their will-do action, return 'ruleViolation'.
 5. TRANSLATION: Use "Term (Original)" for unlocalized items.
 6. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
-${userSystemPrompt && userSystemPrompt.trim() ? `7. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+7. When generating the text for "storyText", use markdown format for better readability. For example, use '>' for dialogues. Use bullet points or numbered lists where appropriate. Use **bold** to highlight important terms. Use *italics* for emphasis. Use underline for key actions or items. Use * for listing available choices.
+${userSystemPrompt && userSystemPrompt.trim() ? `8. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildEventSystem = (targetLang: string, year: number, location: string, userSystemPrompt?: string) => `You are the Vault-Tec Event Manager.
 1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
@@ -717,12 +719,13 @@ const buildEventSystem = (targetLang: string, year: number, location: string, us
 - Avoid obvious optimal strategies; if present, explain why they weren't adopted or failed.
 - Encourage using indirect means, environmental factors, deception, sabotage, timing, and psychological tactics to alter situations.
 - Storylines should reflect 3–6 steps of implied causality chains, but avoid presenting reasoning as a list.
+- The text in the "outcomeSummary" must remain short but obey the logic above. For example, "Someone done something because of reasons, leading to results." or "A causes B by doing C, resulting in D."
 2. MANDATORY LANGUAGE: You MUST output all text fields in ${targetLang}.
 3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
 4. RULE GUARD: Player can only dictate intent and action. If they dictate narrative outcomes or facts/result of their will-do action, set ruleViolation.
 5. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
 6. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
-7. CAPS: playerChange.caps is a DELTA (positive or negative), not the final total.
+7. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
 8. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
 9. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
 10. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
@@ -735,14 +738,15 @@ const buildEventNarratorSystem = (targetLang: string, year: number, location: st
 3. EVENT LOCK: Narrate ONLY what is contained in EVENT_OUTCOME. Do NOT invent or alter outcomes, items, NPCs, quests, or stats.
 4. TRANSLATION: Use "Term (Original)" for unlocalized items.
 5. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
-${userSystemPrompt && userSystemPrompt.trim() ? `6. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+6. When generating the text for "storyText", use markdown format for better readability. For example, use '>' for dialogues. Use bullet points or numbered lists where appropriate. Use **bold** to highlight important terms. Use *italics* for emphasis. Use underline for key actions or items. Use * for listing available choices.
+${userSystemPrompt && userSystemPrompt.trim() ? `7. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildStatusSystem = (targetLang: string, year: number, location: string) => `You are the Vault-Tec Status Manager.
 1. PURPOSE: Emit ONLY status changes shown in the status bar (player stats, inventory, caps, quests, known NPCs/companions, location/year/time).
 2. INPUTS: Use the CURRENT STATUS and the LAST NARRATION only. Do NOT infer changes that are not explicitly stated or clearly implied by the narration.
 3. CONSISTENCY: Keep existing items, caps, perks, SPECIAL, skills, and quests unless the narration clearly changes them. Never invent trades or items.
 4. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
-5. CAPS: playerChange.caps is a DELTA (positive or negative), not the final total.
+5. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
 6. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
 7. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
 8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
@@ -767,7 +771,8 @@ const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', user
   - Avoid obvious optimal strategies; if present, explain why they weren't adopted or failed.
   - Encourage using indirect means, environmental factors, deception, sabotage, timing, and psychological tactics to alter situations.
   - Storylines should reflect 3–6 steps of implied causality chains, but avoid presenting reasoning as a list.
-${userSystemPrompt && userSystemPrompt.trim() ? `11. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+11. When generating the text for "storyText", use markdown format for better readability. For example, use '>' for dialogues. Use bullet points or numbered lists where appropriate. Use **bold** to highlight important terms. Use *italics* for emphasis. Use underline for key actions or items. Use * for listing if needed.
+${userSystemPrompt && userSystemPrompt.trim() ? `12. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildNarratorPrompt = (
   player: Actor,
@@ -823,7 +828,7 @@ TASK:
 4. You are encouraged to create new events for the player that fit within the Fallout universe to enhance the story.
 5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
 6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, set the outcome where the player realizes they don't have the item.
-7. playerChange.caps must be a delta (positive or negative), not the final total.
+7. All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
 Return strict JSON with keys: outcomeSummary, ruleViolation, timePassedMinutes, playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.`;
 
 const buildEventNarratorPrompt = (
@@ -940,8 +945,8 @@ ${narration}
 TASK:
 Update status fields based on the narration. Return JSON with optional keys:
 playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
-playerChange should contain only changed fields (new values), plus inventoryChange with add/remove lists.
-playerChange.caps must be a delta (positive or negative), not the final total.
+playerChange should contain only changed fields, plus inventoryChange with add/remove lists.
+All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
 Each newNpc entry MUST include appearance (short physical description).
 If no changes are needed, return {}.`;
 
@@ -1092,10 +1097,22 @@ const parseNarrator = (raw: any, fallbackPrompt: string): NarratorResponse => {
   };
 };
 
+const normalizeInventoryChangeCarrier = (raw: any) => {
+  if (!raw || typeof raw !== "object") return raw;
+  if (!raw.inventoryChange || typeof raw.inventoryChange !== "object") return raw;
+  const playerChange = raw.playerChange && typeof raw.playerChange === "object" ? raw.playerChange : {};
+  const nextPlayerChange = playerChange.inventoryChange
+    ? playerChange
+    : { ...playerChange, inventoryChange: raw.inventoryChange };
+  const { inventoryChange: _inventoryChange, ...rest } = raw;
+  return { ...rest, playerChange: nextPlayerChange };
+};
+
 const parseEventOutcome = (raw: any) => {
-  const outcomeSummary = typeof raw?.outcomeSummary === "string" ? raw.outcomeSummary : "";
-  const timePassedMinutes = typeof raw?.timePassedMinutes === "number" ? raw.timePassedMinutes : 0;
-  const ruleViolationRaw = typeof raw?.ruleViolation === "string" ? raw.ruleViolation.trim() : "";
+  const normalized = normalizeInventoryChangeCarrier(raw);
+  const outcomeSummary = typeof normalized?.outcomeSummary === "string" ? normalized.outcomeSummary : "";
+  const timePassedMinutes = typeof normalized?.timePassedMinutes === "number" ? normalized.timePassedMinutes : 0;
+  const ruleViolationRaw = typeof normalized?.ruleViolation === "string" ? normalized.ruleViolation.trim() : "";
   const normalizedRuleViolation = ruleViolationRaw && ruleViolationRaw.toLowerCase() !== "null"
     ? ruleViolationRaw
     : null;
@@ -1103,13 +1120,13 @@ const parseEventOutcome = (raw: any) => {
     outcomeSummary,
     ruleViolation: normalizedRuleViolation,
     timePassedMinutes,
-    playerChange: raw?.playerChange,
-    questUpdates: raw?.questUpdates,
-    companionUpdates: raw?.companionUpdates,
-    newNpc: raw?.newNpc,
-    location: raw?.location,
-    currentYear: raw?.currentYear,
-    currentTime: raw?.currentTime
+    playerChange: normalized?.playerChange,
+    questUpdates: normalized?.questUpdates,
+    companionUpdates: normalized?.companionUpdates,
+    newNpc: normalized?.newNpc,
+    location: normalized?.location,
+    currentYear: normalized?.currentYear,
+    currentTime: normalized?.currentTime
   };
 };
 
@@ -2047,21 +2064,22 @@ export async function getStatusUpdate(
   const prompt = buildStatusPrompt(player, quests, knownNpcs, year, location, currentTime, narration);
 
   if (provider === "gemini") {
-    if (options?.tier === "guest") {
-      const response = await getGeminiStatusUpdate(
-        player,
-        quests,
-        knownNpcs,
-        year,
-        location,
-        currentTime,
-        narration,
-        lang,
-        { tier: options?.tier, apiKey: options?.apiKey, textModel: options?.textModel }
-      );
-      const update = response && typeof response === "object" ? (response as StatusUpdate) : {};
-      return { update, tokenUsage: (response as any)?.tokenUsage };
-    }
+      if (options?.tier === "guest") {
+        const response = await getGeminiStatusUpdate(
+          player,
+          quests,
+          knownNpcs,
+          year,
+          location,
+          currentTime,
+          narration,
+          lang,
+          { tier: options?.tier, apiKey: options?.apiKey, textModel: options?.textModel }
+        );
+        const normalized = normalizeInventoryChangeCarrier(response);
+        const update = normalized && typeof normalized === "object" ? (normalized as StatusUpdate) : {};
+        return { update, tokenUsage: (response as any)?.tokenUsage };
+      }
     const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
@@ -2092,9 +2110,10 @@ export async function getStatusUpdate(
       completionTokens: response.usageMetadata?.candidatesTokenCount,
       totalTokens: response.usageMetadata?.totalTokenCount
     }, `${system}\n${prompt}`, response.text);
-    const parsed = safeJsonParse(response.text);
-    const update = parsed && typeof parsed === "object" ? (parsed as StatusUpdate) : {};
-    return { update, tokenUsage };
+      const parsed = safeJsonParse(response.text);
+      const normalized = normalizeInventoryChangeCarrier(parsed);
+      const update = normalized && typeof normalized === "object" ? (normalized as StatusUpdate) : {};
+      return { update, tokenUsage };
   }
 
   const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
@@ -2113,10 +2132,11 @@ export async function getStatusUpdate(
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonStatusSchema)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonStatusSchema, "status_update");
 
-  const parsed = safeJsonParse(result.content);
-  const update = parsed && typeof parsed === "object" ? (parsed as StatusUpdate) : {};
-  return { update, tokenUsage: result.tokenUsage };
-}
+    const parsed = safeJsonParse(result.content);
+    const normalized = normalizeInventoryChangeCarrier(parsed);
+    const update = normalized && typeof normalized === "object" ? (normalized as StatusUpdate) : {};
+    return { update, tokenUsage: result.tokenUsage };
+  }
 
 export async function refreshInventory(
   inventory: InventoryItem[],

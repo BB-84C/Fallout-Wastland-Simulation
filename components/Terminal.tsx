@@ -51,10 +51,10 @@ const Terminal: React.FC<TerminalProps> = ({
       <p className="mb-3 last:mb-0" {...props} />
     ),
     strong: (props: React.HTMLAttributes<HTMLElement>) => (
-      <strong className="text-[#1aff1a]" {...props} />
+      <strong className="text-[color:var(--pip-color)]" {...props} />
     ),
     em: (props: React.HTMLAttributes<HTMLElement>) => (
-      <em className="text-[#c9ffc9]" {...props} />
+      <em className="text-[color:var(--pip-color-soft)]" {...props} />
     ),
     ul: (props: React.HTMLAttributes<HTMLUListElement>) => (
       <ul className="list-disc list-inside space-y-1 ml-2" {...props} />
@@ -70,7 +70,7 @@ const Terminal: React.FC<TerminalProps> = ({
         href={href}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-[#1aff1a] underline underline-offset-2 hover:text-white transition-colors"
+        className="text-[color:var(--pip-color)] underline underline-offset-2 hover:text-white transition-colors"
         {...props}
       >
         {children}
@@ -78,7 +78,7 @@ const Terminal: React.FC<TerminalProps> = ({
     ),
     code: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
       <code
-        className="px-1 py-0.5 rounded border border-[#1aff1a]/40 bg-[#1aff1a]/10 text-[0.9em]"
+        className="px-1 py-0.5 rounded border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-[color:rgba(var(--pip-color-rgb),0.1)] text-[0.9em]"
         {...props}
       >
         {children}
@@ -86,19 +86,19 @@ const Terminal: React.FC<TerminalProps> = ({
     ),
     pre: ({ children, ...props }: React.HTMLAttributes<HTMLPreElement>) => (
       <pre
-        className="mt-2 mb-3 p-3 border border-[#1aff1a]/40 bg-black/60 overflow-x-auto text-sm"
+        className="mt-2 mb-3 p-3 border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/60 overflow-x-auto text-sm"
         {...props}
       >
         {children}
       </pre>
     ),
     blockquote: ({ children, ...props }: React.BlockquoteHTMLAttributes<HTMLQuoteElement>) => (
-      <blockquote className="border-l-2 border-[#1aff1a]/40 pl-3 text-[#c9ffc9]" {...props}>
+      <blockquote className="border-l-2 border-[color:rgba(var(--pip-color-rgb),0.4)] pl-3 text-[color:var(--pip-color-soft)]" {...props}>
         {children}
       </blockquote>
     ),
     hr: (props: React.HTMLAttributes<HTMLHRElement>) => (
-      <hr className="my-3 border-[#1aff1a]/30" {...props} />
+      <hr className="my-3 border-[color:rgba(var(--pip-color-rgb),0.3)]" {...props} />
     )
   };
   const lastPlayerIndex = (() => {
@@ -137,13 +137,13 @@ const Terminal: React.FC<TerminalProps> = ({
   return (
     <div 
       ref={scrollRef}
-      className={`flex-1 ${scrollClass} p-4 space-y-6 bg-black/40 border-b border-[#1aff1a]/30`}
+      className={`flex-1 ${scrollClass} p-4 space-y-6 bg-black/40 border-b border-[color:rgba(var(--pip-color-rgb),0.3)]`}
     >
       {displayHistory.map((msg, i) => (
         <div key={i} className={`flex flex-col ${msg.sender === 'player' ? 'items-end' : 'items-start'}`}>
           <div className={`max-w-[85%] p-3 rounded ${
             msg.sender === 'player' 
-              ? 'bg-[#1aff1a]/10 border border-[#1aff1a]/40' 
+              ? 'bg-[color:rgba(var(--pip-color-rgb),0.1)] border border-[color:rgba(var(--pip-color-rgb),0.4)]' 
               : ''
           }`}>
             <div className="text-sm opacity-50 mb-1 uppercase tracking-widest font-bold">
@@ -160,12 +160,12 @@ const Terminal: React.FC<TerminalProps> = ({
             </div>
           </div>
           {msg.imageUrl && (
-            <div className="mt-4 border-2 border-[#1aff1a]/50 p-1 bg-black/60 shadow-lg max-w-2xl">
+            <div className="mt-4 border-2 border-[color:rgba(var(--pip-color-rgb),0.5)] p-1 bg-black/60 shadow-lg max-w-2xl">
               <img src={msg.imageUrl} alt="Scene" className="w-full h-auto rounded-sm opacity-90 hover:opacity-100 transition-opacity" />
               <div className="text-[10px] text-center mt-1 opacity-40 uppercase">VAULT-TEC VISUAL RECONSTRUCTION</div>
               {/* Render grounding sources from Search Grounding to follow SDK requirements */}
               {msg.groundingSources && msg.groundingSources.length > 0 && (
-                <div className="mt-2 p-2 border-t border-[#1aff1a]/20 text-[10px] bg-black/20">
+                <div className="mt-2 p-2 border-t border-[color:rgba(var(--pip-color-rgb),0.2)] text-[10px] bg-black/20">
                   <div className="opacity-40 uppercase mb-1 font-bold">Visual References:</div>
                   <div className="flex flex-wrap gap-2">
                     {msg.groundingSources.map((source, idx) => (
@@ -174,7 +174,7 @@ const Terminal: React.FC<TerminalProps> = ({
                         href={source.uri} 
                         target="_blank" 
                         rel="noopener noreferrer"
-                        className="text-[#1aff1a] hover:underline opacity-60 hover:opacity-100 transition-opacity truncate max-w-[200px]"
+                        className="text-[color:var(--pip-color)] hover:underline opacity-60 hover:opacity-100 transition-opacity truncate max-w-[200px]"
                       >
                         [{source.title}]
                       </a>
@@ -187,7 +187,7 @@ const Terminal: React.FC<TerminalProps> = ({
           {msg.sender === 'player' && i === lastPlayerIndex && onReroll && canReroll && (
             <button
               onClick={onReroll}
-              className="mt-2 text-[10px] uppercase border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold disabled:opacity-40"
+              className="mt-2 text-[10px] uppercase border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold disabled:opacity-40"
             >
               {rerollLabel || 'REROLL'}
             </button>
@@ -195,7 +195,7 @@ const Terminal: React.FC<TerminalProps> = ({
         </div>
       ))}
       {compressionStatus && (
-        <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
+        <div className="border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-[color:rgba(var(--pip-color-rgb),0.1)] p-3 text-sm whitespace-pre-wrap">
           <div className="text-[10px] uppercase opacity-60 mb-1 font-bold">
             {compressionLabel || '> SYSTEM LOG'}
           </div>
@@ -203,7 +203,7 @@ const Terminal: React.FC<TerminalProps> = ({
         </div>
       )}
       {compressionError && (
-        <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
+        <div className="border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-[color:rgba(var(--pip-color-rgb),0.1)] p-3 text-sm whitespace-pre-wrap">
           <div className="text-[10px] uppercase opacity-60 mb-1 font-bold">
             {compressionLabel || '> SYSTEM LOG'}
           </div>
@@ -211,7 +211,7 @@ const Terminal: React.FC<TerminalProps> = ({
           {onRetryCompression && (
             <button
               onClick={onRetryCompression}
-              className="mt-3 text-[10px] uppercase border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+              className="mt-3 text-[10px] uppercase border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold"
             >
               {compressionRetryLabel || 'RETRY'}
             </button>
@@ -219,7 +219,7 @@ const Terminal: React.FC<TerminalProps> = ({
         </div>
       )}
       {progressStages && progressStages.length > 0 && (
-        <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
+        <div className="border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-[color:rgba(var(--pip-color-rgb),0.1)] p-3 text-sm whitespace-pre-wrap">
           <div className="text-[10px] uppercase opacity-60 mb-2 font-bold">
             {systemErrorLabel || '> SYSTEM LOG'}
           </div>
@@ -227,7 +227,7 @@ const Terminal: React.FC<TerminalProps> = ({
             {progressStages.map(stage => (
               <div key={stage.label} className="flex items-center justify-between text-xs">
                 <span className="uppercase opacity-70">{stage.label}</span>
-                <span className={`uppercase ${stage.status === 'error' ? 'text-[#ff6b6b]' : stage.status === 'done' ? 'text-[#1aff1a]' : 'opacity-70'}`}>
+                <span className={`uppercase ${stage.status === 'error' ? 'text-[#ff6b6b]' : stage.status === 'done' ? 'text-[color:var(--pip-color)]' : 'opacity-70'}`}>
                   {stageLabel(stage.status)}
                 </span>
               </div>
@@ -236,7 +236,7 @@ const Terminal: React.FC<TerminalProps> = ({
         </div>
       )}
       {statusManagerError && (
-        <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
+        <div className="border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-[color:rgba(var(--pip-color-rgb),0.1)] p-3 text-sm whitespace-pre-wrap">
           <div className="text-[10px] uppercase opacity-60 mb-1 font-bold">
             {statusErrorLabel || systemErrorLabel || '> SYSTEM LOG'}
           </div>
@@ -244,7 +244,7 @@ const Terminal: React.FC<TerminalProps> = ({
         </div>
       )}
       {systemError && (
-        <div className="border border-[#1aff1a]/40 bg-[#1aff1a]/10 p-3 text-sm whitespace-pre-wrap">
+        <div className="border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-[color:rgba(var(--pip-color-rgb),0.1)] p-3 text-sm whitespace-pre-wrap">
           <div className="text-[10px] uppercase opacity-60 mb-1 font-bold">
             {systemErrorLabel || '> SYSTEM ERROR'}
           </div>
@@ -252,12 +252,12 @@ const Terminal: React.FC<TerminalProps> = ({
         </div>
       )}
       {isThinking && (
-        <div className="flex items-center space-x-2 animate-pulse text-[#1aff1a]">
+        <div className="flex items-center space-x-2 animate-pulse text-[color:var(--pip-color)]">
           <span className="text-lg font-bold">ACCESSING DATABASE...</span>
           <div className="flex space-x-1">
-            <div className="w-2 h-2 bg-[#1aff1a] rounded-full"></div>
-            <div className="w-2 h-2 bg-[#1aff1a] rounded-full"></div>
-            <div className="w-2 h-2 bg-[#1aff1a] rounded-full"></div>
+            <div className="w-2 h-2 bg-[color:var(--pip-color)] rounded-full"></div>
+            <div className="w-2 h-2 bg-[color:var(--pip-color)] rounded-full"></div>
+            <div className="w-2 h-2 bg-[color:var(--pip-color)] rounded-full"></div>
           </div>
         </div>
       )}

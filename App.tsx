@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState, PipelineMode, EventOutcome, EventNarrationResponse } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState, PipelineMode, EventOutcome, EventNarrationResponse, InterfaceColor, SavedStatusSnapshot } from './types';
 import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
@@ -165,6 +165,92 @@ const persistUserProxyKey = (
 
 const normalizeProxyBaseUrl = (value: string) => value.trim().replace(/\/+$/, '');
 const clampNumber = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const DEFAULT_INTERFACE_COLOR: InterfaceColor = DEFAULT_SETTINGS.interfaceColor ?? { r: 26, g: 255, b: 26 };
+const buildSavedSnapshot = (state: GameState): SavedStatusSnapshot => ({
+  compressedMemory: state.compressedMemory || '',
+  compressionTurnCounter: typeof state.compressionTurnCounter === 'number' ? state.compressionTurnCounter : 0,
+  currentTime: state.currentTime,
+  currentYear: state.currentYear,
+  knownNpcs: state.knownNpcs,
+  location: state.location,
+  player: state.player,
+  quests: state.quests,
+  tokenUsage: state.tokenUsage,
+  turnCount: state.turnCount
+});
+
+const normalizeHistorySavedFlags = (history: HistoryEntry[]) =>
+  history.map(entry => (typeof entry.isSaved === 'boolean' ? entry : { ...entry, isSaved: true }));
+
+const normalizeStatusChangeSavedFlags = (changes: StatusChangeEntry[]) =>
+  changes.map(change => (typeof change.isSaved === 'boolean' ? change : { ...change, isSaved: true }));
+
+const markHistorySaved = (history: HistoryEntry[]) =>
+  history.map(entry => ({ ...entry, isSaved: true }));
+
+const markStatusChangesSaved = (changes: StatusChangeEntry[]) =>
+  changes.map(change => ({ ...change, isSaved: true }));
+
+const filterUnsavedHistory = (history: HistoryEntry[]) =>
+  history.filter(entry => entry.isSaved !== false);
+
+const filterUnsavedStatusChanges = (changes: StatusChangeEntry[]) =>
+  changes.filter(change => change.isSaved !== false);
+
+const normalizeSavedSnapshot = (raw: any, fallback: GameState): SavedStatusSnapshot | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const hasPlayer = Object.prototype.hasOwnProperty.call(raw, 'player');
+  const hasKnownNpcs = Object.prototype.hasOwnProperty.call(raw, 'knownNpcs');
+  const playerValue = raw.player;
+  const knownNpcValue = raw.knownNpcs;
+  const normalizedPlayer = hasPlayer
+    ? (playerValue === null ? null : (playerValue ? normalizeActor(playerValue) : fallback.player))
+    : fallback.player;
+  const normalizedKnownNpcs = hasKnownNpcs && Array.isArray(knownNpcValue)
+    ? normalizeKnownNpcList(knownNpcValue).cleaned
+    : fallback.knownNpcs;
+  const tokenUsage = raw?.tokenUsage ? normalizeTokenUsage(raw.tokenUsage) : fallback.tokenUsage;
+  return {
+    compressedMemory: typeof raw?.compressedMemory === 'string' ? raw.compressedMemory : fallback.compressedMemory,
+    compressionTurnCounter: typeof raw?.compressionTurnCounter === 'number'
+      ? raw.compressionTurnCounter
+      : fallback.compressionTurnCounter,
+    currentTime: typeof raw?.currentTime === 'string' ? raw.currentTime : fallback.currentTime,
+    currentYear: typeof raw?.currentYear === 'number' ? Math.trunc(raw.currentYear) : fallback.currentYear,
+    knownNpcs: normalizedKnownNpcs,
+    location: typeof raw?.location === 'string' ? raw.location : fallback.location,
+    player: normalizedPlayer,
+    quests: Array.isArray(raw?.quests) ? raw.quests : fallback.quests,
+    tokenUsage,
+    turnCount: typeof raw?.turnCount === 'number' ? Math.trunc(raw.turnCount) : fallback.turnCount
+  };
+};
+
+const clampColorChannel = (value: number, fallback: number) => {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.round(clampNumber(value, 0, 255));
+};
+
+const normalizeInterfaceColor = (
+  value?: Partial<InterfaceColor> | null,
+  fallback: InterfaceColor = DEFAULT_INTERFACE_COLOR
+): InterfaceColor => {
+  if (!value || typeof value !== 'object') return { ...fallback };
+  return {
+    r: clampColorChannel(Number(value.r), fallback.r),
+    g: clampColorChannel(Number(value.g), fallback.g),
+    b: clampColorChannel(Number(value.b), fallback.b)
+  };
+};
+
+const mixColorChannel = (value: number, mix: number) =>
+  Math.round(clampNumber(value + (255 - value) * mix, 0, 255));
+
+const buildSoftColor = (color: InterfaceColor): InterfaceColor => ({
+  r: mixColorChannel(color.r, 0.75),
+  g: mixColorChannel(color.g, 0.75),
+  b: mixColorChannel(color.b, 0.75)
+});
 
 const PANEL_BASE_WIDTH = 320;
 const STAT_PANEL_MIN = 240;
@@ -306,6 +392,32 @@ const normalizeSpecial = (special: Record<string, any> | null | undefined) => {
   return next;
 };
 
+const normalizeSpecialDelta = (special: Record<string, any> | null | undefined) => {
+  const deltas: Partial<SpecialSet> = {};
+  if (!special || typeof special !== 'object') return deltas;
+  Object.entries(special).forEach(([key, value]) => {
+    const num = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(num)) return;
+    const normalized = normalizeKey(key);
+    const mapped = SPECIAL_KEY_MAP[normalized] ?? SPECIAL_KEY_MAP[key];
+    if (!mapped) return;
+    const existing = deltas[mapped];
+    deltas[mapped] = (typeof existing === 'number' ? existing : 0) + num;
+  });
+  return deltas;
+};
+
+const clampSpecialSet = (special: SpecialSet): SpecialSet => {
+  const clamped = { ...special };
+  Object.values(SpecialAttr).forEach(attr => {
+    const value = typeof clamped[attr] === 'number' && Number.isFinite(clamped[attr])
+      ? clamped[attr]
+      : 0;
+    clamped[attr] = clampNumber(value, 0, 10);
+  });
+  return clamped;
+};
+
 const buildSkillDefaults = (special: SpecialSet): SkillSet => ({
   [Skill.SmallGuns]: special[SpecialAttr.Agility] * 2 + 5,
   [Skill.BigGuns]: special[SpecialAttr.Endurance] * 2 + 5,
@@ -346,6 +458,31 @@ const normalizeSkills = (
     }
   });
   return normalizedSkills;
+};
+
+const normalizeSkillDelta = (skills: Record<string, any> | null | undefined): SkillSet => {
+  const deltas: SkillSet = {};
+  if (!skills || typeof skills !== 'object') return deltas;
+  Object.entries(skills).forEach(([key, value]) => {
+    const num = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(num)) return;
+    const normalized = normalizeKey(key);
+    const mapped = SKILL_KEY_MAP[normalized];
+    if (!mapped) return;
+    const existing = deltas[mapped];
+    deltas[mapped] = (typeof existing === 'number' ? existing : 0) + num;
+  });
+  return deltas;
+};
+
+const clampSkillSet = (skills: SkillSet): SkillSet => {
+  const clamped: SkillSet = { ...skills };
+  Object.values(Skill).forEach(skill => {
+    const value = clamped[skill];
+    if (typeof value !== 'number' || !Number.isFinite(value)) return;
+    clamped[skill] = clampNumber(value, 0, 100);
+  });
+  return clamped;
 };
 
 const normalizeInventoryItem = (item: InventoryItem): InventoryItem | null => {
@@ -425,19 +562,48 @@ const applyInventoryChange = (items: InventoryItem[], change?: InventoryChange |
 const applyPlayerChange = (base: Actor, change?: PlayerChange | null) => {
   if (!change) return base;
   const next: Actor = { ...base };
-  if (Number.isFinite(change.health)) next.health = Math.max(0, change.health as number);
-  if (Number.isFinite(change.maxHealth)) next.maxHealth = Math.max(1, change.maxHealth as number);
+  const hasHealthDelta = Number.isFinite(change.health);
+  const hasMaxHealthDelta = Number.isFinite(change.maxHealth);
+  if (hasHealthDelta || hasMaxHealthDelta) {
+    const baseHealth = Number.isFinite(next.health) ? next.health : 0;
+    const baseMaxHealth = Number.isFinite(next.maxHealth) ? next.maxHealth : 1;
+    const healthDelta = hasHealthDelta ? (change.health as number) : 0;
+    const maxHealthDelta = hasMaxHealthDelta ? (change.maxHealth as number) : 0;
+    const updatedMaxHealth = Math.max(1, baseMaxHealth + maxHealthDelta);
+    const updatedHealth = clampNumber(baseHealth + healthDelta, 0, updatedMaxHealth);
+    next.maxHealth = updatedMaxHealth;
+    next.health = updatedHealth;
+  }
   if (Number.isFinite(change.caps)) {
     const delta = change.caps as number;
     next.caps = Math.max(0, (Number.isFinite(next.caps) ? next.caps : 0) + delta);
   }
-  if (Number.isFinite(change.karma)) next.karma = Math.max(-100, Math.min(100, change.karma as number));
-  if (change.special) {
-    next.special = normalizeSpecial({ ...base.special, ...change.special });
+  if (Number.isFinite(change.karma)) {
+    const delta = change.karma as number;
+    const baseKarma = Number.isFinite(next.karma) ? next.karma : 0;
+    next.karma = clampNumber(baseKarma + delta, -100, 100);
   }
-  if (change.skills) {
-    const merged = normalizeSkills(change.skills, next.special, false);
-    next.skills = { ...base.skills, ...merged };
+  const baseSpecial = normalizeSpecial(next.special);
+  const specialDelta = normalizeSpecialDelta(change.special);
+  if (Object.keys(specialDelta).length > 0) {
+    const updatedSpecial = { ...baseSpecial };
+    Object.entries(specialDelta).forEach(([key, delta]) => {
+      const attr = key as SpecialAttr;
+      const baseValue = Number.isFinite(updatedSpecial[attr]) ? updatedSpecial[attr] : 0;
+      updatedSpecial[attr] = baseValue + (delta as number);
+    });
+    next.special = updatedSpecial;
+  }
+  const baseSkills = normalizeSkills(next.skills, baseSpecial, true);
+  const skillDelta = normalizeSkillDelta(change.skills);
+  if (Object.keys(skillDelta).length > 0) {
+    const updatedSkills = { ...next.skills };
+    Object.entries(skillDelta).forEach(([key, delta]) => {
+      const skill = key as Skill;
+      const baseValue = Number.isFinite(baseSkills[skill] as number) ? (baseSkills[skill] as number) : 0;
+      updatedSkills[skill] = baseValue + (delta as number);
+    });
+    next.skills = updatedSkills;
   }
   if (Array.isArray(change.perksAdd) && change.perksAdd.length > 0) {
     const existingNames = new Set(next.perks.map(perk => perk.name));
@@ -451,7 +617,12 @@ const applyPlayerChange = (base: Actor, change?: PlayerChange | null) => {
   if (change.inventoryChange) {
     next.inventory = applyInventoryChange(next.inventory, change.inventoryChange);
   }
-  return normalizeActor(next);
+  const normalized = normalizeActor(next);
+  return {
+    ...normalized,
+    special: clampSpecialSet(normalized.special),
+    skills: clampSkillSet(normalized.skills)
+  };
 };
 
 const buildStatusSnapshot = (
@@ -670,7 +841,11 @@ const buildNarratorHistory = (
   const recent = limit ? nonMemory.slice(-limit) : nonMemory;
   const memoryText = (compressedMemory || '').trim();
   if (!memoryText || !useMemory) return recent;
-  const memoryEntry: HistoryEntry = { sender: 'narrator', text: `${MEMORY_ENTRY_TAG}:\n${memoryText}` };
+  const memoryEntry: HistoryEntry = {
+    sender: 'narrator',
+    text: `${MEMORY_ENTRY_TAG}:\n${memoryText}`,
+    isSaved: false
+  };
   return [
     memoryEntry,
     ...recent
@@ -680,7 +855,7 @@ const buildNarratorHistory = (
 const buildCompressionPayload = (state: GameState, limit: number) => {
   const nonMemory = state.history.filter(item => item.meta !== 'memory' && !isErrorHistoryEntry(item));
   const recentHistory = nonMemory.slice(-limit);
-  const { history, compressedMemory, ...saveState } = state;
+  const { history, compressedMemory, savedSnapshot, ...saveState } = state;
   return {
     saveState,
     compressedMemory: (compressedMemory || '').trim(),
@@ -707,14 +882,16 @@ const normalizeProviderSettings = (settings: GameSettings): GameSettings => {
   const textScale = Number.isFinite(settings.textScale)
     ? clampNumber(settings.textScale as number, 0.8, 5)
     : defaultTextScale;
+  const interfaceColor = normalizeInterfaceColor(settings.interfaceColor, DEFAULT_INTERFACE_COLOR);
   return {
     ...settings,
     textProvider: settings.textProvider || fallbackProvider,
     imageProvider: settings.imageProvider || fallbackProvider,
     userSystemPrompt: settings.userSystemPrompt ?? '',
     userSystemPromptCustom: settings.userSystemPromptCustom ?? false,
-    pipelineMode: settings.pipelineMode ?? 'legacy',
-    textScale
+    pipelineMode: settings.pipelineMode ?? 'event',
+    textScale,
+    interfaceColor
   };
 };
 
@@ -1473,6 +1650,12 @@ const App: React.FC = () => {
   const textScale = Number.isFinite(gameState.settings.textScale)
     ? clampNumber(gameState.settings.textScale as number, 0.8, 5)
     : 1;
+  const interfaceColor = normalizeInterfaceColor(gameState.settings.interfaceColor, DEFAULT_INTERFACE_COLOR);
+  const interfaceColorSoft = buildSoftColor(interfaceColor);
+  const interfaceColorRgb = `${interfaceColor.r}, ${interfaceColor.g}, ${interfaceColor.b}`;
+  const interfaceColorSoftRgb = `${interfaceColorSoft.r}, ${interfaceColorSoft.g}, ${interfaceColorSoft.b}`;
+  const interfaceColorCss = `rgb(${interfaceColor.r} ${interfaceColor.g} ${interfaceColor.b})`;
+  const interfaceColorSoftCss = `rgb(${interfaceColorSoft.r} ${interfaceColorSoft.g} ${interfaceColorSoft.b})`;
   const scaledRootStyle: React.CSSProperties = {};
   const statPanelScale = isDesktop
     ? clampNumber(statPanelWidth / PANEL_BASE_WIDTH, 0.85, 1.2)
@@ -1763,6 +1946,15 @@ const App: React.FC = () => {
   }, [textScale]);
 
   useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    root.style.setProperty('--pip-color', interfaceColorCss);
+    root.style.setProperty('--pip-color-rgb', interfaceColorRgb);
+    root.style.setProperty('--pip-color-soft', interfaceColorSoftCss);
+    root.style.setProperty('--pip-color-soft-rgb', interfaceColorSoftRgb);
+  }, [interfaceColorCss, interfaceColorRgb, interfaceColorSoftCss, interfaceColorSoftRgb]);
+
+  useEffect(() => {
     const handleResize = () => {
       setIsDesktop(window.innerWidth >= 768);
     };
@@ -1814,7 +2006,22 @@ const App: React.FC = () => {
           ? "Narration is still running. It's safer to wait for it to finish before closing or refreshing. If you leave now, the next load will reset the pending state."
           : "叙事仍在进行中。建议等待叙事完成后再关闭或刷新。如果你现在离开，下次加载会重置未完成状态。");
       }
-      const data = JSON.stringify(gameState);
+      const savedSnapshot = buildSavedSnapshot(gameState);
+      const savedHistory = markHistorySaved(gameState.history);
+      const savedStatusTrack = gameState.status_track
+        ? {
+          ...gameState.status_track,
+          status_change: markStatusChangesSaved(gameState.status_track.status_change)
+        }
+        : gameState.status_track;
+      let nextState: GameState = {
+        ...gameState,
+        history: savedHistory,
+        status_track: savedStatusTrack,
+        savedSnapshot
+      };
+      setGameState(nextState);
+      const data = JSON.stringify(nextState);
       const key = getSaveKey(currentUser.username);
       localStorage.setItem(key, data);
       setHasSave(true);
@@ -1948,6 +2155,7 @@ const App: React.FC = () => {
     const saved = localStorage.getItem(getSaveKey(currentUser.username));
     if (saved) {
       const parsed = JSON.parse(saved);
+      const savedSnapshotRaw = parsed?.savedSnapshot;
       const parsedPlayer = parsed?.player ? normalizeActor(parsed.player) : null;
       const knownNpcNormalization = normalizeKnownNpcList(parsed?.knownNpcs);
       const parsedKnownNpcs = knownNpcNormalization.cleaned;
@@ -1956,6 +2164,12 @@ const App: React.FC = () => {
         ? normalizeActor(rawStatusTrack.initial_status.player)
         : null;
       const statusKnownNpcNormalization = normalizeKnownNpcList(rawStatusTrack?.initial_status?.knownNpcs);
+      const rawStatusChanges: StatusChangeEntry[] = Array.isArray(rawStatusTrack?.status_change)
+        ? rawStatusTrack.status_change
+        : [];
+      const normalizedStatusChanges = filterUnsavedStatusChanges(
+        normalizeStatusChangeSavedFlags(rawStatusChanges)
+      );
       const normalizedStatusTrack: StatusTrack | null = initialStatusPlayer
         ? {
           initial_status: {
@@ -1974,9 +2188,7 @@ const App: React.FC = () => {
               ? rawStatusTrack.initial_status.currentTime
               : (typeof parsed?.currentTime === 'string' ? parsed.currentTime : gameState.currentTime)
           },
-          status_change: Array.isArray(rawStatusTrack.status_change)
-            ? rawStatusTrack.status_change
-            : []
+          status_change: normalizedStatusChanges
         }
         : null;
       const needsKnownNpcCleanup = knownNpcNormalization.fixed || statusKnownNpcNormalization.fixed;
@@ -1986,6 +2198,8 @@ const App: React.FC = () => {
       const normalizedHistory = Array.isArray(legacyExtracted.cleanedHistory)
         ? legacyExtracted.cleanedHistory
         : [];
+      const historyWithFlags = normalizeHistorySavedFlags(normalizedHistory);
+      const filteredHistory = filterUnsavedHistory(historyWithFlags);
       const now = Date.now();
       const proxyEnabled = currentUser.settings.useProxy && currentUser.tier === 'normal';
       const hasKey = currentUser.tier === 'normal'
@@ -2012,7 +2226,7 @@ const App: React.FC = () => {
         clampedAp = synced.ap;
         apLastUpdated = synced.apLastUpdated;
       }
-      const nextState: GameState = {
+      let nextState: GameState = {
         ...gameState,
         ...parsed,
         player: parsedPlayer,
@@ -2022,7 +2236,7 @@ const App: React.FC = () => {
         apLastUpdated,
         turnCount: typeof parsed.turnCount === 'number' ? parsed.turnCount : 0,
         tokenUsage: normalizeTokenUsage(parsed?.tokenUsage),
-        history: normalizedHistory,
+        history: filteredHistory,
         compressedMemory: (typeof parsed?.compressedMemory === 'string' ? parsed.compressedMemory : legacyExtracted.memoryText) || '',
         rawOutputCache: typeof parsed?.rawOutputCache === 'string' ? parsed.rawOutputCache : '',
         status_track: normalizedStatusTrack,
@@ -2031,6 +2245,27 @@ const App: React.FC = () => {
         language: parsed?.language || gameState.language
       };
       nextState.isThinking = false;
+      const normalizedSavedSnapshot = normalizeSavedSnapshot(savedSnapshotRaw, nextState);
+      if (normalizedSavedSnapshot) {
+        nextState = {
+          ...nextState,
+          ...normalizedSavedSnapshot,
+          savedSnapshot: normalizedSavedSnapshot
+        };
+      } else {
+        const legacySnapshot = buildSavedSnapshot(nextState);
+        nextState = {
+          ...nextState,
+          history: markHistorySaved(nextState.history),
+          status_track: nextState.status_track
+            ? {
+              ...nextState.status_track,
+              status_change: markStatusChangesSaved(nextState.status_track.status_change)
+            }
+            : nextState.status_track,
+          savedSnapshot: legacySnapshot
+        };
+      }
       const memoryCap = nextSettings.maxCompressedMemoryK ?? DEFAULT_SETTINGS.maxCompressedMemoryK;
       const normalizedMemory = nextState.compressedMemory
         ? clampCompressedMemory(nextState.compressedMemory, memoryCap, nextState.language)
@@ -2425,21 +2660,28 @@ const App: React.FC = () => {
         status_change: []
       };
 
-      setGameState(prev => ({
-        ...prev,
-        player: normalizedPlayer,
-        knownNpcs: initialKnownNpcs,
-        isThinking: false,
-        tokenUsage: mergeTokenUsage(prev.tokenUsage, creationUsage),
-        compressionTurnCounter: 0,
-        status_track: initialStatusTrack,
-        history: [{ 
-          sender: 'narrator', 
-          text: startNarration, 
-          imageUrl: imgData?.url,
-          groundingSources: imgData?.sources
-        }]
-      }));
+        setGameState(prev => {
+          const nextState: GameState = {
+            ...prev,
+            player: normalizedPlayer,
+            knownNpcs: initialKnownNpcs,
+            isThinking: false,
+            tokenUsage: mergeTokenUsage(prev.tokenUsage, creationUsage),
+            compressionTurnCounter: 0,
+            status_track: initialStatusTrack,
+            history: [{ 
+              sender: 'narrator', 
+              text: startNarration, 
+              imageUrl: imgData?.url,
+              groundingSources: imgData?.sources,
+              isSaved: false
+            }]
+          };
+          return {
+            ...nextState,
+            savedSnapshot: buildSavedSnapshot(nextState)
+          };
+        });
       setSystemError(null);
       setLastAction(null);
       setIsCompressing(false);
@@ -2457,12 +2699,13 @@ const App: React.FC = () => {
       setGameState(prev => ({ 
         ...prev, 
         isThinking: false,
-        history: [...prev.history, { 
-          sender: 'narrator', 
-          text: gameState.language === 'en' 
-            ? `VAULT-TEC ERROR: Connection timed out while constructing profile. Please try again.` 
-            : `避难所科技错误：构建档案时连接超时。请重试。` 
-        }]
+          history: [...prev.history, { 
+            sender: 'narrator', 
+            text: gameState.language === 'en' 
+              ? `VAULT-TEC ERROR: Connection timed out while constructing profile. Please try again.` 
+              : `避难所科技错误：构建档案时连接超时。请重试。`,
+            isSaved: false
+          }]
       }));
     }
   };
@@ -2629,7 +2872,7 @@ const App: React.FC = () => {
         }
       );
       setArenaNarrationStage('done');
-      const nextHistory: HistoryEntry[] = [...baseHistory, { sender: 'narrator', text: response.storyText, imageUrl: undefined }];
+      const nextHistory: HistoryEntry[] = [...baseHistory, { sender: 'narrator', text: response.storyText, imageUrl: undefined, isSaved: false }];
       const nextTurn = baseHistory.length === 0 ? 1 : arenaState.turnCount + 1;
       const updatedParties = arenaMode === 'wargame' && response.forcePowers
         ? baseParties.map((party, index) => {
@@ -2834,7 +3077,7 @@ const App: React.FC = () => {
           isThinking: false,
           ap: currentAp,
           apLastUpdated: currentApLastUpdated,
-          history: [...prev.history, { sender: 'narrator', text: apMessage }]
+          history: [...prev.history, { sender: 'narrator', text: apMessage, isSaved: false }]
         }));
         return;
       }
@@ -2847,7 +3090,7 @@ const App: React.FC = () => {
         isThinking: false,
         ap: currentAp,
         apLastUpdated: currentApLastUpdated,
-        history: [...prev.history, { sender: 'narrator', text: apMessage }]
+          history: [...prev.history, { sender: 'narrator', text: apMessage, isSaved: false }]
       }));
       return;
     }
@@ -2874,7 +3117,7 @@ const App: React.FC = () => {
     }
 
     const actionText = rawText;
-    const updatedHistory: HistoryEntry[] = [...baseHistory, { sender: 'player', text: actionText }];
+      const updatedHistory: HistoryEntry[] = [...baseHistory, { sender: 'player', text: actionText, isSaved: false }];
     const useMemory = state.compressionEnabled !== false;
     const trimmedHistory = buildNarratorHistory(
       updatedHistory,
@@ -2964,10 +3207,11 @@ const App: React.FC = () => {
             ap: currentAp,
             apLastUpdated: currentApLastUpdated,
             tokenUsage: mergeTokenUsage(prev.tokenUsage, eventTokenUsage),
-            history: [...updatedHistory, {
-              sender: 'narrator',
-              text: `[RULE ERROR / 规则错误] ${eventOutcome.ruleViolation}`
-            }]
+              history: [...updatedHistory, {
+                sender: 'narrator',
+                text: `[RULE ERROR / 规则错误] ${eventOutcome.ruleViolation}`,
+                isSaved: false
+              }]
           }));
           return;
         }
@@ -3084,12 +3328,13 @@ const App: React.FC = () => {
         setSystemError(null);
         setLastAction(prev => (prev ? { ...prev, status: 'resolved' } : prev));
 
-        const narratorEntry: HistoryEntry = {
-          sender: 'narrator',
-          text: `${storyText}${imageLog}`,
-          imageUrl: imgData?.url,
-          groundingSources: imgData?.sources
-        };
+          const narratorEntry: HistoryEntry = {
+            sender: 'narrator',
+            text: `${storyText}${imageLog}`,
+            imageUrl: imgData?.url,
+            groundingSources: imgData?.sources,
+            isSaved: false
+          };
         const nextHistory = [...updatedHistory, narratorEntry];
         const baseStatusTrack: StatusTrack | null = state.status_track || (state.player
           ? {
@@ -3108,12 +3353,13 @@ const App: React.FC = () => {
           ? {
             ...baseStatusTrack,
             status_change: [
-              ...baseStatusTrack.status_change,
-              {
-                narration_index: countNarrations(nextHistory),
-                ...(eventStatusChange && typeof eventStatusChange === 'object' ? eventStatusChange : {})
-              }
-            ]
+                ...baseStatusTrack.status_change,
+                {
+                  narration_index: countNarrations(nextHistory),
+                  ...(eventStatusChange && typeof eventStatusChange === 'object' ? eventStatusChange : {}),
+                  isSaved: false
+                }
+              ]
           }
           : null;
         const compressionActive = !!historyLimitAction && state.compressionEnabled !== false;
@@ -3190,9 +3436,10 @@ const App: React.FC = () => {
           tokenUsage: mergeTokenUsage(prev.tokenUsage, narratorTokenUsage),
           history: [...updatedHistory, { 
             sender: 'narrator', 
-            text: `[RULE ERROR / 规则错误] ${response.ruleViolation}` 
-          }]
-        }));
+            text: `[RULE ERROR / 规则错误] ${response.ruleViolation}`,
+            isSaved: false
+          }] 
+        })); 
         return;
       }
 
@@ -3325,19 +3572,21 @@ const App: React.FC = () => {
         sender: 'narrator',
         text: `${storyText}${imageLog}`,
         imageUrl: imgData?.url,
-        groundingSources: imgData?.sources
+        groundingSources: imgData?.sources,
+        isSaved: false
       };
       const nextHistory = [...updatedHistory, narratorEntry];
       const nextStatusTrack = statusSucceeded && state.status_track
         ? {
           ...state.status_track,
           status_change: [
-            ...state.status_track.status_change,
-            {
-              narration_index: countNarrations(nextHistory),
-              ...(statusChange && typeof statusChange === 'object' ? statusChange : {})
-            }
-          ]
+              ...state.status_track.status_change,
+              {
+                narration_index: countNarrations(nextHistory),
+                ...(statusChange && typeof statusChange === 'object' ? statusChange : {}),
+                isSaved: false
+              }
+            ]
         }
         : state.status_track;
       const compressionActive = !!historyLimitAction && state.compressionEnabled !== false;
@@ -3612,20 +3861,21 @@ const App: React.FC = () => {
       );
       const recoveredInitialInventory = normalizeInventory(recovery.initialInventory as InventoryItem[]);
       const maxNarrations = narrationList.length;
-      const recoveredChanges: StatusChangeEntry[] = Array.isArray(recovery.inventoryChanges)
-        ? recovery.inventoryChanges.map((entry: any) => ({
-          narration_index: Math.max(
-            1,
-            Math.min(
-              maxNarrations,
-              Math.trunc(entry?.narration_index ?? entry?.nrration_index ?? 1)
-            )
-          ),
-          playerChange: {
-            inventoryChange: entry?.inventoryChange
-          }
-        }))
-        : [];
+        const recoveredChanges: StatusChangeEntry[] = Array.isArray(recovery.inventoryChanges)
+          ? recovery.inventoryChanges.map((entry: any) => ({
+            narration_index: Math.max(
+              1,
+              Math.min(
+                maxNarrations,
+                Math.trunc(entry?.narration_index ?? entry?.nrration_index ?? 1)
+              )
+            ),
+            playerChange: {
+              inventoryChange: entry?.inventoryChange
+            },
+            isSaved: false
+          }))
+          : [];
       const recoveredTrack: StatusTrack = {
         initial_status: buildStatusSnapshot(
           { ...state.player, inventory: recoveredInitialInventory },
@@ -3856,7 +4106,8 @@ const App: React.FC = () => {
             const update = statusResult.update || null;
             rebuiltChanges.push({
               narration_index: narrationIndex,
-              ...(update && typeof update === 'object' ? update : {})
+              ...(update && typeof update === 'object' ? update : {}),
+              isSaved: false
             });
             if (update?.playerChange) {
               player = applyPlayerChange(player, update.playerChange);
@@ -4185,6 +4436,34 @@ const App: React.FC = () => {
     }));
   };
 
+  const updateInterfaceColorChannel = (channel: keyof InterfaceColor, value: string) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return;
+    const fallback = DEFAULT_INTERFACE_COLOR[channel];
+    const clamped = clampColorChannel(parsed, fallback);
+    setGameState(prev => {
+      const base = normalizeInterfaceColor(prev.settings.interfaceColor, DEFAULT_INTERFACE_COLOR);
+      const nextColor = { ...base, [channel]: clamped };
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          interfaceColor: nextColor
+        }
+      };
+    });
+  };
+
+  const resetInterfaceColor = () => {
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        interfaceColor: { ...DEFAULT_INTERFACE_COLOR }
+      }
+    }));
+  };
+
   const updateImageFrequency = (value: string) => {
     if (!imagesEnabled) return;
     const parsed = Number(value);
@@ -4233,7 +4512,7 @@ const App: React.FC = () => {
           <h3 className="text-2xl font-bold uppercase">USERS.JSON</h3>
           <button
             onClick={() => setIsUsersEditorOpen(false)}
-            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
           >
             {isZh ? '关闭' : 'Close'}
           </button>
@@ -4246,7 +4525,7 @@ const App: React.FC = () => {
         <textarea
           value={usersEditorText}
           onChange={(e) => setUsersEditorText(e.target.value)}
-          className="w-full h-64 md:h-72 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-xs focus:outline-none font-mono"
+          className="w-full h-64 md:h-72 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-xs focus:outline-none font-mono"
         />
         {usersEditorError && (
           <div className="text-xs text-red-500 mt-2">{usersEditorError}</div>
@@ -4254,19 +4533,19 @@ const App: React.FC = () => {
         <div className="flex flex-wrap gap-2 mt-4">
           <button
             onClick={handleUsersEditorSave}
-            className="px-4 py-2 border-2 border-[#1aff1a] hover:bg-[#1aff1a] hover:text-black font-bold uppercase text-xs"
+            className="px-4 py-2 border-2 border-[color:var(--pip-color)] hover:bg-[color:var(--pip-color)] hover:text-black font-bold uppercase text-xs"
           >
             {isZh ? '保存' : 'Save'}
           </button>
           <button
             onClick={handleUsersEditorDownload}
-            className="px-4 py-2 border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black font-bold uppercase text-xs"
+            className="px-4 py-2 border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black font-bold uppercase text-xs"
           >
             {isZh ? '下载' : 'Download'}
           </button>
           <button
             onClick={() => setUsersEditorText(serializeUsersDb(usersDb, invitationCode))}
-            className="px-4 py-2 border border-[#1aff1a]/30 hover:bg-[#1aff1a]/20 font-bold uppercase text-xs"
+            className="px-4 py-2 border border-[color:rgba(var(--pip-color-rgb),0.3)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] font-bold uppercase text-xs"
           >
             {isZh ? '重载' : 'Reload'}
           </button>
@@ -4281,20 +4560,20 @@ const App: React.FC = () => {
           <h3 className="text-2xl font-bold uppercase">{isZh ? '设置' : 'Settings'}</h3>
           <button 
             onClick={() => setIsSettingsOpen(false)}
-            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
           >
             {isZh ? '关闭' : 'Close'}
           </button>
         </div>
           <div className="space-y-6">
             {isNormal && (
-              <div className="text-xs border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5">
+              <div className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
                 {isZh
                   ? 'API Key 仅保存在本地浏览器，不会上传到服务器。'
                   : 'API keys are stored only in this browser and never uploaded to the server.'}
               </div>
             )}
-          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-sm font-bold uppercase">
@@ -4310,8 +4589,8 @@ const App: React.FC = () => {
                 onClick={toggleImageGeneration}
                 className={`text-xs px-3 py-1 border font-bold uppercase transition-colors ${
                   imagesEnabled
-                    ? 'bg-[#1aff1a] text-black border-[#1aff1a]'
-                    : 'border-[#1aff1a]/50 text-[#1aff1a] hover:bg-[#1aff1a]/20'
+                    ? 'bg-[color:var(--pip-color)] text-black border-[color:var(--pip-color)]'
+                    : 'border-[color:rgba(var(--pip-color-rgb),0.5)] text-[color:var(--pip-color)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]'
                 }`}
               >
                 {imagesEnabled ? 'ON' : 'OFF'}
@@ -4319,7 +4598,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className={`border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5 ${!imagesEnabled ? 'opacity-50' : ''}`}>
+          <div className={`border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)] ${!imagesEnabled ? 'opacity-50' : ''}`}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-sm font-bold uppercase">
@@ -4336,8 +4615,8 @@ const App: React.FC = () => {
                 disabled={!imagesEnabled}
                 className={`text-xs px-3 py-1 border font-bold uppercase transition-colors ${
                   gameState.settings.highQualityImages
-                    ? 'bg-[#1aff1a] text-black border-[#1aff1a]'
-                    : 'border-[#1aff1a]/50 text-[#1aff1a] hover:bg-[#1aff1a]/20'
+                    ? 'bg-[color:var(--pip-color)] text-black border-[color:var(--pip-color)]'
+                    : 'border-[color:rgba(var(--pip-color-rgb),0.5)] text-[color:var(--pip-color)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]'
                 } ${!imagesEnabled ? 'opacity-40 cursor-not-allowed' : ''}`}
               >
                 {gameState.settings.highQualityImages ? 'ON' : 'OFF'}
@@ -4345,7 +4624,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className={`border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5 ${!imagesEnabled ? 'opacity-50' : ''}`}>
+          <div className={`border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)] ${!imagesEnabled ? 'opacity-50' : ''}`}>
             <div className="text-sm font-bold uppercase">
               {isZh ? '图像频率' : 'Image frequency'}
             </div>
@@ -4373,7 +4652,7 @@ const App: React.FC = () => {
                 value={gameState.settings.imageEveryTurns}
                 onChange={(e) => updateImageFrequency(e.target.value)}
                 disabled={!canAdjustImageFrequency || !imagesEnabled}
-                className="w-20 bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-sm focus:outline-none disabled:opacity-40"
+                className="w-20 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-sm focus:outline-none disabled:opacity-40"
               />
               <span className="text-[10px] uppercase opacity-60">
                 {isZh ? '回合' : 'turns'}
@@ -4392,7 +4671,7 @@ const App: React.FC = () => {
             )}
           </div>
 
-          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-sm font-bold uppercase">
               {isZh ? '叙事历史上限' : 'Narrator history limit'}
             </div>
@@ -4408,7 +4687,7 @@ const App: React.FC = () => {
                 value={gameState.settings.maxHistoryTurns}
                 onChange={(e) => updateHistoryLimit(e.target.value)}
                 disabled={isGuest}
-                className="w-20 bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-sm focus:outline-none disabled:opacity-40"
+                className="w-20 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-sm focus:outline-none disabled:opacity-40"
               />
               <span className="text-[10px] uppercase opacity-60">
                 {isZh ? '回合' : 'turns'}
@@ -4421,7 +4700,7 @@ const App: React.FC = () => {
             )}
           </div>
 
-          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-sm font-bold uppercase">
               {isZh ? '叙事管线' : 'Narrative pipeline'}
             </div>
@@ -4435,8 +4714,8 @@ const App: React.FC = () => {
                 onClick={() => updatePipelineMode('legacy')}
                 className={`text-xs px-3 py-1 border font-bold uppercase transition-colors ${
                   gameState.settings.pipelineMode === 'legacy' || !gameState.settings.pipelineMode
-                    ? 'bg-[#1aff1a] text-black border-[#1aff1a]'
-                    : 'border-[#1aff1a]/50 text-[#1aff1a] hover:bg-[#1aff1a]/20'
+                    ? 'bg-[color:var(--pip-color)] text-black border-[color:var(--pip-color)]'
+                    : 'border-[color:rgba(var(--pip-color-rgb),0.5)] text-[color:var(--pip-color)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]'
                 }`}
               >
                 {isZh ? '旧版' : 'Legacy'}
@@ -4445,8 +4724,8 @@ const App: React.FC = () => {
                 onClick={() => updatePipelineMode('event')}
                 className={`text-xs px-3 py-1 border font-bold uppercase transition-colors ${
                   gameState.settings.pipelineMode === 'event'
-                    ? 'bg-[#1aff1a] text-black border-[#1aff1a]'
-                    : 'border-[#1aff1a]/50 text-[#1aff1a] hover:bg-[#1aff1a]/20'
+                    ? 'bg-[color:var(--pip-color)] text-black border-[color:var(--pip-color)]'
+                    : 'border-[color:rgba(var(--pip-color-rgb),0.5)] text-[color:var(--pip-color)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]'
                 }`}
               >
                 {isZh ? '事件先定' : 'Event-first'}
@@ -4457,7 +4736,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-sm font-bold uppercase">
               {isZh ? '压缩记忆上限 (K)' : 'Compressed memory cap (K)'}
             </div>
@@ -4472,7 +4751,7 @@ const App: React.FC = () => {
                 min={1}
                 value={gameState.settings.maxCompressedMemoryK ?? 25}
                 onChange={(e) => updateCompressedMemoryLimit(e.target.value)}
-                className="w-20 bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-sm focus:outline-none"
+                className="w-20 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-sm focus:outline-none"
               />
               <span className="text-[10px] uppercase opacity-60">
                 K
@@ -4480,7 +4759,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5 space-y-4">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-4">
             <div>
               <div className="text-sm font-bold uppercase">
                 {isZh ? '全局文字缩放' : 'Global text scale'}
@@ -4498,7 +4777,7 @@ const App: React.FC = () => {
                   step={0.05}
                   value={textScale}
                   onChange={(e) => updateTextScale(e.target.value)}
-                  className="flex-1 accent-[#1aff1a]"
+                  className="flex-1 accent-[var(--pip-color)]"
                 />
                 <input
                   type="number"
@@ -4507,13 +4786,104 @@ const App: React.FC = () => {
                   step={0.05}
                   value={textScale.toFixed(2)}
                   onChange={(e) => updateTextScale(e.target.value)}
-                  className="w-20 bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-sm focus:outline-none"
+                  className="w-20 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-sm focus:outline-none"
                 />
               </div>
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-4">
+            <div>
+              <div className="text-sm font-bold uppercase">
+                {isZh ? '界面颜色' : 'Interface color'}
+              </div>
+              <div className="text-xs opacity-70 mt-1">
+                {isZh ? '调整 Pip-Boy 磷光颜色。' : 'Adjust the Pip-Boy phosphor color.'}
+              </div>
+              <div className="mt-3 space-y-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] uppercase opacity-60 w-6">R</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={255}
+                    step={1}
+                    value={interfaceColor.r}
+                    onChange={(e) => updateInterfaceColorChannel('r', e.target.value)}
+                    className="flex-1 accent-[var(--pip-color)]"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={255}
+                    step={1}
+                    value={interfaceColor.r}
+                    onChange={(e) => updateInterfaceColorChannel('r', e.target.value)}
+                    className="w-16 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-sm focus:outline-none"
+                  />
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] uppercase opacity-60 w-6">G</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={255}
+                    step={1}
+                    value={interfaceColor.g}
+                    onChange={(e) => updateInterfaceColorChannel('g', e.target.value)}
+                    className="flex-1 accent-[var(--pip-color)]"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={255}
+                    step={1}
+                    value={interfaceColor.g}
+                    onChange={(e) => updateInterfaceColorChannel('g', e.target.value)}
+                    className="w-16 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-sm focus:outline-none"
+                  />
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] uppercase opacity-60 w-6">B</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={255}
+                    step={1}
+                    value={interfaceColor.b}
+                    onChange={(e) => updateInterfaceColorChannel('b', e.target.value)}
+                    className="flex-1 accent-[var(--pip-color)]"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={255}
+                    step={1}
+                    value={interfaceColor.b}
+                    onChange={(e) => updateInterfaceColorChannel('b', e.target.value)}
+                    className="w-16 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-sm focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div className="mt-4 flex items-center gap-3">
+                <div
+                  className="w-10 h-10 border border-[color:rgba(var(--pip-color-rgb),0.5)]"
+                  style={{ backgroundColor: interfaceColorCss }}
+                />
+                <div className="text-[10px] uppercase opacity-60">
+                  {interfaceColor.r}, {interfaceColor.g}, {interfaceColor.b}
+                </div>
+                <button
+                  onClick={resetInterfaceColor}
+                  className="ml-auto px-3 py-1 border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black font-bold uppercase text-xs"
+                >
+                  {isZh ? '重置' : 'Reset'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-sm font-bold uppercase">
               {isZh ? '原始输出缓存' : 'Raw Output Cache'}
             </div>
@@ -4526,7 +4896,7 @@ const App: React.FC = () => {
               <button
                 onClick={() => setIsRawOutputOpen(true)}
                 disabled={!gameState.rawOutputCache}
-                className="px-3 py-1 border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black font-bold uppercase text-xs disabled:opacity-40"
+                className="px-3 py-1 border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black font-bold uppercase text-xs disabled:opacity-40"
               >
                 {isZh ? '查看' : 'View'}
               </button>
@@ -4534,14 +4904,14 @@ const App: React.FC = () => {
           </div>
 
           {isNormal && (
-            <div className="border border-[#1aff1a]/30 p-4 bg-[#1aff1a]/5 space-y-4">
+            <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-4">
               <div className="text-xs opacity-70">
                 {isZh
                   ? '文本模型必须支持多模态输入（文本+图像）、函数调用与联网搜索。'
                   : 'Text models must be multimodal (text + image input), support function calling, and online search.'}
               </div>
 
-              <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 space-y-3">
+              <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-3">
                 <div className="text-sm font-bold uppercase">
                   {isZh ? '文本模型' : 'Text Model'}
                 </div>
@@ -4552,7 +4922,7 @@ const App: React.FC = () => {
                   <select
                     value={textProvider}
                     onChange={(e) => updateTextProvider(e.target.value as ModelProvider)}
-                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                    className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                   >
                     {MODEL_PROVIDER_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -4572,7 +4942,7 @@ const App: React.FC = () => {
                     type="password"
                     value={currentUser?.textApiKey || ''}
                     onChange={(e) => updateTextApiKey(e.target.value)}
-                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                    className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                     placeholder={isZh ? '粘贴文本 API Key' : 'Paste text API key'}
                   />
                 </div>
@@ -4587,13 +4957,13 @@ const App: React.FC = () => {
                     type="text"
                     value={gameState.settings.textModel || ''}
                     onChange={(e) => updateTextModelName(e.target.value)}
-                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                    className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                     placeholder={isZh ? '输入文本模型名称' : 'Enter text model name'}
                   />
                 </div>
               </div>
 
-              <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 space-y-3">
+              <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-3">
                 <div className="text-sm font-bold uppercase">
                   {isZh ? '图像模型' : 'Image Model'}
                 </div>
@@ -4604,7 +4974,7 @@ const App: React.FC = () => {
                   <select
                     value={imageProvider}
                     onChange={(e) => updateImageProvider(e.target.value as ModelProvider)}
-                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                    className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                   >
                     {MODEL_PROVIDER_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -4624,7 +4994,7 @@ const App: React.FC = () => {
                     type="password"
                     value={currentUser?.imageApiKey || ''}
                     onChange={(e) => updateImageApiKey(e.target.value)}
-                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                    className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                     placeholder={isZh ? '粘贴图像 API Key' : 'Paste image API key'}
                   />
                 </div>
@@ -4639,19 +5009,19 @@ const App: React.FC = () => {
                     type="text"
                     value={gameState.settings.imageModel || ''}
                     onChange={(e) => updateImageModelName(e.target.value)}
-                    className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                    className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                     placeholder={isZh ? '输入图像模型名称' : 'Enter image model name'}
                   />
                 </div>
               </div>
 
-              <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 space-y-3">
+              <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-3">
                 <label className="flex items-center gap-2 text-xs uppercase font-bold">
                   <input
                     type="checkbox"
                     checked={!!gameState.settings.useProxy}
                     onChange={(e) => updateProxyEnabled(e.target.checked)}
-                    className="accent-[#1aff1a]"
+                    className="accent-[var(--pip-color)]"
                   />
                   {isZh ? '使用中转站（API Proxy）' : 'Use API Proxy'}
                 </label>
@@ -4665,7 +5035,7 @@ const App: React.FC = () => {
                         type="text"
                         value={gameState.settings.textProxyBaseUrl || gameState.settings.proxyBaseUrl || ''}
                         onChange={(e) => updateTextProxyBaseUrl(e.target.value)}
-                        className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                        className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                         placeholder="https://example.com/v1"
                       />
                     </div>
@@ -4677,7 +5047,7 @@ const App: React.FC = () => {
                         type="text"
                         value={gameState.settings.imageProxyBaseUrl || gameState.settings.proxyBaseUrl || ''}
                         onChange={(e) => updateImageProxyBaseUrl(e.target.value)}
-                        className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                        className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                         placeholder="https://example.com/v1"
                       />
                     </div>
@@ -4689,7 +5059,7 @@ const App: React.FC = () => {
                         type="password"
                         value={currentUser?.textProxyKey || ''}
                         onChange={(e) => updateTextProxyKey(e.target.value)}
-                        className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                        className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                         placeholder={isZh ? '粘贴文本中转站 API Key' : 'Paste text proxy API key'}
                       />
                     </div>
@@ -4701,7 +5071,7 @@ const App: React.FC = () => {
                         type="password"
                         value={currentUser?.imageProxyKey || ''}
                         onChange={(e) => updateImageProxyKey(e.target.value)}
-                        className="mt-2 w-full bg-black border border-[#1aff1a]/50 p-2 text-[#1aff1a] text-xs focus:outline-none"
+                        className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                         placeholder={isZh ? '粘贴图像中转站 API Key' : 'Paste image proxy API key'}
                       />
                     </div>
@@ -4735,13 +5105,13 @@ const App: React.FC = () => {
           <h3 className="text-2xl font-bold uppercase">{isZh ? '帮助' : 'HELP'}</h3>
           <button 
             onClick={() => setIsHelpOpen(false)}
-            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
           >
             {isZh ? '关闭' : 'Close'}
           </button>
         </div>
         <div className="space-y-4 text-sm">
-          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '快速开始' : 'Quick Start'}</div>
             <div className="opacity-80">
               {isZh
@@ -4755,7 +5125,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '模型与密钥' : 'Models & Keys'}</div>
             <div className="opacity-80">
               {isZh
@@ -4774,7 +5144,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '行动点与限制' : 'AP & Limits'}</div>
             <div className="opacity-80">
               {isZh
@@ -4788,7 +5158,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '叙事流程' : 'Narration Flow'}</div>
             <div className="opacity-80">
               {isZh
@@ -4807,7 +5177,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '图像与头像' : 'Images & Avatars'}</div>
             <div className="opacity-80">
               {isZh
@@ -4826,7 +5196,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '状态与库存' : 'Status & Inventory'}</div>
             <div className="opacity-80">
               {isZh
@@ -4855,7 +5225,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '记忆压缩' : 'Memory Compression'}</div>
             <div className="opacity-80">
               {isZh
@@ -4869,7 +5239,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '保存与导出' : 'Saves & Export'}</div>
             <div className="opacity-80">
               {isZh
@@ -4893,7 +5263,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '废土斗兽场' : 'Wasteland Smash Arena'}</div>
             <div className="opacity-80">
               {isZh
@@ -4912,7 +5282,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="border border-[#1aff1a]/20 p-4 bg-[#1aff1a]/5">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '其它' : 'Other'}</div>
             <div className="opacity-80">
               {isZh
@@ -4931,7 +5301,7 @@ const App: React.FC = () => {
           <h3 className="text-2xl font-bold uppercase">{isZh ? '用户系统提示' : 'User System Prompt'}</h3>
           <button
             onClick={() => setIsUserPromptOpen(false)}
-            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
           >
             {isZh ? '关闭' : 'Close'}
           </button>
@@ -4966,7 +5336,7 @@ const App: React.FC = () => {
         <textarea
           value={gameState.settings.userSystemPrompt || ''}
           onChange={(e) => updateUserSystemPrompt(e.target.value)}
-          className="w-full h-40 md:h-48 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-xs focus:outline-none"
+          className="w-full h-40 md:h-48 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-xs focus:outline-none"
           placeholder={isZh ? '输入用户系统提示...' : 'Enter user system prompt...'}
         />
       </div>
@@ -4979,7 +5349,7 @@ const App: React.FC = () => {
           <h3 className="text-2xl font-bold uppercase">{isZh ? '斗兽场系统提示' : 'Arena System Prompt'}</h3>
           <button
             onClick={() => setIsArenaPromptOpen(false)}
-            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
           >
             {isZh ? '关闭' : 'Close'}
           </button>
@@ -4992,7 +5362,7 @@ const App: React.FC = () => {
         <textarea
           value={arenaState.userPrompt || ''}
           onChange={(e) => updateArenaSystemPrompt(e.target.value)}
-          className="w-full h-40 md:h-48 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-xs focus:outline-none"
+          className="w-full h-40 md:h-48 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-xs focus:outline-none"
           placeholder={isZh ? '输入斗兽场系统提示...' : 'Enter arena system prompt...'}
         />
       </div>
@@ -5023,13 +5393,13 @@ const App: React.FC = () => {
         <div className="mt-4 space-y-2">
           <button
             onClick={handleLegacyCompressNow}
-            className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+            className="w-full border-2 border-[color:var(--pip-color)] py-2 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase"
           >
             {isZh ? '立即压缩' : 'Compress now'}
           </button>
           <button
             onClick={handleLegacyCompressLater}
-            className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+            className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.4)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase"
           >
             {isZh ? '稍后再说' : 'Not now'}
           </button>
@@ -5056,13 +5426,13 @@ const App: React.FC = () => {
         <div className="mt-4 space-y-2">
           <button
             onClick={handleManualCompressionConfirm}
-            className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+            className="w-full border-2 border-[color:var(--pip-color)] py-2 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase"
           >
             {isZh ? '确认压缩' : 'Confirm'}
           </button>
           <button
             onClick={() => setIsManualCompressionConfirmOpen(false)}
-            className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+            className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.4)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase"
           >
             {isZh ? '取消' : 'Cancel'}
           </button>
@@ -5077,7 +5447,7 @@ const App: React.FC = () => {
           <h3 className="text-xl font-bold uppercase">{isZh ? '原始输出缓存' : 'Raw Output Cache'}</h3>
           <button
             onClick={() => setIsRawOutputOpen(false)}
-            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
           >
             {isZh ? '关闭' : 'Close'}
           </button>
@@ -5090,20 +5460,20 @@ const App: React.FC = () => {
         <textarea
           value={gameState.rawOutputCache || ''}
           readOnly
-          className="w-full h-64 md:h-72 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-xs focus:outline-none font-mono"
+          className="w-full h-64 md:h-72 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-xs focus:outline-none font-mono"
           placeholder={isZh ? '暂无缓存内容。' : 'No cached output.'}
         />
         <div className="flex flex-wrap gap-2 mt-4">
           <button
             onClick={handleCopyRawOutput}
             disabled={!gameState.rawOutputCache}
-            className="px-4 py-2 border-2 border-[#1aff1a] hover:bg-[#1aff1a] hover:text-black font-bold uppercase text-xs disabled:opacity-40"
+            className="px-4 py-2 border-2 border-[color:var(--pip-color)] hover:bg-[color:var(--pip-color)] hover:text-black font-bold uppercase text-xs disabled:opacity-40"
           >
             {isZh ? '复制' : 'Copy'}
           </button>
           <button
             onClick={() => setIsRawOutputOpen(false)}
-            className="px-4 py-2 border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black font-bold uppercase text-xs"
+            className="px-4 py-2 border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black font-bold uppercase text-xs"
           >
             {isZh ? '关闭' : 'Close'}
           </button>
@@ -5143,13 +5513,13 @@ const App: React.FC = () => {
         <div className="mt-4 space-y-2">
           <button
             onClick={handleLegacyInventoryRefreshNow}
-            className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+            className="w-full border-2 border-[color:var(--pip-color)] py-2 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase"
           >
             {isZh ? '立即刷新' : 'Refresh now'}
           </button>
           <button
             onClick={handleLegacyInventoryRefreshLater}
-            className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+            className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.4)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase"
           >
             {isZh ? '稍后再说' : 'Not now'}
           </button>
@@ -5178,13 +5548,13 @@ const App: React.FC = () => {
         <div className="mt-4 space-y-2">
           <button
             onClick={handleLegacyKnownNpcCleanupNow}
-            className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+            className="w-full border-2 border-[color:var(--pip-color)] py-2 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase"
           >
             {isZh ? '立即覆盖' : 'Overwrite now'}
           </button>
           <button
             onClick={handleLegacyKnownNpcCleanupLater}
-            className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+            className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.4)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase"
           >
             {isZh ? '稍后再说' : 'Not now'}
           </button>
@@ -5210,19 +5580,19 @@ const App: React.FC = () => {
             <div className="mt-4 space-y-2">
               <button
                 onClick={handleStatusRebuildQuick}
-                className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+                className="w-full border-2 border-[color:var(--pip-color)] py-2 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase"
               >
                 {isZh ? '无 LLM 重建' : 'Rebuild (no LLM)'}
               </button>
               <button
                 onClick={handleStatusRebuildLlmPrompt}
-                className="w-full border border-[#1aff1a]/60 py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+                className="w-full border border-[color:rgba(var(--pip-color-rgb),0.6)] py-2 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase"
               >
                 {isZh ? '使用 LLM 重建' : 'Rebuild with LLM'}
               </button>
               <button
                 onClick={handleStatusRebuildClose}
-                className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+                className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.4)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase"
               >
                 {isZh ? '取消' : 'Cancel'}
               </button>
@@ -5248,19 +5618,19 @@ const App: React.FC = () => {
             <div className="mt-4 space-y-2">
               <button
                 onClick={handleStatusRebuildLlmContinue}
-                className="w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+                className="w-full border-2 border-[color:var(--pip-color)] py-2 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase"
               >
                 {isZh ? '继续重建' : 'Continue'}
               </button>
               <button
                 onClick={handleStatusRebuildLlmSettings}
-                className="w-full border border-[#1aff1a]/60 py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+                className="w-full border border-[color:rgba(var(--pip-color-rgb),0.6)] py-2 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase"
               >
                 {isZh ? '打开设置' : 'Open settings'}
               </button>
               <button
                 onClick={handleStatusRebuildBack}
-                className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+                className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.4)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase"
               >
                 {isZh ? '返回' : 'Back'}
               </button>
@@ -5277,7 +5647,7 @@ const App: React.FC = () => {
           <h3 className="text-2xl font-bold uppercase">{isZh ? '打赏' : 'Tip / Donate'}</h3>
           <button 
             onClick={() => setIsTipOpen(false)}
-            className="text-xs border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+            className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
           >
             {isZh ? '关闭' : 'Close'}
           </button>
@@ -5288,7 +5658,7 @@ const App: React.FC = () => {
             : 'Thanks for playing Fallout: RPG Simulation. The game will stay open and free as much as possible. If you enjoy the experience and decide to support me, I would be truly grateful. Your support helps cover guest API usage and server costs. USD is most convenient since costs are billed in USD. Thank you! If you want to contact me, please join QQ group 757944721. Or email me at hustphysicscheng@gmial.com'}
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 text-center">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] text-center">
             <img
               src={wechatQr}
               alt="WeChat QR"
@@ -5299,7 +5669,7 @@ const App: React.FC = () => {
               {isZh ? '微信 (人民币)' : 'WeChat (CNY)'}
             </div>
           </div>
-          <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 text-center">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] text-center">
             <img
               src={alipayQr}
               alt="Alipay QR"
@@ -5310,7 +5680,7 @@ const App: React.FC = () => {
               {isZh ? '支付宝 (人民币)' : 'Alipay (CNY)'}
             </div>
           </div>
-          <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 text-center">
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] text-center">
             <img
               src={venmoQr}
               alt="Venmo QR"
@@ -5341,7 +5711,7 @@ const App: React.FC = () => {
         </div>
         <button
           onClick={() => setShowGuestNotice(false)}
-          className="mt-4 w-full border-2 border-[#1aff1a] py-2 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase"
+          className="mt-4 w-full border-2 border-[color:var(--pip-color)] py-2 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase"
         >
           {isZh ? '了解' : 'Understood'}
         </button>
@@ -5359,8 +5729,8 @@ const App: React.FC = () => {
         {tipModal}
         <div className="max-w-xl w-full space-y-6 pip-boy-border p-6 md:p-10 bg-black/70 shadow-2xl relative">
           <div className="absolute top-4 right-4 flex space-x-2">
-            <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
-            <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
+            <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>EN</button>
+            <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>中文</button>
           </div>
           <h1 className="text-3xl md:text-4xl font-bold glow-text uppercase">
             {isZh ? '访问验证' : 'Access Verification'}
@@ -5380,7 +5750,7 @@ const App: React.FC = () => {
                 setAuthMode('login');
                 setAuthError('');
               }}
-              className={`px-3 py-1 border ${authMode === 'login' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]/50 hover:bg-[#1aff1a]/20'}`}
+              className={`px-3 py-1 border ${authMode === 'login' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]'}`}
             >
               {isZh ? '登录' : 'Login'}
             </button>
@@ -5389,7 +5759,7 @@ const App: React.FC = () => {
                 setAuthMode('register');
                 setAuthError('');
               }}
-              className={`px-3 py-1 border ${authMode === 'register' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]/50 hover:bg-[#1aff1a]/20'}`}
+              className={`px-3 py-1 border ${authMode === 'register' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]'}`}
             >
               {isZh ? '注册' : 'Register'}
             </button>
@@ -5400,14 +5770,14 @@ const App: React.FC = () => {
               type="text"
               value={authName}
               onChange={(e) => setAuthName(e.target.value)}
-              className="w-full bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-sm focus:outline-none"
+              className="w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-sm focus:outline-none"
               placeholder={isZh ? '用户名' : 'Username'}
             />
             <input
               type="password"
               value={authPasskey}
               onChange={(e) => setAuthPasskey(e.target.value)}
-              className="w-full bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-sm focus:outline-none"
+              className="w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-sm focus:outline-none"
               placeholder={isZh ? '密码' : 'Passkey'}
             />
             {authMode === 'register' && (
@@ -5416,7 +5786,7 @@ const App: React.FC = () => {
                   type="password"
                   value={authConfirm}
                   onChange={(e) => setAuthConfirm(e.target.value)}
-                  className="w-full bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-sm focus:outline-none"
+                  className="w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-sm focus:outline-none"
                   placeholder={isZh ? '确认密码' : 'Confirm passkey'}
                 />
               </>
@@ -5429,25 +5799,25 @@ const App: React.FC = () => {
             <button
               onClick={authMode === 'login' ? handleLogin : handleRegister}
               disabled={!usersLoaded}
-              className="w-full border-2 border-[#1aff1a] py-3 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase disabled:opacity-40"
+              className="w-full border-2 border-[color:var(--pip-color)] py-3 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase disabled:opacity-40"
             >
               {authMode === 'login' ? (isZh ? '登录' : 'Log In') : (isZh ? '注册' : 'Register')}
             </button>
             <button
               onClick={handleSkipLogin}
-              className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+              className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.4)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase"
             >
               {isZh ? '先试试？跳过登录' : 'Want to try first? Skip login'}
             </button>
             <button
               onClick={() => setIsTipOpen(true)}
-              className="w-full text-xs border border-[#1aff1a]/50 py-2 hover:bg-[#1aff1a] hover:text-black transition-all uppercase"
+              className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] py-2 hover:bg-[color:var(--pip-color)] hover:text-black transition-all uppercase"
             >
               {isZh ? '打赏' : 'Tip/Donate'}
             </button>
             <button
               onClick={() => importSave()}
-              className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+              className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.4)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase"
             >
               {isZh ? '导入存档' : 'Import Save'}
             </button>
@@ -5477,30 +5847,30 @@ const App: React.FC = () => {
         {arenaPromptModal}
         <div className="max-w-3xl w-full space-y-6 md:space-y-8 pip-boy-border p-6 md:p-12 bg-black/60 shadow-2xl relative">
           <div className="absolute top-4 right-4 flex space-x-2">
-            <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
-            <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
+            <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>EN</button>
+            <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>中文</button>
             <button
               onClick={() => setIsSettingsOpen(true)}
-              className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '设置' : 'SET'}
             </button>
             <button
               onClick={() => setIsHelpOpen(true)}
-              className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '帮助' : 'HELP'}
             </button>
             <button
               onClick={() => setIsUserPromptOpen(true)}
-              className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '提示' : 'PROMPT'}
             </button>
             {isAdmin && (
               <button
                 onClick={openUsersEditor}
-                className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+                className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
               >
                 {isZh ? '用户' : 'USERS'}
               </button>
@@ -5517,8 +5887,8 @@ const App: React.FC = () => {
              <button 
               onClick={pickEra}
               disabled={!canPlay}
-              className={`w-full text-xl md:text-2xl border-2 border-[#1aff1a] py-4 transition-all font-bold uppercase ${
-                canPlay ? 'hover:bg-[#1aff1a] hover:text-black' : 'opacity-40 cursor-not-allowed'
+              className={`w-full text-xl md:text-2xl border-2 border-[color:var(--pip-color)] py-4 transition-all font-bold uppercase ${
+                canPlay ? 'hover:bg-[color:var(--pip-color)] hover:text-black' : 'opacity-40 cursor-not-allowed'
               }`}
              >
               {gameState.language === 'en' ? 'Initialize New Simulation' : '初始化新模拟'}
@@ -5526,8 +5896,8 @@ const App: React.FC = () => {
              <button 
               onClick={openArenaSetup}
               disabled={!canPlay}
-              className={`w-full text-xl md:text-2xl border-2 border-[#1aff1a]/70 py-4 transition-all font-bold uppercase bg-[#1aff1a]/5 ${
-                canPlay ? 'hover:bg-[#1aff1a] hover:text-black' : 'opacity-40 cursor-not-allowed'
+              className={`w-full text-xl md:text-2xl border-2 border-[color:rgba(var(--pip-color-rgb),0.7)] py-4 transition-all font-bold uppercase bg-[color:rgba(var(--pip-color-rgb),0.05)] ${
+                canPlay ? 'hover:bg-[color:var(--pip-color)] hover:text-black' : 'opacity-40 cursor-not-allowed'
               }`}
              >
               {gameState.language === 'en' ? 'Wasteland Smash Arena' : '废土斗兽场'}
@@ -5536,8 +5906,8 @@ const App: React.FC = () => {
                <button 
                 onClick={loadGame}
                 disabled={!canPlay}
-                className={`w-full text-xl md:text-2xl border-2 border-[#1aff1a]/50 py-4 transition-all font-bold uppercase bg-[#1aff1a]/10 ${
-                  canPlay ? 'hover:bg-[#1aff1a]/50 hover:text-black' : 'opacity-40 cursor-not-allowed'
+                className={`w-full text-xl md:text-2xl border-2 border-[color:rgba(var(--pip-color-rgb),0.5)] py-4 transition-all font-bold uppercase bg-[color:rgba(var(--pip-color-rgb),0.1)] ${
+                  canPlay ? 'hover:bg-[color:rgba(var(--pip-color-rgb),0.5)] hover:text-black' : 'opacity-40 cursor-not-allowed'
                 }`}
                >
                 {gameState.language === 'en' ? 'Continue Last Save' : '继续上次存档'}
@@ -5547,8 +5917,8 @@ const App: React.FC = () => {
                <button 
                 onClick={loadArena}
                 disabled={!canPlay}
-                className={`w-full text-xl md:text-2xl border-2 border-[#1aff1a]/40 py-4 transition-all font-bold uppercase bg-[#1aff1a]/5 ${
-                  canPlay ? 'hover:bg-[#1aff1a]/40 hover:text-black' : 'opacity-40 cursor-not-allowed'
+                className={`w-full text-xl md:text-2xl border-2 border-[color:rgba(var(--pip-color-rgb),0.4)] py-4 transition-all font-bold uppercase bg-[color:rgba(var(--pip-color-rgb),0.05)] ${
+                  canPlay ? 'hover:bg-[color:rgba(var(--pip-color-rgb),0.4)] hover:text-black' : 'opacity-40 cursor-not-allowed'
                 }`}
                >
                 {gameState.language === 'en' ? 'Continue Arena Save' : '继续斗兽场存档'}
@@ -5583,11 +5953,11 @@ const App: React.FC = () => {
               <p className="mb-6 opacity-80 leading-relaxed">
                 For high-quality image generation and real-time visual referencing, you must select a paid API key.
                 <br /><br />
-                <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" className="underline text-[#1aff1a]">Learn about billing</a>
+                <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" className="underline text-[color:var(--pip-color)]">Learn about billing</a>
               </p>
               <button 
                 onClick={handleKeySelection}
-                className="w-full py-3 bg-[#1aff1a] text-black font-bold uppercase hover:bg-white transition-colors"
+                className="w-full py-3 bg-[color:var(--pip-color)] text-black font-bold uppercase hover:bg-white transition-colors"
               >
                 SELECT API KEY
               </button>
@@ -5608,12 +5978,12 @@ const App: React.FC = () => {
             <button
               onClick={() => setView('start')}
               disabled={gameState.isThinking}
-              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
+              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
             >
               {isZh ? '返回' : 'BACK'}
             </button>
           </div>
-          <div className="mb-6 space-y-2 p-4 bg-[#1aff1a]/10 border border-[#1aff1a]/20">
+          <div className="mb-6 space-y-2 p-4 bg-[color:rgba(var(--pip-color-rgb),0.1)] border border-[color:rgba(var(--pip-color-rgb),0.2)]">
              <div className="text-lg md:text-xl">
                {gameState.language === 'en' ? 'PARAMS: ' : '参数 (PARAMS): '}
                {displayLocation} / {displayYear}
@@ -5622,7 +5992,7 @@ const App: React.FC = () => {
           <button
             onClick={rerollCreationParams}
             disabled={gameState.isThinking}
-            className="mb-4 w-full text-xs md:text-sm border border-[#1aff1a]/50 py-2 hover:bg-[#1aff1a]/20 transition-all disabled:opacity-40"
+            className="mb-4 w-full text-xs md:text-sm border border-[color:rgba(var(--pip-color-rgb),0.5)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all disabled:opacity-40"
           >
             {isZh ? '这个世界太可怕了，我要换一个世界生活' : 'This world is terrifying. I want another life somewhere else.'}
           </button>
@@ -5634,28 +6004,28 @@ const App: React.FC = () => {
           <textarea 
             value={charDescription}
             onChange={(e) => setCharDescription(e.target.value)}
-            className="w-full h-40 md:h-48 bg-black border border-[#1aff1a] p-4 text-[#1aff1a] focus:outline-none text-lg md:text-xl"
+            className="w-full h-40 md:h-48 bg-black border border-[color:var(--pip-color)] p-4 text-[color:var(--pip-color)] focus:outline-none text-lg md:text-xl"
             disabled={gameState.isThinking}
             placeholder={gameState.language === 'en' ? "I am a vault dweller who..." : "我是一名来自避难所的..."}
           />
           <button
             onClick={() => importSave(currentUser?.username, () => setView('start'))}
             disabled={gameState.isThinking}
-            className="mt-3 w-full text-sm border border-[#1aff1a]/50 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase disabled:opacity-40"
+            className="mt-3 w-full text-sm border border-[color:rgba(var(--pip-color-rgb),0.5)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase disabled:opacity-40"
           >
             {isZh ? '导入存档' : 'Import Save'}
           </button>
           <button 
             onClick={handleCharacterCreation}
             disabled={gameState.isThinking || !charDescription.trim()}
-            className="mt-6 w-full text-xl md:text-2xl border-2 border-[#1aff1a] py-4 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase disabled:opacity-50"
+            className="mt-6 w-full text-xl md:text-2xl border-2 border-[color:var(--pip-color)] py-4 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase disabled:opacity-50"
           >
             {gameState.isThinking 
               ? (gameState.language === 'en' ? 'Processing...' : '处理中...') 
               : (gameState.language === 'en' ? 'Generate Profile' : '生成档案')}
           </button>
           {(gameState.isThinking || creationPhase) && (
-            <div className="mt-4 border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 text-left">
+            <div className="mt-4 border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] text-left">
               <div className="text-[10px] uppercase opacity-60 mb-1">{isZh ? '系统日志' : 'SYSTEM LOG'}</div>
               <div className="text-xs opacity-80">
                 {creationPhase || (isZh ? '处理中...' : 'Working...')}
@@ -5688,17 +6058,17 @@ const App: React.FC = () => {
               {isZh ? '废土斗兽场' : 'Wasteland Smash Arena'}
             </h2>
             <div className="flex items-center space-x-2">
-              <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
-              <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
+              <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>EN</button>
+              <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>中文</button>
               <button
                 onClick={() => setIsSettingsOpen(true)}
-                className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+                className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
               >
                 {isZh ? '设置' : 'SET'}
               </button>
               <button
                 onClick={() => setIsArenaPromptOpen(true)}
-                className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+                className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
               >
                 {isZh ? '提示' : 'PROMPT'}
               </button>
@@ -5715,13 +6085,13 @@ const App: React.FC = () => {
             <div className="flex space-x-2 text-xs uppercase font-bold">
               <button
                 onClick={() => updateArenaMode('scenario')}
-                className={`px-3 py-2 border ${arenaState.mode === 'scenario' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]/50 hover:bg-[#1aff1a]/20'}`}
+                className={`px-3 py-2 border ${arenaState.mode === 'scenario' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]'}`}
               >
                 {isZh ? '情景演绎' : 'Scenario'}
               </button>
               <button
                 onClick={() => updateArenaMode('wargame')}
-                className={`px-3 py-2 border ${arenaState.mode === 'wargame' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]/50 hover:bg-[#1aff1a]/20'}`}
+                className={`px-3 py-2 border ${arenaState.mode === 'wargame' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]'}`}
               >
                 {isZh ? '战争推演' : 'War Game Sim'}
               </button>
@@ -5742,7 +6112,7 @@ const App: React.FC = () => {
             <textarea
               value={arenaState.focus}
               onChange={(e) => updateArenaFocus(e.target.value)}
-              className="w-full h-20 md:h-24 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-sm md:text-base focus:outline-none"
+              className="w-full h-20 md:h-24 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-sm md:text-base focus:outline-none"
               placeholder={isZh ? '例如：弗兰克何瑞根不穿动力甲和拉尼厄斯打，胜率如何？' : 'e.g. Frank Horrigan without power armor vs Lanius — odds?'} 
             />
           </div>
@@ -5757,13 +6127,13 @@ const App: React.FC = () => {
                 <textarea
                   value={party.description}
                   onChange={(e) => updateArenaParty(index, e.target.value)}
-                  className="w-full h-16 md:h-20 bg-black border border-[#1aff1a]/50 p-3 text-[#1aff1a] text-sm md:text-base focus:outline-none"
+                  className="w-full h-16 md:h-20 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-sm md:text-base focus:outline-none"
                   placeholder={isZh ? `参战方 ${index + 1}` : `Party ${index + 1}`}
                 />
                 <button
                   onClick={() => removeArenaParty(index)}
                   disabled={arenaState.involvedParties.length <= 2}
-                  className="text-[10px] uppercase border border-[#1aff1a]/40 px-2 py-1 hover:bg-[#1aff1a]/20 transition-all disabled:opacity-40"
+                  className="text-[10px] uppercase border border-[color:rgba(var(--pip-color-rgb),0.4)] px-2 py-1 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all disabled:opacity-40"
                 >
                   {isZh ? '移除此方' : 'Remove party'}
                 </button>
@@ -5772,7 +6142,7 @@ const App: React.FC = () => {
             <button
               onClick={addArenaParty}
               disabled={arenaState.involvedParties.length >= 10}
-              className="text-xs border border-[#1aff1a]/50 px-3 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase disabled:opacity-40"
+              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase disabled:opacity-40"
             >
               {isZh ? '添加参战方' : 'Add involved party'}
             </button>
@@ -5784,13 +6154,13 @@ const App: React.FC = () => {
             <button
               onClick={() => runArenaSimulation(false, true)}
               disabled={arenaState.isThinking}
-              className="w-full text-lg md:text-xl border-2 border-[#1aff1a] py-3 hover:bg-[#1aff1a] hover:text-black transition-all font-bold uppercase disabled:opacity-50"
+              className="w-full text-lg md:text-xl border-2 border-[color:var(--pip-color)] py-3 hover:bg-[color:var(--pip-color)] hover:text-black transition-all font-bold uppercase disabled:opacity-50"
             >
               {isZh ? '生成战斗简报' : 'Generate Battle Briefing'}
             </button>
             <button
               onClick={() => setView('start')}
-              className="w-full text-xs border border-[#1aff1a]/40 py-2 hover:bg-[#1aff1a]/20 transition-all uppercase"
+              className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.4)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-all uppercase"
             >
               {isZh ? '返回菜单' : 'Back to Start Menu'}
             </button>
@@ -5807,9 +6177,9 @@ const App: React.FC = () => {
         {usersEditorModal}
         {settingsModal}
         {arenaPromptModal}
-        <header className="p-3 md:p-4 border-b border-[#1aff1a]/30 bg-black/60 flex justify-between items-center z-20">
+        <header className="p-3 md:p-4 border-b border-[color:rgba(var(--pip-color-rgb),0.3)] bg-black/60 flex justify-between items-center z-20">
           <div className="flex items-center space-x-2 md:space-x-4">
-            <div className="w-8 h-8 md:w-10 md:h-10 border-2 border-[#1aff1a] flex items-center justify-center font-bold text-lg md:text-xl">13</div>
+            <div className="w-8 h-8 md:w-10 md:h-10 border-2 border-[color:var(--pip-color)] flex items-center justify-center font-bold text-lg md:text-xl">13</div>
             <h1 className="text-lg md:text-2xl font-bold tracking-widest uppercase truncate max-w-[200px] md:max-w-none">
               {isZh ? '废土斗兽场' : 'Wasteland Smash Arena'}
             </h1>
@@ -5818,28 +6188,28 @@ const App: React.FC = () => {
             <button
               onClick={() => setView('arena_setup')}
               disabled={arenaState.isThinking}
-              className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
+              className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
             >
               {isZh ? '返回' : 'BACK'}
             </button>
-            <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>EN</button>
-            <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[#1aff1a] text-black' : 'border-[#1aff1a]'}`}>中文</button>
+            <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>EN</button>
+            <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>中文</button>
             <button
               onClick={() => setIsSettingsOpen(true)}
-              className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '设置' : 'SET'}
             </button>
             <button
               onClick={() => setIsArenaPromptOpen(true)}
-              className="px-2 py-1 text-xs border border-[#1aff1a]/50 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '提示' : 'PROMPT'}
             </button>
           </div>
         </header>
 
-        <div className="p-3 md:p-4 border-b border-[#1aff1a]/20 bg-black/50 space-y-2 text-sm max-h-[30vh] overflow-y-auto">
+        <div className="p-3 md:p-4 border-b border-[color:rgba(var(--pip-color-rgb),0.2)] bg-black/50 space-y-2 text-sm max-h-[30vh] overflow-y-auto">
           <div className="uppercase opacity-60">{isZh ? '焦点' : 'Focus'}</div>
           <div className="opacity-90">{arenaState.focus}</div>
         </div>
@@ -5861,14 +6231,14 @@ const App: React.FC = () => {
             />
           </div>
           <aside
-            className={`relative w-64 md:w-auto border-l border-[#1aff1a]/30 bg-black/60 p-3 md:p-4 overflow-y-auto min-h-0 ${arenaSidebarFlexClass}`}
+            className={`relative w-64 md:w-auto border-l border-[color:rgba(var(--pip-color-rgb),0.3)] bg-black/60 p-3 md:p-4 overflow-y-auto min-h-0 ${arenaSidebarFlexClass}`}
             style={isDesktop ? { width: arenaPanelWidth } : undefined}
           >
             <div
               onPointerDown={startPanelResize('arena')}
               className="hidden md:block absolute left-0 top-0 h-full w-2 cursor-col-resize z-10"
             >
-              <div className="h-full w-px bg-[#1aff1a]/30 mx-auto" />
+              <div className="h-full w-px bg-[color:rgba(var(--pip-color-rgb),0.3)] mx-auto" />
             </div>
             <div
               style={isDesktop ? {
@@ -5885,7 +6255,7 @@ const App: React.FC = () => {
                 </div>
                 <button
                   onClick={() => setArenaSidebarFolded(prev => !prev)}
-                  className="md:hidden text-[10px] uppercase border border-[#1aff1a]/50 px-2 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+                  className="md:hidden text-[10px] uppercase border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold"
                 >
                   {arenaSidebarFolded ? (isZh ? '展开' : 'EXPAND') : (isZh ? '折叠' : 'FOLD')}
                 </button>
@@ -5899,9 +6269,9 @@ const App: React.FC = () => {
                   const barWidth = forcePower === null ? 0 : Math.max(2, Math.round((forcePower / maxPower) * 100));
                   const isDefeated = arenaState.mode === 'wargame' && forcePower !== null && forcePower <= 0;
                   return (
-                    <div key={index} className="border border-[#1aff1a]/20 p-3 bg-black/40">
+                    <div key={index} className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-3 bg-black/40">
                       <div className={`flex ${isArenaSidebarFolded ? 'flex-col items-center gap-2' : 'items-start space-x-3'}`}>
-                        <div className={`${isArenaSidebarFolded ? 'w-16 h-16' : 'w-14 h-14'} border border-[#1aff1a]/40 bg-black/60 flex items-center justify-center text-[10px] uppercase`}>
+                        <div className={`${isArenaSidebarFolded ? 'w-16 h-16' : 'w-14 h-14'} border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/60 flex items-center justify-center text-[10px] uppercase`}>
                           {party.avatarUrl ? (
                             <img src={party.avatarUrl} alt={`party-${index}`} className="w-full h-full object-cover opacity-90" />
                           ) : (
@@ -5923,13 +6293,13 @@ const App: React.FC = () => {
                         <div className="mt-2">
                           <div className="flex items-center justify-between text-xs font-bold">
                             <span>{isZh ? '兵力值' : 'Force Power'}</span>
-                            <span className={`text-base ${isDefeated ? 'text-[#ff6b6b]' : 'text-[#1aff1a]'}`}>
+                            <span className={`text-base ${isDefeated ? 'text-[#ff6b6b]' : 'text-[color:var(--pip-color)]'}`}>
                               {forcePower ?? 0}/{maxPower}
                             </span>
                           </div>
-                          <div className="mt-1 h-2 w-full bg-black border border-[#1aff1a]/30">
+                          <div className="mt-1 h-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.3)]">
                             <div
-                              className={`h-full ${isDefeated ? 'bg-[#ff6b6b]' : 'bg-[#1aff1a]'}`}
+                              className={`h-full ${isDefeated ? 'bg-[#ff6b6b]' : 'bg-[color:var(--pip-color)]'}`}
                               style={{ width: `${barWidth}%` }}
                             />
                           </div>
@@ -5939,7 +6309,7 @@ const App: React.FC = () => {
                   );
                 })}
               </div>
-              <div className="mt-4 p-2 border-t border-[#1aff1a]/20 text-[9px] uppercase tracking-widest flex justify-between items-center bg-[#1aff1a]/5">
+              <div className="mt-4 p-2 border-t border-[color:rgba(var(--pip-color-rgb),0.2)] text-[9px] uppercase tracking-widest flex justify-between items-center bg-[color:rgba(var(--pip-color-rgb),0.05)]">
                 <span>{isZh ? '令牌' : 'TOKENS'}</span>
                 <span className="opacity-70">
                   {(isZh ? '发送' : 'SEND')} {arenaTokenUsage.sent.toLocaleString()} · {(isZh ? '接收' : 'RECV')} {arenaTokenUsage.received.toLocaleString()} · {(isZh ? '总计' : 'TOTAL')} {arenaTokenUsage.total.toLocaleString()}
@@ -5949,13 +6319,13 @@ const App: React.FC = () => {
           </aside>
         </div>
 
-        <div className="p-4 border-t border-[#1aff1a]/30 bg-black/60 flex flex-row flex-nowrap gap-1 md:gap-2 items-center">
+        <div className="p-4 border-t border-[color:rgba(var(--pip-color-rgb),0.3)] bg-black/60 flex flex-row flex-nowrap gap-1 md:gap-2 items-center">
           {!arenaState.finished ? (
             <>
               <button
                 onClick={() => runArenaSimulation(false, false)}
                 disabled={arenaState.isThinking}
-                className="flex-1 min-w-0 border-2 border-[#1aff1a] py-2 md:py-3 text-xs md:text-base font-bold uppercase whitespace-nowrap hover:bg-[#1aff1a] hover:text-black transition-all disabled:opacity-50"
+                className="flex-1 min-w-0 border-2 border-[color:var(--pip-color)] py-2 md:py-3 text-xs md:text-base font-bold uppercase whitespace-nowrap hover:bg-[color:var(--pip-color)] hover:text-black transition-all disabled:opacity-50"
               >
                 {arenaState.briefingComplete
                   ? (isZh ? '继续模拟' : 'Continue Simulation')
@@ -5964,7 +6334,7 @@ const App: React.FC = () => {
               <button
                 onClick={() => runArenaSimulation(true, false)}
                 disabled={arenaState.isThinking || !arenaState.briefingComplete}
-                className="flex-1 min-w-0 border-2 border-[#1aff1a]/50 py-2 md:py-3 text-xs md:text-base font-bold uppercase whitespace-nowrap hover:bg-[#1aff1a]/70 hover:text-black transition-all disabled:opacity-50"
+                className="flex-1 min-w-0 border-2 border-[color:rgba(var(--pip-color-rgb),0.5)] py-2 md:py-3 text-xs md:text-base font-bold uppercase whitespace-nowrap hover:bg-[color:rgba(var(--pip-color-rgb),0.7)] hover:text-black transition-all disabled:opacity-50"
               >
                 {isZh ? '结束战斗' : 'Finish the Battle'}
               </button>
@@ -5972,7 +6342,7 @@ const App: React.FC = () => {
           ) : (
             <button
               onClick={() => setView('arena_setup')}
-              className="flex-1 min-w-0 border-2 border-[#1aff1a] py-2 md:py-3 text-xs md:text-base font-bold uppercase whitespace-nowrap hover:bg-[#1aff1a] hover:text-black transition-all"
+              className="flex-1 min-w-0 border-2 border-[color:var(--pip-color)] py-2 md:py-3 text-xs md:text-base font-bold uppercase whitespace-nowrap hover:bg-[color:var(--pip-color)] hover:text-black transition-all"
             >
               {isZh ? '返回斗兽场' : 'Back to Arena Setup'}
             </button>
@@ -5980,18 +6350,18 @@ const App: React.FC = () => {
           <div className="relative flex-1 min-w-0">
             <button
               onClick={() => setShowArenaExportMenu(prev => !prev)}
-              className="w-full text-xs border border-[#1aff1a]/50 px-3 py-2 uppercase hover:bg-[#1aff1a] hover:text-black transition-all whitespace-nowrap"
+              className="w-full text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-2 uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-all whitespace-nowrap"
             >
               {isZh ? '导出记录' : 'Export Log'}
             </button>
             {showArenaExportMenu && (
-              <div className="absolute right-0 bottom-full mb-2 w-40 border border-[#1aff1a]/40 bg-black/90 text-xs uppercase shadow-lg">
+              <div className="absolute right-0 bottom-full mb-2 w-40 border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/90 text-xs uppercase shadow-lg">
                 <button
                   onClick={() => {
                     exportArenaData('log-md');
                     setShowArenaExportMenu(false);
                   }}
-                  className="w-full text-left px-3 py-2 hover:bg-[#1aff1a]/20"
+                  className="w-full text-left px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
                 >
                   {isZh ? '导出 Markdown' : 'Export .md'}
                 </button>
@@ -6000,7 +6370,7 @@ const App: React.FC = () => {
                     exportArenaData('log-pdf');
                     setShowArenaExportMenu(false);
                   }}
-                  className="w-full text-left px-3 py-2 hover:bg-[#1aff1a]/20"
+                  className="w-full text-left px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
                 >
                   {isZh ? '导出 PDF' : 'Export PDF'}
                 </button>
@@ -6028,54 +6398,54 @@ const App: React.FC = () => {
       {manualCompressionModal}
       {/* Main Terminal Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-black/40 h-full overflow-hidden">
-        <header className="p-3 md:p-4 border-b border-[#1aff1a]/30 bg-black/60 flex justify-between items-center z-20">
+        <header className="p-3 md:p-4 border-b border-[color:rgba(var(--pip-color-rgb),0.3)] bg-black/60 flex justify-between items-center z-20">
           <div className="flex items-center space-x-2 md:space-x-4">
-             <div className="w-8 h-8 md:w-10 md:h-10 border-2 border-[#1aff1a] flex items-center justify-center font-bold text-lg md:text-xl">13</div>
+             <div className="w-8 h-8 md:w-10 md:h-10 border-2 border-[color:var(--pip-color)] flex items-center justify-center font-bold text-lg md:text-xl">13</div>
              <h1 className="text-lg md:text-2xl font-bold tracking-widest uppercase truncate max-w-[150px] md:max-w-none">PIP-BOY 3000</h1>
           </div>
           <div className="flex items-center space-x-2">
             {isAdmin && (
               <button
                 onClick={openUsersEditor}
-                className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+                className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
               >
                 {isZh ? '用户' : 'USERS'}
               </button>
             )}
             <button
               onClick={handleReturnToMenu}
-              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '返回' : 'BACK'}
             </button>
             <button 
               onClick={() => setIsSettingsOpen(true)}
-              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '设置' : 'SET'}
             </button>
             <button
               onClick={handleManualCompressionRequest}
               disabled={compressionLocked}
-              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
+              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
             >
               {isZh ? '压缩' : 'MEMORY'}
             </button>
             <button 
               onClick={() => setIsHelpOpen(true)}
-              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '帮助' : 'HELP'}
             </button>
             <button
               onClick={() => setIsUserPromptOpen(true)}
-              className="text-xs border border-[#1aff1a]/50 px-3 py-1 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '提示' : 'PROMPT'}
             </button>
             <button 
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              className="md:hidden border-2 border-[#1aff1a] px-3 py-1 font-bold text-sm uppercase hover:bg-[#1aff1a] hover:text-black transition-all"
+              className="md:hidden border-2 border-[color:var(--pip-color)] px-3 py-1 font-bold text-sm uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-all"
             >
               {isSidebarOpen ? (gameState.language === 'en' ? 'CLOSE' : '关闭') : (gameState.language === 'en' ? 'STAT' : '状态')}
             </button>
@@ -6102,20 +6472,20 @@ const App: React.FC = () => {
           rerollLabel={isZh ? '重掷' : 'REROLL'}
         />
 
-        <form onSubmit={handleAction} className="p-3 md:p-4 bg-black/80 border-t border-[#1aff1a]/30 flex space-x-2 md:space-x-4">
+        <form onSubmit={handleAction} className="p-3 md:p-4 bg-black/80 border-t border-[color:rgba(var(--pip-color-rgb),0.3)] flex space-x-2 md:space-x-4">
           <input 
             type="text"
             value={userInput}
             onChange={(e) => setUserInput(e.target.value)}
             placeholder={gameState.language === 'en' ? "Your action..." : "你的行动..."}
-            className="flex-1 bg-black border border-[#1aff1a]/50 p-3 md:p-4 text-[#1aff1a] text-lg md:text-xl focus:outline-none"
+            className="flex-1 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 md:p-4 text-[color:var(--pip-color)] text-lg md:text-xl focus:outline-none"
             disabled={inputLocked}
             autoFocus
           />
           <button 
             type="submit"
             disabled={inputLocked || !userInput.trim()}
-            className="px-4 md:px-8 border-2 border-[#1aff1a] hover:bg-[#1aff1a] hover:text-black font-bold uppercase transition-all whitespace-nowrap"
+            className="px-4 md:px-8 border-2 border-[color:var(--pip-color)] hover:bg-[color:var(--pip-color)] hover:text-black font-bold uppercase transition-all whitespace-nowrap"
           >
             {gameState.language === 'en' ? 'EXE' : '执行'}
           </button>
@@ -6137,7 +6507,7 @@ const App: React.FC = () => {
             onPointerDown={startPanelResize('stat')}
             className="hidden md:block absolute left-0 top-0 h-full w-2 cursor-col-resize z-10"
           >
-            <div className="h-full w-px bg-[#1aff1a]/30 mx-auto" />
+            <div className="h-full w-px bg-[color:rgba(var(--pip-color-rgb),0.3)] mx-auto" />
           </div>
           <StatBar 
             player={gameState.player} 

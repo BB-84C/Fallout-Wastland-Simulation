@@ -494,6 +494,17 @@ function safeJsonParse(text: string): any {
   }
 }
 
+const normalizeInventoryChangeCarrier = (raw: any) => {
+  if (!raw || typeof raw !== 'object') return raw;
+  if (!raw.inventoryChange || typeof raw.inventoryChange !== 'object') return raw;
+  const playerChange = raw.playerChange && typeof raw.playerChange === 'object' ? raw.playerChange : {};
+  const nextPlayerChange = playerChange.inventoryChange
+    ? playerChange
+    : { ...playerChange, inventoryChange: raw.inventoryChange };
+  const { inventoryChange: _inventoryChange, ...rest } = raw;
+  return { ...rest, playerChange: nextPlayerChange };
+};
+
 export async function createPlayerCharacter(
   userInput: string,
   year: number,
@@ -662,7 +673,7 @@ export async function getEventOutcome(
     4. You are encouraged to create new events for the player that fit within the Fallout universe to enhance the story.
     5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
     6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, set the outcome where the player realizes they don't have the item.
-    7. playerChange.caps must be a delta (positive or negative), not the final total.
+    7. All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
     Return strict JSON with keys: outcomeSummary, ruleViolation, timePassedMinutes, playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
   `;
   const systemInstruction = `You are the Vault-Tec Event Manager.
@@ -673,7 +684,7 @@ export async function getEventOutcome(
           4. RULE GUARD: Player can only dictate intent and action. If they dictate narrative outcomes or facts/result of their will-do action, set ruleViolation.
           5. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
           6. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
-          7. CAPS: playerChange.caps is a DELTA (positive or negative), not the final total.
+          7. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
           8. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
           9. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
           10. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
@@ -690,18 +701,19 @@ export async function getEventOutcome(
   });
 
   if (!response.text) throw new Error("Connection to the Wasteland lost.");
-  const parsed = safeJsonParse(response.text);
-  const tokenUsage = normalizeTokenUsage({
-    promptTokens: response.usageMetadata?.promptTokenCount,
-    completionTokens: response.usageMetadata?.candidatesTokenCount,
-    totalTokens: response.usageMetadata?.totalTokenCount
-  }, `${systemInstruction}\n${prompt}`, response.text);
-  if (parsed && typeof parsed === 'object') {
-    (parsed as any).tokenUsage = tokenUsage;
-    return parsed as EventOutcome;
+    const parsed = safeJsonParse(response.text);
+    const normalized = normalizeInventoryChangeCarrier(parsed);
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: response.usageMetadata?.promptTokenCount,
+      completionTokens: response.usageMetadata?.candidatesTokenCount,
+      totalTokens: response.usageMetadata?.totalTokenCount
+    }, `${systemInstruction}\n${prompt}`, response.text);
+    if (normalized && typeof normalized === 'object') {
+      (normalized as any).tokenUsage = tokenUsage;
+      return normalized as EventOutcome;
+    }
+    return { outcomeSummary: '', timePassedMinutes: 0, tokenUsage } as EventOutcome;
   }
-  return { outcomeSummary: '', timePassedMinutes: 0, tokenUsage } as EventOutcome;
-}
 
 export async function getEventNarration(
   player: Actor,
@@ -898,8 +910,8 @@ export async function getStatusUpdate(
     TASK:
     Update status fields based on the narration. Return JSON with optional keys:
     playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
-    playerChange should contain only changed fields (new values), plus inventoryChange with add/remove lists.
-    playerChange.caps must be a delta (positive or negative), not the final total.
+    playerChange should contain only changed fields, plus inventoryChange with add/remove lists.
+    All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
     Each newNpc entry MUST include appearance (short physical description).
     If no changes are needed, return {}.
   `;
@@ -908,7 +920,7 @@ export async function getStatusUpdate(
           2. INPUTS: Use the CURRENT STATUS and the LAST NARRATION only. Do NOT infer changes that are not explicitly stated or clearly implied by the narration.
           3. CONSISTENCY: Keep existing items, caps, perks, SPECIAL, skills, and quests unless the narration clearly changes them. Never invent trades or items.
           4. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
-          5. CAPS: playerChange.caps is a DELTA (positive or negative), not the final total.
+          5. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
           6. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
           7. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
           8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
@@ -926,18 +938,19 @@ export async function getStatusUpdate(
   });
 
   if (!response.text) throw new Error("Connection to the Wasteland lost.");
-  const parsed = safeJsonParse(response.text);
-  const tokenUsage = normalizeTokenUsage({
-    promptTokens: response.usageMetadata?.promptTokenCount,
-    completionTokens: response.usageMetadata?.candidatesTokenCount,
-    totalTokens: response.usageMetadata?.totalTokenCount
-  }, `${systemInstruction}\n${prompt}`, response.text);
-  if (parsed && typeof parsed === 'object') {
-    (parsed as any).tokenUsage = tokenUsage;
-    return parsed as StatusUpdate & { tokenUsage?: TokenUsage };
+    const parsed = safeJsonParse(response.text);
+    const normalized = normalizeInventoryChangeCarrier(parsed);
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: response.usageMetadata?.promptTokenCount,
+      completionTokens: response.usageMetadata?.candidatesTokenCount,
+      totalTokens: response.usageMetadata?.totalTokenCount
+    }, `${systemInstruction}\n${prompt}`, response.text);
+    if (normalized && typeof normalized === 'object') {
+      (normalized as any).tokenUsage = tokenUsage;
+      return normalized as StatusUpdate & { tokenUsage?: TokenUsage };
+    }
+    return { tokenUsage } as StatusUpdate & { tokenUsage?: TokenUsage };
   }
-  return { tokenUsage } as StatusUpdate & { tokenUsage?: TokenUsage };
-}
 
 export async function refreshInventory(
   inventory: InventoryItem[],

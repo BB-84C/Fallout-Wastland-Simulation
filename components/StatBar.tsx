@@ -164,9 +164,9 @@ const StatBar: React.FC<StatBarProps> = ({
                     <span>HP</span>
                     <span>{player.health} / {player.maxHealth}</span>
                   </div>
-                  <div className="w-full bg-[#1aff1a]/10 h-3 border border-[#1aff1a]/30">
+                  <div className="w-full bg-[color:rgba(var(--pip-color-rgb),0.1)] h-3 border border-[color:rgba(var(--pip-color-rgb),0.3)]">
                     <div 
-                      className="bg-[#1aff1a] h-full shadow-[0_0_10px_#1aff1a] transition-all duration-500" 
+                      className="bg-[color:var(--pip-color)] h-full shadow-[0_0_10px_rgb(var(--pip-color-rgb))] transition-all duration-500" 
                       style={{ width: `${(player.health / player.maxHealth) * 100}%` }}
                     ></div>
                   </div>
@@ -177,9 +177,9 @@ const StatBar: React.FC<StatBarProps> = ({
                     <span>AP</span>
                     <span>{apUnlimited ? '∞' : `${ap} / ${maxAp}`}</span>
                   </div>
-                  <div className="w-full bg-[#1aff1a]/10 h-3 border border-[#1aff1a]/30">
+                  <div className="w-full bg-[color:rgba(var(--pip-color-rgb),0.1)] h-3 border border-[color:rgba(var(--pip-color-rgb),0.3)]">
                     <div 
-                      className="bg-[#1aff1a] h-full shadow-[0_0_10px_#1aff1a] transition-all duration-500" 
+                      className="bg-[color:var(--pip-color)] h-full shadow-[0_0_10px_rgb(var(--pip-color-rgb))] transition-all duration-500" 
                       style={{ width: `${apUnlimited ? 100 : Math.max(0, Math.min(100, (ap / maxAp) * 100))}%` }}
                     ></div>
                   </div>
@@ -190,14 +190,14 @@ const StatBar: React.FC<StatBarProps> = ({
                   )}
                 </div>
                 
-                <div className="border border-[#1aff1a]/30 p-3 bg-[#1aff1a]/5 space-y-2">
+                <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-2">
                   <div className="flex justify-between items-center">
                     <span className="text-xs uppercase font-bold opacity-70">{language === 'en' ? 'Caps' : '瓶盖'}</span>
-                    <span className="text-xl font-bold text-[#1aff1a] glow-text">{player.caps} ₵</span>
+                    <span className="text-xl font-bold text-[color:var(--pip-color)] glow-text">{player.caps} ₵</span>
                   </div>
-                  <div className="flex justify-between items-center pt-2 border-t border-[#1aff1a]/20">
+                  <div className="flex justify-between items-center pt-2 border-t border-[color:rgba(var(--pip-color-rgb),0.2)]">
                     <span className="text-xs uppercase font-bold opacity-70">{language === 'en' ? 'Karma' : '因果'}</span>
-                    <span className={`text-sm font-bold ${player.karma >= 0 ? 'text-[#1aff1a]' : 'text-red-500'}`}>
+                    <span className={`text-sm font-bold ${player.karma >= 0 ? 'text-[color:var(--pip-color)]' : 'text-red-500'}`}>
                       {player.karma > 50 ? (language === 'en' ? 'Saint' : '圣人') : 
                        player.karma > 20 ? (language === 'en' ? 'Good' : '善良') : 
                        player.karma > -20 ? (language === 'en' ? 'Neutral' : '中立') : 
@@ -208,7 +208,7 @@ const StatBar: React.FC<StatBarProps> = ({
               </div>
             </div>
 
-            <div className="text-xs space-y-1 opacity-80 pt-4 border-t border-[#1aff1a]/10">
+            <div className="text-xs space-y-1 opacity-80 pt-4 border-t border-[color:rgba(var(--pip-color-rgb),0.1)]">
               <div className="flex justify-between"><span>LOC:</span> <span className="text-right">{displayLocation}</span></div>
               <div className="flex justify-between"><span>DATE:</span> <span className="text-right">{dateStr}</span></div>
               <div className="flex justify-between"><span>FACT:</span> <span className="text-right">{player.faction}</span></div>
@@ -220,7 +220,7 @@ const StatBar: React.FC<StatBarProps> = ({
         return (
           <div className="space-y-2 animate-in slide-in-from-right-4 duration-300">
             {Object.entries(player.special).map(([key, val]) => (
-              <div key={key} className="flex justify-between items-center border-b border-[#1aff1a]/10 py-2 hover:bg-[#1aff1a]/5 px-1">
+              <div key={key} className="flex justify-between items-center border-b border-[color:rgba(var(--pip-color-rgb),0.1)] py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.05)] px-1">
                 <span className="text-sm font-bold tracking-widest">
                   {language === 'zh'
                     ? `${key.toUpperCase()} ${specialLocalizations.zh[key as SpecialAttr] || ''}`.trim()
@@ -236,7 +236,7 @@ const StatBar: React.FC<StatBarProps> = ({
         return (
           <div className="space-y-1 animate-in slide-in-from-right-4 duration-300">
             {Object.values(Skill).map((skill) => (
-              <div key={skill} className="flex justify-between items-center border-b border-[#1aff1a]/5 py-1.5 px-1 hover:bg-[#1aff1a]/5">
+              <div key={skill} className="flex justify-between items-center border-b border-[color:rgba(var(--pip-color-rgb),0.05)] py-1.5 px-1 hover:bg-[color:rgba(var(--pip-color-rgb),0.05)]">
                 <span className="text-xs opacity-90">{skillLocalizations[language][skill]}</span>
                 <span className="text-sm font-bold">{(player.skills as any)[skill] || 0}</span>
               </div>
@@ -249,8 +249,8 @@ const StatBar: React.FC<StatBarProps> = ({
           <div className="space-y-3 animate-in slide-in-from-right-4 duration-300">
             {player.perks.length === 0 && <div className="text-center py-10 opacity-30 italic">{language === 'en' ? 'No perks earned' : '暂无额外能力'}</div>}
             {player.perks.map((perk, idx) => (
-              <div key={idx} className="border border-[#1aff1a]/20 p-2 bg-[#1aff1a]/5">
-                <div className="text-sm font-bold text-[#1aff1a] mb-1 uppercase">{perk.name}</div>
+              <div key={idx} className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-2 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
+                <div className="text-sm font-bold text-[color:var(--pip-color)] mb-1 uppercase">{perk.name}</div>
                 <div className="text-[0.6875rem] opacity-70 leading-tight">{perk.description}</div>
               </div>
             ))}
@@ -269,12 +269,12 @@ const StatBar: React.FC<StatBarProps> = ({
               const isExpanded = expandedCompanion === companion.name;
               const isRegenerating = !!companionAvatarPending[companion.name];
               return (
-                <div key={companion.name} className="border border-[#1aff1a]/20 p-2 bg-[#1aff1a]/5">
+                <div key={companion.name} className="border border-[color:rgba(var(--pip-color-rgb),0.2)] p-2 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
                   <div className="flex gap-3">
                     <button
                       type="button"
                       onClick={() => setExpandedCompanion(isExpanded ? null : companion.name)}
-                      className="shrink-0 border border-[#1aff1a]/20 bg-black/30"
+                      className="shrink-0 border border-[color:rgba(var(--pip-color-rgb),0.2)] bg-black/30"
                       aria-label={language === 'en' ? 'Toggle companion details' : '展开同伴详情'}
                     >
                       {companion.avatarUrl ? (
@@ -292,7 +292,7 @@ const StatBar: React.FC<StatBarProps> = ({
                       )}
                     </button>
                     <div className="flex-1">
-                      <div className="text-sm font-bold text-[#1aff1a] mb-1 uppercase">{companion.name}</div>
+                      <div className="text-sm font-bold text-[color:var(--pip-color)] mb-1 uppercase">{companion.name}</div>
                       <div className="text-[0.6875rem] opacity-70">{companion.faction}</div>
                       <div className="text-[0.625rem] opacity-50">
                         {language === 'en' ? 'Age' : '年龄'} {companion.age} · {companion.gender}
@@ -304,7 +304,7 @@ const StatBar: React.FC<StatBarProps> = ({
                         type="button"
                         onClick={() => onRegenerateCompanionAvatar(companion.name)}
                         disabled={!canRegenerateCompanionAvatar || isRegenerating}
-                        className="mt-2 text-[0.5625rem] border border-[#1aff1a]/40 px-2 py-1 uppercase hover:bg-[#1aff1a]/20 transition-colors disabled:opacity-40"
+                        className="mt-2 text-[0.5625rem] border border-[color:rgba(var(--pip-color-rgb),0.4)] px-2 py-1 uppercase hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-colors disabled:opacity-40"
                       >
                         {isRegenerating
                           ? (language === 'en' ? 'Rebuilding...' : '生成中...')
@@ -328,7 +328,7 @@ const StatBar: React.FC<StatBarProps> = ({
                         <div className="text-[0.625rem] uppercase opacity-60 mb-1">SPECIAL</div>
                         <div className="grid grid-cols-2 gap-1">
                           {Object.entries(companion.special).map(([key, val]) => (
-                            <div key={key} className="flex justify-between border-b border-[#1aff1a]/10">
+                            <div key={key} className="flex justify-between border-b border-[color:rgba(var(--pip-color-rgb),0.1)]">
                               <span className="opacity-70">{key}</span>
                               <span className="font-bold">{val}</span>
                             </div>
@@ -339,7 +339,7 @@ const StatBar: React.FC<StatBarProps> = ({
                         <div className="text-[0.625rem] uppercase opacity-60 mb-1">{language === 'en' ? 'Skills' : '技能'}</div>
                         <div className="grid grid-cols-2 gap-1">
                           {Object.values(Skill).map((skill) => (
-                            <div key={skill} className="flex justify-between border-b border-[#1aff1a]/10">
+                            <div key={skill} className="flex justify-between border-b border-[color:rgba(var(--pip-color-rgb),0.1)]">
                               <span className="opacity-70">{skillLocalizations[language][skill]}</span>
                               <span className="font-bold">{(companion.skills as any)[skill] || 0}</span>
                             </div>
@@ -387,7 +387,7 @@ const StatBar: React.FC<StatBarProps> = ({
                                   <span className="opacity-70"> · {item.type} · {(item.weight * item.count).toFixed(1)} lb</span>
                                   {item.description && (
                                     <div
-                                      className={`pointer-events-none absolute left-0 top-full mt-1 w-56 rounded border border-[#1aff1a]/70 bg-black px-2 py-1 text-[0.5625rem] text-[#1aff1a] shadow-[0_0_14px_rgba(26,255,26,0.25)] transition-opacity duration-150 z-50 ${tooltipVisibility}`}
+                                      className={`pointer-events-none absolute left-0 top-full mt-1 w-56 rounded border border-[color:rgba(var(--pip-color-rgb),0.7)] bg-black px-2 py-1 text-[0.5625rem] text-[color:var(--pip-color)] shadow-[0_0_14px_rgba(var(--pip-color-rgb),0.25)] transition-opacity duration-150 z-50 ${tooltipVisibility}`}
                                     >
                                       <div className="opacity-80">{item.description}</div>
                                     </div>
@@ -414,15 +414,15 @@ const StatBar: React.FC<StatBarProps> = ({
                 <div className="space-y-2">
                   {quests.filter(q => q.status === 'active').length === 0 && <div className="text-xs opacity-30 italic px-2">--- {language === 'en' ? 'Empty' : '空'} ---</div>}
                   {quests.filter(q => q.status === 'active').map(q => (
-                    <div key={q.id} className="text-sm border-l-2 border-[#1aff1a] pl-2 py-2 bg-[#1aff1a]/5">
-                      <div className="font-bold text-[#1aff1a] uppercase text-xs mb-1">{q.name}</div>
+                    <div key={q.id} className="text-sm border-l-2 border-[color:var(--pip-color)] pl-2 py-2 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
+                      <div className="font-bold text-[color:var(--pip-color)] uppercase text-xs mb-1">{q.name}</div>
                       <div className="opacity-70 text-[0.6875rem]">{q.objective}</div>
                     </div>
                   ))}
                 </div>
              </div>
              {quests.filter(q => q.status !== 'active').length > 0 && (
-               <div className="pt-4 border-t border-[#1aff1a]/10">
+               <div className="pt-4 border-t border-[color:rgba(var(--pip-color-rgb),0.1)]">
                   <h4 className="text-[0.625rem] uppercase opacity-50 mb-2">{language === 'en' ? 'Completed' : '已完成'}</h4>
                   <div className="space-y-1">
                     {quests.filter(q => q.status !== 'active').map(q => (
@@ -451,7 +451,7 @@ const StatBar: React.FC<StatBarProps> = ({
                 return (
                   <div
                     key={idx}
-                    className="text-xs p-1.5 border-b border-[#1aff1a]/5 flex justify-between hover:bg-[#1aff1a]/5 group relative cursor-pointer"
+                    className="text-xs p-1.5 border-b border-[color:rgba(var(--pip-color-rgb),0.05)] flex justify-between hover:bg-[color:rgba(var(--pip-color-rgb),0.05)] group relative cursor-pointer"
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -469,7 +469,7 @@ const StatBar: React.FC<StatBarProps> = ({
                     </span>
                     {item.description && (
                       <div
-                        className={`pointer-events-none absolute left-0 top-full mt-1 w-64 rounded border border-[#1aff1a]/70 bg-black px-2 py-1 text-[0.5625rem] text-[#1aff1a] shadow-[0_0_14px_rgba(26,255,26,0.25)] transition-opacity duration-150 z-50 ${tooltipVisibility}`}
+                        className={`pointer-events-none absolute left-0 top-full mt-1 w-64 rounded border border-[color:rgba(var(--pip-color-rgb),0.7)] bg-black px-2 py-1 text-[0.5625rem] text-[color:var(--pip-color)] shadow-[0_0_14px_rgba(var(--pip-color-rgb),0.25)] transition-opacity duration-150 z-50 ${tooltipVisibility}`}
                       >
                         <div className="opacity-80">{item.description}</div>
                       </div>
@@ -500,7 +500,7 @@ const StatBar: React.FC<StatBarProps> = ({
   const clampedScale = Math.min(1.2, Math.max(0.85, panelScale ?? 1));
 
   return (
-    <div className="w-full h-full border-l border-[#1aff1a]/30 bg-black/80 p-0 overflow-hidden flex flex-col no-scrollbar">
+    <div className="w-full h-full border-l border-[color:rgba(var(--pip-color-rgb),0.3)] bg-black/80 p-0 overflow-hidden flex flex-col no-scrollbar">
       <div
         style={{
           transform: `scale(${clampedScale})`,
@@ -511,25 +511,25 @@ const StatBar: React.FC<StatBarProps> = ({
         className="h-full min-h-0 flex flex-col"
       >
         {/* Top Utility Header */}
-        <div className="p-3 border-b border-[#1aff1a]/30 space-y-3 bg-black">
+        <div className="p-3 border-b border-[color:rgba(var(--pip-color-rgb),0.3)] space-y-3 bg-black">
           <div className="flex justify-between items-center">
             <button 
               onClick={onClose}
-              className="md:hidden text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/20 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold uppercase"
+              className="md:hidden text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 bg-[color:rgba(var(--pip-color-rgb),0.2)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {language === 'en' ? 'RETURN' : '返回'}
             </button>
             <div className="flex space-x-2">
               <button 
                 onClick={() => onLanguageToggle(language === 'en' ? 'zh' : 'en')}
-                className="text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors"
+                className="text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors"
               >
                 {language === 'en' ? 'EN / 中' : '中 / EN'}
               </button>
               {showSave && (
                 <button 
                   onClick={onSave}
-                  className="text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+                  className="text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 bg-[color:rgba(var(--pip-color-rgb),0.1)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold"
                 >
                   {language === 'en' ? 'SAVE' : '保存'}
                 </button>
@@ -537,7 +537,7 @@ const StatBar: React.FC<StatBarProps> = ({
               <button
                 onClick={onRefreshInventory}
                 disabled={inventoryRefreshing}
-                className="text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold disabled:opacity-40"
+                className="text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 bg-[color:rgba(var(--pip-color-rgb),0.1)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold disabled:opacity-40"
               >
                 {inventoryRefreshing
                   ? (language === 'en' ? 'REFRESH...' : '刷新中...')
@@ -546,7 +546,7 @@ const StatBar: React.FC<StatBarProps> = ({
               <button
                 onClick={onRebuildStatus}
                 disabled={!canRebuildStatus || statusRebuilding}
-                className="text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 bg-[#1aff1a]/10 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold disabled:opacity-40"
+                className="text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 bg-[color:rgba(var(--pip-color-rgb),0.1)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold disabled:opacity-40"
               >
                 {statusRebuilding
                   ? (language === 'en' ? 'REBUILD...' : '重建中...')
@@ -555,27 +555,27 @@ const StatBar: React.FC<StatBarProps> = ({
               <div className="relative">
                 <button 
                   onClick={() => setShowExportMenu(prev => !prev)}
-                  className="text-[0.625rem] border border-[#1aff1a]/50 px-2 py-0.5 hover:bg-[#1aff1a] hover:text-black transition-colors font-bold"
+                  className="text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold"
                 >
                   {language === 'en' ? 'EXPORT' : '导出'}
                 </button>
                 {showExportMenu && (
-                  <div className="absolute right-0 mt-1 w-24 border border-[#1aff1a]/40 bg-black/95 z-10">
+                  <div className="absolute right-0 mt-1 w-24 border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/95 z-10">
                     <button
                       onClick={() => { onExport('log-md'); setShowExportMenu(false); }}
-                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-colors"
                     >
                       {language === 'en' ? 'LOG MD' : '终端 MD'}
                     </button>
                     <button
                       onClick={() => { onExport('log-pdf'); setShowExportMenu(false); }}
-                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-colors"
                     >
                       {language === 'en' ? 'LOG PDF' : '终端 PDF'}
                     </button>
                     <button
                       onClick={() => { onExport('save-json'); setShowExportMenu(false); }}
-                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[#1aff1a] hover:text-black transition-colors"
+                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-colors"
                     >
                       {language === 'en' ? 'SAVE JSON' : '存档 JSON'}
                     </button>
@@ -597,15 +597,15 @@ const StatBar: React.FC<StatBarProps> = ({
         </div>
 
         {/* Sub-Menu Tabs */}
-        <div className="flex border-b border-[#1aff1a]/30 bg-[#1aff1a]/5">
+        <div className="flex border-b border-[color:rgba(var(--pip-color-rgb),0.3)] bg-[color:rgba(var(--pip-color-rgb),0.05)]">
           {tabs.map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 py-2 text-[0.625rem] font-bold transition-all border-r last:border-r-0 border-[#1aff1a]/20 ${
+              className={`flex-1 py-2 text-[0.625rem] font-bold transition-all border-r last:border-r-0 border-[color:rgba(var(--pip-color-rgb),0.2)] ${
                 activeTab === tab.id 
-                  ? 'bg-[#1aff1a] text-black shadow-[inset_0_0_8px_rgba(0,0,0,0.5)]' 
-                  : 'text-[#1aff1a]/60 hover:text-[#1aff1a] hover:bg-[#1aff1a]/10'
+                  ? 'bg-[color:var(--pip-color)] text-black shadow-[inset_0_0_8px_rgba(0,0,0,0.5)]' 
+                  : 'text-[color:rgba(var(--pip-color-rgb),0.6)] hover:text-[color:var(--pip-color)] hover:bg-[color:rgba(var(--pip-color-rgb),0.1)]'
               }`}
             >
               {tab.label}
@@ -620,7 +620,7 @@ const StatBar: React.FC<StatBarProps> = ({
           {renderTabContent()}
         </div>
 
-        <div className="p-2 border-t border-[#1aff1a]/20 text-[0.5625rem] uppercase tracking-widest flex justify-between items-center bg-[#1aff1a]/5">
+        <div className="p-2 border-t border-[color:rgba(var(--pip-color-rgb),0.2)] text-[0.5625rem] uppercase tracking-widest flex justify-between items-center bg-[color:rgba(var(--pip-color-rgb),0.05)]">
           <span>{language === 'en' ? 'TOKENS' : '令牌'}</span>
           <span className="opacity-70">
             {(language === 'en' ? 'SEND' : '发送')} {tokenUsage.sent.toLocaleString()} · {(language === 'en' ? 'RECV' : '接收')} {tokenUsage.received.toLocaleString()} · {(language === 'en' ? 'TOTAL' : '总计')} {tokenUsage.total.toLocaleString()}
@@ -628,7 +628,7 @@ const StatBar: React.FC<StatBarProps> = ({
         </div>
 
         {/* Bottom Footer Info */}
-        <div className="p-2 bg-[#1aff1a]/5 border-t border-[#1aff1a]/20 text-[0.5625rem] flex justify-between opacity-50 uppercase tracking-widest">
+        <div className="p-2 bg-[color:rgba(var(--pip-color-rgb),0.05)] border-t border-[color:rgba(var(--pip-color-rgb),0.2)] text-[0.5625rem] flex justify-between opacity-50 uppercase tracking-widest">
           <span>Vault-Tec Industries</span>
           <span>{displayLocation.split(' ')[0]}</span>
         </div>
