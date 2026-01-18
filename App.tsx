@@ -6274,6 +6274,7 @@ const App: React.FC = () => {
             <Terminal
               history={arenaState.history}
               isThinking={arenaState.isThinking}
+              language={gameState.language}
               forceScrollbar
               progressStages={[
                 { label: isZh ? '叙事生成' : 'Narration', status: arenaNarrationStage },
@@ -6511,6 +6512,7 @@ const App: React.FC = () => {
         <Terminal
           history={gameState.history}
           isThinking={gameState.isThinking}
+          language={gameState.language}
           progressStages={progressStages}
           stageStatusLabels={stageStatusLabels}
           systemError={systemError}
