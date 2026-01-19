@@ -16,6 +16,7 @@ import {
 } from "./geminiService";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
+const GROK_BASE_URL = "https://api.x.ai/v1";
 const CLAUDE_BASE_URL = "https://api.anthropic.com/v1";
 const DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 
@@ -973,7 +974,11 @@ TASK:
 Return JSON with key inventory containing the rectified items.`;
 
 const normalizeProvider = (provider?: ModelProvider): ModelProvider =>
-  provider && ["openai", "gemini", "claude", "doubao"].includes(provider) ? provider : "gemini";
+  provider && ["openai", "grok", "gemini", "claude", "doubao"].includes(provider) ? provider : "gemini";
+
+const isOpenAiCompatible = (provider: ModelProvider) => provider === "openai" || provider === "grok";
+
+const getOpenAiLabel = (provider: ModelProvider) => (provider === "grok" ? "Grok" : "OpenAI");
 
 const requireApiKey = (apiKey: string | undefined, provider: ModelProvider) => {
   if (!apiKey) {
@@ -988,12 +993,80 @@ const normalizeBaseUrl = (value?: string) => {
   return trimmed.replace(/\/+$/, "");
 };
 
+const extractGrokCitations = (payload: any): GroundingSource[] => {
+  const candidates = [
+    payload?.citations,
+    payload?.choices?.[0]?.citations,
+    payload?.choices?.[0]?.message?.citations,
+    payload?.choices?.[0]?.message?.context?.citations
+  ];
+  const citationList = candidates.find((entry) => Array.isArray(entry)) as any[] | undefined;
+  if (!citationList) return [];
+  return citationList
+    .map((item) => {
+      if (!item) return null;
+      if (typeof item === "string") {
+        return { title: item, uri: item };
+      }
+      const uri = item.url || item.uri || "";
+      if (!uri) return null;
+      const title = item.title || item.name || item.text || uri;
+      return { title, uri };
+    })
+    .filter((entry): entry is GroundingSource => !!entry);
+};
+
+const callGrokWebSearch = async (
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  prompt: string,
+  maxLength = 800
+): Promise<{ text: string; sources: GroundingSource[] }> => {
+  const res = await fetch(`${baseUrl}/responses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        { role: "user", content: prompt }
+      ],
+      tools: [{ type: "web_search" }]
+    })
+  });
+  if (!res.ok) {
+    throw new Error(await formatHttpError(res, "Grok request failed"));
+  }
+  const data = await res.json();
+  let content = "";
+  if (typeof data?.output_text === "string") {
+    content = data.output_text;
+  } else if (Array.isArray(data?.output)) {
+    data.output.forEach((entry: any) => {
+      const parts = Array.isArray(entry?.content) ? entry.content : [];
+      parts.forEach((part: any) => {
+        if (typeof part?.text === "string") {
+          content += part.text;
+        }
+      });
+    });
+  }
+  const sources = extractGrokCitations(data);
+  const trimmed = clampImagePrompt(content, maxLength);
+  return { text: trimmed, sources };
+};
+
 const resolveBaseUrl = (provider: ModelProvider, baseUrl?: string) => {
   const normalized = normalizeBaseUrl(baseUrl);
   if (normalized) return normalized;
   switch (provider) {
     case "openai":
       return OPENAI_BASE_URL;
+    case "grok":
+      return GROK_BASE_URL;
     case "claude":
       return CLAUDE_BASE_URL;
     case "doubao":
@@ -1151,6 +1224,28 @@ const buildImagePrompt = (prompt: string, highQuality: boolean) => {
   return `Cinematic Fallout concept art. ${prompt}. Atmosphere: desolate, atmospheric, detailed. Style: digital art, 4k, hyper-realistic wasteland aesthetic.`;
 };
 
+const clampImagePrompt = (prompt: string, maxLength: number) => {
+  const cleaned = prompt
+    .replace(/\[[^\]]*\]\([^)]+\)/g, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\[[0-9]+\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned.length <= maxLength) {
+    return cleaned;
+  }
+  return cleaned.slice(0, maxLength).trim();
+};
+
+const buildUserGuidanceLine = (userSystemPrompt?: string) => {
+  const guidance = userSystemPrompt?.trim();
+  return guidance ? `User guidance: ${guidance}` : "";
+};
+
+const buildImageContext = (userSystemPrompt?: string) => {
+  return buildUserGuidanceLine(userSystemPrompt);
+};
+
 async function compressImage(base64: string): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -1209,8 +1304,10 @@ const callOpenAiJson = async (
   system: string,
   prompt: string,
   schema?: JsonSchema,
-  schemaName = "response"
+  schemaName = "response",
+  providerLabel = "OpenAI"
 ) => {
+  const requestLabel = providerLabel || "OpenAI";
   const responseFormatChat = schema
     ? { type: "json_schema", json_schema: { name: schemaName, schema, strict: true } }
     : { type: "json_object" };
@@ -1222,15 +1319,21 @@ const callOpenAiJson = async (
     Authorization: `Bearer ${apiKey}`
   };
   const isResponsesOnlyModel = /^gpt-5/i.test(model);
-  const buildResponsesBody = (formatOverride?: any) => ({
-    model,
-    instructions: system,
-    input: [
-      { role: "user", content: prompt }
-    ],
-    text: { format: formatOverride ?? responseFormatResponses },
-    reasoning: { effort: "low" }
-  });
+  const includeReasoning = requestLabel !== "Grok";
+  const buildResponsesBody = (formatOverride?: any) => {
+    const body: Record<string, any> = {
+      model,
+      instructions: system,
+      input: [
+        { role: "user", content: prompt }
+      ],
+      text: { format: formatOverride ?? responseFormatResponses }
+    };
+    if (includeReasoning) {
+      body.reasoning = { effort: "low" };
+    }
+    return body;
+  };
   const extractResponsesContent = (data: any) => {
     if (typeof data?.output_text === "string" && data.output_text.trim()) {
       return data.output_text;
@@ -1264,12 +1367,12 @@ const callOpenAiJson = async (
     const data = await res.json();
     const content = extractResponsesContent(data);
     if (data?.status === "incomplete" && data?.incomplete_details?.reason) {
-      const error = new Error(`OpenAI response incomplete: ${data.incomplete_details.reason}`);
+      const error = new Error(`${requestLabel} response incomplete: ${data.incomplete_details.reason}`);
       (error as { rawOutput?: string }).rawOutput = JSON.stringify(data);
       throw error;
     }
     if (!content.trim()) {
-      const error = new Error("OpenAI response contained no output.");
+      const error = new Error(`${requestLabel} response contained no output.`);
       (error as { rawOutput?: string }).rawOutput = JSON.stringify(data);
       throw error;
     }
@@ -1295,7 +1398,7 @@ const callOpenAiJson = async (
       const data = await res.json();
       const content = extractResponsesContent(data);
       if (!content.trim()) {
-        const error = new Error("OpenAI response contained no output.");
+        const error = new Error(`${requestLabel} response contained no output.`);
         (error as { rawOutput?: string }).rawOutput = JSON.stringify(data);
         throw error;
       }
@@ -1309,11 +1412,15 @@ const callOpenAiJson = async (
     }
   }
 
-  const shouldFallback = !isResponsesOnlyModel && (res.status === 404 || res.status === 405);
+  const shouldFallback = !isResponsesOnlyModel && (
+    res.status === 404
+    || res.status === 405
+    || (requestLabel === "Grok" && res.status === 400)
+  );
   if (!shouldFallback) {
     const message = errorText
-      ? `OpenAI request failed (HTTP ${res.status}): ${errorText}`
-      : `OpenAI request failed (HTTP ${res.status}).`;
+      ? `${requestLabel} request failed (HTTP ${res.status}): ${errorText}`
+      : `${requestLabel} request failed (HTTP ${res.status}).`;
     throw new Error(message);
   }
 
@@ -1339,12 +1446,12 @@ const callOpenAiJson = async (
         body: JSON.stringify({ ...baseBody, response_format: { type: "json_object" } })
       });
       if (!chatRes.ok) {
-        throw new Error(await formatHttpError(chatRes, "OpenAI request failed"));
+        throw new Error(await formatHttpError(chatRes, `${requestLabel} request failed`));
       }
     } else {
       const message = text
-        ? `OpenAI request failed (HTTP ${chatRes.status}): ${text}`
-        : `OpenAI request failed (HTTP ${chatRes.status}).`;
+        ? `${requestLabel} request failed (HTTP ${chatRes.status}): ${text}`
+        : `${requestLabel} request failed (HTTP ${chatRes.status}).`;
       throw new Error(message);
     }
   }
@@ -1503,15 +1610,27 @@ const fetchImageAsBase64 = async (url: string) => {
   });
 };
 
-const generateOpenAiImage = async (apiKey: string, baseUrl: string, model: string, prompt: string) => {
-  if (!/^(gpt-image-|dall-e-)/i.test(model)) {
-    throw new Error(`OpenAI image model "${model}" is not supported. Use gpt-image-1 or a DALL·E model.`);
+const generateOpenAiImage = async (
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  prompt: string,
+  provider: ModelProvider
+) => {
+  const requestLabel = getOpenAiLabel(provider);
+  if (provider === "openai" && !/^(gpt-image-|dall-e-)/i.test(model)) {
+    throw new Error(`${requestLabel} image model "${model}" is not supported. Use gpt-image-1 or a DALL·E model.`);
   }
-  const requestBody = {
+  const effectivePrompt = provider === "grok"
+    ? clampImagePrompt(prompt, 1024)
+    : prompt;
+  const requestBody: Record<string, any> = {
     model,
-    prompt,
-    size: "1024x1024"
+    prompt: effectivePrompt
   };
+  if (provider !== "grok") {
+    requestBody.size = "1024x1024";
+  }
   let res = await fetch(`${baseUrl}/images/generations`, {
     method: "POST",
     headers: {
@@ -1523,8 +1642,8 @@ const generateOpenAiImage = async (apiKey: string, baseUrl: string, model: strin
   if (!res.ok) {
     const text = await res.text();
     const message = text
-      ? `OpenAI image request failed (HTTP ${res.status}): ${text}`
-      : `OpenAI image request failed (HTTP ${res.status}).`;
+      ? `${requestLabel} image request failed (HTTP ${res.status}): ${text}`
+      : `${requestLabel} image request failed (HTTP ${res.status}).`;
     throw new Error(message);
   }
   const data = await res.json();
@@ -1532,6 +1651,9 @@ const generateOpenAiImage = async (apiKey: string, baseUrl: string, model: strin
   if (b64) return b64;
   const url = data?.data?.[0]?.url as string | undefined;
   if (url) {
+    if (provider === "grok") {
+      return url;
+    }
     const dataUrl = await fetchImageAsBase64(url);
     return dataUrl.replace(/^data:image\/png;base64,/, "").replace(/^data:image\/jpeg;base64,/, "");
   }
@@ -1636,8 +1758,17 @@ export async function createPlayerCharacter(
   const system = buildCharacterSystem(targetLang, options?.userSystemPrompt);
   const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). Include a short appearance description for the player and any companions. If the user mentions starting companions, include them.`;
 
-  const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonPlayerCreationSchema, "player_creation")
+  const result = isOpenAiCompatible(provider)
+    ? await callOpenAiJson(
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      jsonPlayerCreationSchema,
+      "player_creation",
+      getOpenAiLabel(provider)
+    )
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonPlayerCreationSchema)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonPlayerCreationSchema, "player_creation");
@@ -1734,8 +1865,17 @@ export async function getNarrativeResponse(
   const prompt = buildNarratorPrompt(player, history, userInput, year, location, quests, knownNpcs);
 
   const narratorSchema = provider === "doubao" ? jsonNarratorSchemaDoubao : jsonNarratorSchema;
-  const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, narratorSchema, "narrator")
+  const result = isOpenAiCompatible(provider)
+    ? await callOpenAiJson(
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      narratorSchema,
+      "narrator",
+      getOpenAiLabel(provider)
+    )
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, narratorSchema)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, narratorSchema, "narrator");
@@ -1826,8 +1966,17 @@ export async function getEventOutcome(
   }
 
   const eventSchemaForProvider = provider === "doubao" ? jsonEventSchemaDoubao : jsonEventSchema;
-  const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, eventSchemaForProvider, "event_outcome")
+  const result = isOpenAiCompatible(provider)
+    ? await callOpenAiJson(
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      eventSchemaForProvider,
+      "event_outcome",
+      getOpenAiLabel(provider)
+    )
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, eventSchemaForProvider)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, eventSchemaForProvider, "event_outcome");
@@ -1922,8 +2071,17 @@ export async function getEventNarration(
     additionalProperties: false
   };
 
-  const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema, "event_narration")
+  const result = isOpenAiCompatible(provider)
+    ? await callOpenAiJson(
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      eventNarrationSchema,
+      "event_narration",
+      getOpenAiLabel(provider)
+    )
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema, "event_narration");
@@ -2034,8 +2192,17 @@ export async function getArenaNarration(
   const system = buildArenaSystem(targetLang, mode, options?.userSystemPrompt);
   const prompt = buildArenaPrompt(focus, involvedParties, history, finish, mode, phase, options?.forcePowers);
 
-  const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonArenaSchema, "arena")
+  const result = isOpenAiCompatible(provider)
+    ? await callOpenAiJson(
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      jsonArenaSchema,
+      "arena",
+      getOpenAiLabel(provider)
+    )
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonArenaSchema)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonArenaSchema, "arena");
@@ -2136,8 +2303,17 @@ export async function getStatusUpdate(
     throw new Error("Missing text model name.");
   }
 
-  const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonStatusSchema, "status_update")
+  const result = isOpenAiCompatible(provider)
+    ? await callOpenAiJson(
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      jsonStatusSchema,
+      "status_update",
+      getOpenAiLabel(provider)
+    )
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonStatusSchema)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonStatusSchema, "status_update");
@@ -2214,8 +2390,17 @@ export async function refreshInventory(
     throw new Error("Missing text model name.");
   }
 
-  const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_refresh")
+  const result = isOpenAiCompatible(provider)
+    ? await callOpenAiJson(
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      jsonInventoryRefreshSchema,
+      "inventory_refresh",
+      getOpenAiLabel(provider)
+    )
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_refresh");
@@ -2291,8 +2476,17 @@ export async function auditInventoryWeights(
     throw new Error("Missing text model name.");
   }
 
-  const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_audit")
+  const result = isOpenAiCompatible(provider)
+    ? await callOpenAiJson(
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      jsonInventoryRefreshSchema,
+      "inventory_audit",
+      getOpenAiLabel(provider)
+    )
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_audit");
@@ -2376,8 +2570,17 @@ export async function recoverInventoryStatus(
     throw new Error("Missing text model name.");
   }
 
-  const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRecoverySchema, "inventory_recovery")
+  const result = isOpenAiCompatible(provider)
+    ? await callOpenAiJson(
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      jsonInventoryRecoverySchema,
+      "inventory_recovery",
+      getOpenAiLabel(provider)
+    )
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRecoverySchema)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRecoverySchema, "inventory_recovery");
@@ -2474,8 +2677,17 @@ Return JSON: {"memory": "..."} only.`;
     throw new Error("Missing text model name.");
   }
 
-  const result = provider === "openai"
-    ? await callOpenAiJson(apiKey, baseUrl, model, system, prompt, jsonMemorySchema, "memory")
+  const result = isOpenAiCompatible(provider)
+    ? await callOpenAiJson(
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      jsonMemorySchema,
+      "memory",
+      getOpenAiLabel(provider)
+    )
     : provider === "claude"
       ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonMemorySchema)
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonMemorySchema, "memory");
@@ -2560,11 +2772,14 @@ export async function generateCompanionAvatar(
   const appearanceLine = appearance ? `Appearance: ${appearance}.` : '';
   const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. ${appearanceLine} Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
   try {
-    const base64 = provider === "openai"
-      ? await generateOpenAiImage(apiKey, baseUrl, model, prompt)
+    const base64 = isOpenAiCompatible(provider)
+      ? await generateOpenAiImage(apiKey, baseUrl, model, prompt, provider)
       : await generateDoubaoImage(apiKey, baseUrl, model, prompt);
     if (!base64) {
       return { error: "No image data returned from the model." };
+    }
+    if (provider === "grok" && /^https?:/i.test(base64)) {
+      return { url: base64 };
     }
     const resized = await resizeImageToSquare(`data:image/png;base64,${base64}`, 100);
     return { url: resized };
@@ -2589,6 +2804,7 @@ export async function generateArenaAvatar(
     textProvider?: ModelProvider;
     textApiKey?: string;
     textProxyApiKey?: string;
+    userSystemPrompt?: string;
   }
 ): Promise<{ url?: string; error?: string } | undefined> {
   const imageProvider = normalizeProvider(options?.provider);
@@ -2610,6 +2826,8 @@ export async function generateArenaAvatar(
 
   const basePrompt = `Fallout dossier portrait for "${label}". Description: ${description}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
   let finalPrompt = basePrompt;
+  const guidanceLine = buildUserGuidanceLine(options?.userSystemPrompt);
+  const guidanceBlock = guidanceLine ? `\n${guidanceLine}` : "";
 
   if (options?.highQuality !== false && options?.textModel) {
     const textModel = options.textModel;
@@ -2624,7 +2842,7 @@ export async function generateArenaAvatar(
         });
         const researchResponse = await researchAi.models.generateContent({
           model: textModel,
-          contents: `Research a Fallout portrait for: ${description}.
+          contents: `Research a Fallout portrait for: ${description}.${guidanceBlock}
 1. Identify key visual traits, attire, and faction motifs.
 2. Use Fallout Wiki terms when possible.
 3. Output a concise portrait description for a concept artist.`,
@@ -2633,6 +2851,26 @@ export async function generateArenaAvatar(
           }
         });
         if (researchResponse?.text) {
+          finalPrompt = `Fallout dossier portrait. ${researchResponse.text}`;
+        }
+      } catch {
+        finalPrompt = basePrompt;
+      }
+    } else if (researchProvider === "grok" && researchApiKey) {
+      try {
+        const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? proxyBaseUrl : undefined);
+        const researchResponse = await callGrokWebSearch(
+          researchApiKey,
+          researchBaseUrl,
+          textModel,
+          `Research a Fallout portrait for: ${description}.${guidanceBlock}
+1. Identify key visual traits, attire, and faction motifs.
+2. Use Fallout Wiki terms when possible.
+3. Output a concise portrait description for a concept artist.
+4. Return plain text only, no citations or URLs. Keep it under 500 characters.`
+        , 500
+        );
+        if (researchResponse.text) {
           finalPrompt = `Fallout dossier portrait. ${researchResponse.text}`;
         }
       } catch {
@@ -2668,11 +2906,20 @@ export async function generateArenaAvatar(
       return { error: "No image data returned from the model." };
     }
 
-    const base64 = imageProvider === "openai"
-      ? await generateOpenAiImage(imageApiKey, resolveBaseUrl(imageProvider, proxyBaseUrl), imageModel, finalPrompt)
+    const base64 = isOpenAiCompatible(imageProvider)
+      ? await generateOpenAiImage(
+        imageApiKey,
+        resolveBaseUrl(imageProvider, proxyBaseUrl),
+        imageModel,
+        finalPrompt,
+        imageProvider
+      )
       : await generateDoubaoImage(imageApiKey, resolveBaseUrl(imageProvider, proxyBaseUrl), imageModel, finalPrompt);
     if (!base64) {
       return { error: "No image data returned from the model." };
+    }
+    if (imageProvider === "grok" && /^https?:/i.test(base64)) {
+      return { url: base64 };
     }
     const resized = await resizeImageToSquare(`data:image/png;base64,${base64}`, 100);
     return { url: resized };
@@ -2683,14 +2930,19 @@ export async function generateArenaAvatar(
 
 export async function generateSceneImage(
   prompt: string,
-  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider; textProvider?: ModelProvider; textApiKey?: string; textProxyApiKey?: string }
+  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider; textProvider?: ModelProvider; textApiKey?: string; textProxyApiKey?: string; userSystemPrompt?: string }
 ): Promise<{ url?: string; sources?: GroundingSource[]; error?: string } | undefined> {
   const imageProvider = normalizeProvider(options?.provider);
   const researchProvider = normalizeProvider(options?.textProvider || options?.provider);
   const useProxy = !!options?.useProxy;
+  const contextSuffix = buildImageContext(options?.userSystemPrompt);
+  const imageContextSuffix = imageProvider === "grok" ? "" : contextSuffix;
+  const guidanceLine = buildUserGuidanceLine(options?.userSystemPrompt);
+  const guidanceBlock = guidanceLine ? `\n${guidanceLine}` : "";
   if (imageProvider === "gemini") {
     if (options?.tier === "guest") {
-      return generateGeminiScene(prompt, {
+      const guestPrompt = imageContextSuffix ? `${prompt}\n${imageContextSuffix}` : prompt;
+      return generateGeminiScene(guestPrompt, {
         highQuality: options?.highQuality,
         tier: options?.tier,
         apiKey: options?.apiKey,
@@ -2715,37 +2967,62 @@ export async function generateSceneImage(
     try {
       let detailedDescription = prompt;
       let groundingSources: GroundingSource[] = [];
-      if (useHighQuality && textModel && researchProvider === "gemini" && researchApiKey) {
-        const researchAi = new GoogleGenAI({
-          apiKey: researchApiKey,
-          ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-        });
-        try {
-          const researchResponse = await researchAi.models.generateContent({
-            model: textModel,
-            contents: `Research visual references for this Fallout scene: "${prompt}".
+      if (useHighQuality && textModel && researchApiKey) {
+        if (researchProvider === "gemini") {
+          const researchAi = new GoogleGenAI({
+            apiKey: researchApiKey,
+            ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+          });
+          try {
+            const researchResponse = await researchAi.models.generateContent({
+              model: textModel,
+              contents: `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
 1. Extract 3-5 keywords related to Fallout lore, items, or environment.
 2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
 3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
 4. Format your final response as a detailed scene description for a concept artist.`,
-            config: {
-              tools: [{ googleSearch: {} }]
+              config: {
+                tools: [{ googleSearch: {} }]
+              }
+            });
+            if (researchResponse?.text) {
+              detailedDescription = researchResponse.text;
             }
-          });
-          if (researchResponse?.text) {
-            detailedDescription = researchResponse.text;
+            groundingSources = researchResponse?.candidates?.[0]?.groundingMetadata?.groundingChunks
+              ?.filter((chunk: any) => chunk.web)
+              ?.map((chunk: any) => ({
+                title: chunk.web.title,
+                uri: chunk.web.uri
+              })) || [];
+          } catch {
+            // Skip research if the model does not support search.
           }
-          groundingSources = researchResponse?.candidates?.[0]?.groundingMetadata?.groundingChunks
-            ?.filter((chunk: any) => chunk.web)
-            ?.map((chunk: any) => ({
-              title: chunk.web.title,
-              uri: chunk.web.uri
-            })) || [];
-        } catch {
-          // Skip research if the model does not support search.
+        } else if (researchProvider === "grok") {
+          try {
+            const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? proxyBaseUrl : undefined);
+            const researchResponse = await callGrokWebSearch(
+              researchApiKey,
+              researchBaseUrl,
+              textModel,
+              `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
+1. Extract 3-5 keywords related to Fallout lore, items, or environment.
+2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
+3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
+4. Format your final response as a detailed scene description for a concept artist.
+5. Return plain text only, no citations or URLs. Keep it under 700 characters.`
+            , 800
+            );
+            if (researchResponse.text) {
+              detailedDescription = researchResponse.text;
+            }
+            groundingSources = researchResponse.sources;
+          } catch {
+            // Skip research if not supported.
+          }
         }
       }
-      const finalPrompt = buildImagePrompt(detailedDescription, useHighQuality);
+      const finalDescription = imageContextSuffix ? `${detailedDescription}\n${imageContextSuffix}` : detailedDescription;
+      const finalPrompt = buildImagePrompt(finalDescription, useHighQuality);
       const imageAi = new GoogleGenAI({
         apiKey: imageApiKey,
         ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
@@ -2793,42 +3070,70 @@ export async function generateSceneImage(
     const researchApiKey = useProxy
       ? (options?.textProxyApiKey || options?.proxyApiKey)
       : (options?.textApiKey || options?.apiKey);
-    if (useHighQuality && options?.textModel && researchProvider === "gemini" && researchApiKey) {
-      try {
-        const researchAi = new GoogleGenAI({
-          apiKey: researchApiKey,
-          ...(useProxy && baseUrl ? { httpOptions: { baseUrl } } : {})
-        });
-        const researchResponse = await researchAi.models.generateContent({
-          model: options.textModel,
-          contents: `Research visual references for this Fallout scene: "${prompt}".
+    if (useHighQuality && options?.textModel && researchApiKey) {
+      if (researchProvider === "gemini") {
+        try {
+          const researchAi = new GoogleGenAI({
+            apiKey: researchApiKey,
+            ...(useProxy && baseUrl ? { httpOptions: { baseUrl } } : {})
+          });
+          const researchResponse = await researchAi.models.generateContent({
+            model: options.textModel,
+            contents: `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
 1. Extract 3-5 keywords related to Fallout lore, items, or environment.
 2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
 3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
 4. Format your final response as a detailed scene description for a concept artist.`,
-          config: {
-            tools: [{ googleSearch: {} }]
+            config: {
+              tools: [{ googleSearch: {} }]
+            }
+          });
+          if (researchResponse?.text) {
+            detailedDescription = researchResponse.text;
           }
-        });
-        if (researchResponse?.text) {
-          detailedDescription = researchResponse.text;
+          groundingSources = researchResponse?.candidates?.[0]?.groundingMetadata?.groundingChunks
+            ?.filter((chunk: any) => chunk.web)
+            ?.map((chunk: any) => ({
+              title: chunk.web.title,
+              uri: chunk.web.uri
+            })) || [];
+        } catch {
+          // Skip research if not supported.
         }
-        groundingSources = researchResponse?.candidates?.[0]?.groundingMetadata?.groundingChunks
-          ?.filter((chunk: any) => chunk.web)
-          ?.map((chunk: any) => ({
-            title: chunk.web.title,
-            uri: chunk.web.uri
-          })) || [];
-      } catch {
-        // Skip research if not supported.
+      } else if (researchProvider === "grok") {
+        try {
+          const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? options?.proxyBaseUrl : undefined);
+          const researchResponse = await callGrokWebSearch(
+            researchApiKey,
+            researchBaseUrl,
+            options.textModel,
+            `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
+1. Extract 3-5 keywords related to Fallout lore, items, or environment.
+2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
+3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
+4. Format your final response as a detailed scene description for a concept artist.
+5. Return plain text only, no citations or URLs. Keep it under 700 characters.`
+          , 800
+          );
+          if (researchResponse.text) {
+            detailedDescription = researchResponse.text;
+          }
+          groundingSources = researchResponse.sources;
+        } catch {
+          // Skip research if not supported.
+        }
       }
     }
-    const finalPrompt = buildImagePrompt(detailedDescription, useHighQuality);
-    const base64 = imageProvider === "openai"
-      ? await generateOpenAiImage(apiKey, baseUrl, model, finalPrompt)
+    const finalDescription = imageContextSuffix ? `${detailedDescription}\n${imageContextSuffix}` : detailedDescription;
+    const finalPrompt = buildImagePrompt(finalDescription, useHighQuality);
+    const base64 = isOpenAiCompatible(imageProvider)
+      ? await generateOpenAiImage(apiKey, baseUrl, model, finalPrompt, imageProvider)
       : await generateDoubaoImage(apiKey, baseUrl, model, finalPrompt);
     if (!base64) {
       return { error: "No image data returned from the model." };
+    }
+    if (imageProvider === "grok" && /^https?:/i.test(base64)) {
+      return { url: base64, sources: groundingSources };
     }
     const compressed = await compressImage(`data:image/png;base64,${base64}`);
     return { url: compressed, sources: groundingSources };

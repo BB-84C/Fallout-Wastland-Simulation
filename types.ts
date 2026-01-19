@@ -139,7 +139,7 @@ export type TextModelId = string;
 
 export type ImageModelId = string;
 
-export type ModelProvider = 'openai' | 'gemini' | 'claude' | 'doubao';
+export type ModelProvider = 'openai' | 'gemini' | 'claude' | 'doubao' | 'grok';
 
 export type PipelineMode = 'legacy' | 'event';
 

@@ -66,6 +66,7 @@ const DEFAULT_ARENA_PROMPT_EN = `1. Output approximately 1000 tokens, fully desc
 5. The battle result must be traceable as a chain of causality, not merely "who was stronger.".`;
 const MODEL_PROVIDER_OPTIONS: { value: ModelProvider; label: string }[] = [
   { value: 'openai', label: 'OpenAI' },
+  { value: 'grok', label: 'Grok' },
   { value: 'gemini', label: 'Gemini' },
   { value: 'claude', label: 'Claude' },
   { value: 'doubao', label: 'Doubao' }
@@ -2648,7 +2649,7 @@ const App: React.FC = () => {
       const imagePromise = allowImages
         ? generateSceneImage(
           `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
-          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl: imageProxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel }
+          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl: imageProxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel, userSystemPrompt: gameState.settings.userSystemPrompt }
         )
         : Promise.resolve(undefined);
       const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
@@ -2942,7 +2943,8 @@ const App: React.FC = () => {
             textProvider,
             textApiKey: currentUser?.textApiKey,
             textProxyApiKey: currentUser?.textProxyKey,
-            textModel: effectiveTextModel
+            textModel: effectiveTextModel,
+            userSystemPrompt: arenaState.userPrompt
           }).catch(err => {
             setArenaImageStage('error');
             throw err;
@@ -2967,7 +2969,8 @@ const App: React.FC = () => {
               textProvider,
               textApiKey: currentUser?.textApiKey,
               textProxyApiKey: currentUser?.textProxyKey,
-              textModel: effectiveTextModel
+              textModel: effectiveTextModel,
+              userSystemPrompt: arenaState.userPrompt
             });
             if (avatar?.url) {
               return { party: { ...party, avatarUrl: avatar.url } };
@@ -3296,7 +3299,8 @@ const App: React.FC = () => {
             textProvider: textProviderAction,
             textApiKey: currentUser?.textApiKey,
             textProxyApiKey: currentUser?.textProxyKey,
-            textModel: effectiveTextModel
+            textModel: effectiveTextModel,
+            userSystemPrompt: actionSettings.userSystemPrompt
           }).catch(err => {
             setImageStage('error');
             throw err;
@@ -3500,7 +3504,8 @@ const App: React.FC = () => {
           textProvider: textProviderAction,
           textApiKey: currentUser?.textApiKey,
           textProxyApiKey: currentUser?.textProxyKey,
-          textModel: effectiveTextModel
+          textModel: effectiveTextModel,
+          userSystemPrompt: actionSettings.userSystemPrompt
         }).catch(err => {
           setImageStage('error');
           throw err;
