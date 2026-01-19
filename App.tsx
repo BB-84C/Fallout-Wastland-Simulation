@@ -240,8 +240,8 @@ const isLikelyJsonParseError = (detail: string) => {
 const appendJsonParseGuidance = (detail: string, isZh: boolean) => {
   if (!isLikelyJsonParseError(detail)) return detail;
   const guidance = isZh
-    ? '请打开设置，复制「原始输出缓存」并发给我。这通常是设备与模型提供方的连接中断导致（例如外出乘车使用蜂窝数据、启用 VPN，或当前网络不稳定）。'
-    : 'Open Settings, copy the Raw Output Cache, and send it to me. This is most likely caused by an interrupted connection between your device and the model provider (e.g., mobile data while commuting, VPN usage, or an unstable network).';
+    ? '请打开设置，查看「原始输出缓存」中的信息，如果有正常的文字对话，但是明显末尾处一句话没说完就结束了，并且没有以任何"]"或者“}” 作为结尾。那就说明这通常是设备与模型提供方的连接中断导致（例如外出乘车使用了手机流量数据、启用的 VPN连接不稳定，或当前网络不稳定）。'
+    : 'Please open Settings and check the information in the "Raw Output Cache." If you see normal text dialogue but notice that a sentence abruptly ends without finishing, and there is no closing "]" or "}" character, this typically indicates a connection interruption between the device and the model provider. This can occur due to factors such as using mobile data while commuting, an unstable VPN connection, or poor network conditions.';
   return `${detail}\n${guidance}`;
 };
 
@@ -2718,7 +2718,10 @@ const App: React.FC = () => {
     } catch (err) {
       console.error("Vault-Tec Database Error:", err);
       cacheRawOutput(err);
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const errorMessage = appendJsonParseGuidance(
+        err instanceof Error ? err.message : String(err),
+        isZh
+      );
       setCreationPhase(isZh ? `访问请求失败：${errorMessage}` : `Access request failed: ${errorMessage}`);
       setGameState(prev => ({ 
         ...prev, 
@@ -2988,7 +2991,10 @@ const App: React.FC = () => {
         }
         setArenaImageStage(shouldGenerateImage ? 'done' : 'skipped');
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = appendJsonParseGuidance(
+          err instanceof Error ? err.message : String(err),
+          isZh
+        );
         setArenaError(isZh ? `图像生成失败：${message}` : `Image generation failed: ${message}`);
         setArenaImageStage('error');
       }
@@ -3004,7 +3010,10 @@ const App: React.FC = () => {
         }
       } catch (err) {
         avatarFailed = true;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = appendJsonParseGuidance(
+          err instanceof Error ? err.message : String(err),
+          isZh
+        );
         setArenaError(isZh ? `头像生成失败：${message}` : `Avatar generation failed: ${message}`);
       }
       setArenaAvatarStage(avatarFailed ? 'error' : (imagesEnabled && !isGuest ? 'done' : 'skipped'));
@@ -3025,7 +3034,10 @@ const App: React.FC = () => {
       setArenaNarrationStage('error');
       setArenaImageStage('idle');
       setArenaAvatarStage('idle');
-      const message = err instanceof Error ? err.message : String(err);
+      const message = appendJsonParseGuidance(
+        err instanceof Error ? err.message : String(err),
+        isZh
+      );
       setArenaError(isZh ? `斗兽场故障：${message}` : `Arena error: ${message}`);
     }
   };
