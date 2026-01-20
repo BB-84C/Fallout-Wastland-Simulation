@@ -408,11 +408,12 @@ const jsonInventoryChangeSchema: JsonSchema = {
           name: { type: "string" },
           count: { type: "number" }
         },
-        required: ["name"],
+        required: ["name", "count"],
         additionalProperties: false
       }
     }
   },
+  required: ["add", "remove"],
   additionalProperties: false
 };
 
@@ -426,11 +427,13 @@ const jsonPlayerChangeSchema: JsonSchema = {
     special: {
       type: "object",
       properties: specialJsonProperties,
+      required: Object.values(SpecialAttr),
       additionalProperties: false
     },
     skills: {
       type: "object",
       properties: skillsJsonProperties,
+      required: Object.values(Skill),
       additionalProperties: false
     },
     perksAdd: { type: "array", items: jsonPerkSchema },
@@ -445,6 +448,17 @@ const jsonPlayerChangeSchema: JsonSchema = {
     },
     inventoryChange: jsonInventoryChangeSchema
   },
+  required: [
+    "health",
+    "maxHealth",
+    "karma",
+    "caps",
+    "special",
+    "skills",
+    "perksAdd",
+    "perksRemove",
+    "inventoryChange"
+  ],
   additionalProperties: false
 };
 
@@ -470,7 +484,7 @@ const jsonCompanionUpdatesSchema: JsonSchema = {
       ifCompanion: { type: "boolean" },
       reason: { type: "string" }
     },
-    required: ["name", "ifCompanion"],
+    required: ["name", "ifCompanion", "reason"],
     additionalProperties: false
   }
 };
@@ -492,6 +506,7 @@ const jsonActorSchema: JsonSchema = {
     skills: {
       type: "object",
       properties: skillsJsonProperties,
+      required: Object.values(Skill),
       additionalProperties: false
     },
     perks: { type: "array", items: jsonPerkSchema },
@@ -504,7 +519,24 @@ const jsonActorSchema: JsonSchema = {
     ifCompanion: { type: "boolean" },
     avatarUrl: { type: "string" }
   },
-  required: ["name", "age", "faction", "appearance", "special", "skills", "lore", "health", "maxHealth", "caps"],
+  required: [
+    "name",
+    "age",
+    "gender",
+    "faction",
+    "appearance",
+    "special",
+    "skills",
+    "perks",
+    "inventory",
+    "lore",
+    "health",
+    "maxHealth",
+    "karma",
+    "caps",
+    "ifCompanion",
+    "avatarUrl"
+  ],
   additionalProperties: false
 };
 
@@ -529,7 +561,7 @@ const jsonNarratorSchema: JsonSchema = {
     timePassedMinutes: { type: "number" },
     imagePrompt: { type: "string" }
   },
-  required: ["storyText", "timePassedMinutes", "imagePrompt"],
+  required: ["storyText", "ruleViolation", "timePassedMinutes", "imagePrompt"],
   additionalProperties: false
 };
 
@@ -551,7 +583,7 @@ const jsonArenaSchema: JsonSchema = {
       items: { type: "number" }
     }
   },
-  required: ["storyText", "imagePrompt"],
+  required: ["storyText", "imagePrompt", "forcePowers"],
   additionalProperties: false
 };
 
@@ -572,6 +604,15 @@ const jsonStatusSchema: JsonSchema = {
     currentYear: { type: "number" },
     currentTime: { type: "string" }
   },
+  required: [
+    "playerChange",
+    "questUpdates",
+    "companionUpdates",
+    "newNpc",
+    "location",
+    "currentYear",
+    "currentTime"
+  ],
   additionalProperties: false
 };
 
@@ -595,7 +636,18 @@ const jsonEventSchema: JsonSchema = {
     currentYear: { type: "number" },
     currentTime: { type: "string" }
   },
-  required: ["outcomeSummary", "timePassedMinutes"],
+  required: [
+    "outcomeSummary",
+    "ruleViolation",
+    "timePassedMinutes",
+    "playerChange",
+    "questUpdates",
+    "companionUpdates",
+    "newNpc",
+    "location",
+    "currentYear",
+    "currentTime"
+  ],
   additionalProperties: false
 };
 
@@ -727,7 +779,7 @@ const buildEventSystem = (targetLang: string, year: number, location: string, us
 3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
 4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts. Do NOT use ruleViolation for unlucky/partial results, missing tools/items, or to justify item quality; handle those in outcomeSummary/playerChange. If no violation, set ruleViolation to "false".
 5. CONTINUITY CORRECTION: If the player says prior narration missed/forgot plot or lore, comply and correct the continuity in the outcomeSummary (do not flag ruleViolation).
-6. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
+6. DIFF ONLY: Use deltas for numeric changes; keep all required keys present.
 6.1. If a required field has no reasonable value, use empty string/0/false (or []/{} for lists/objects) rather than inventing details.
 7. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
 7.1. Whenever the narration or outcome mentions using, consuming, looting, or losing items, translate those movements into inventoryChange entries so the status manager can apply them. Do not leave inventoryChange empty when the text already describes tangible loot or consumption.
@@ -758,7 +810,7 @@ const buildStatusSystem = (targetLang: string, year: number, location: string) =
 6. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
 7. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
 8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-9. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
+9. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects).
 10. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
 const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', userSystemPrompt?: string) => `You are the Wasteland Smash Arena simulator.
@@ -891,7 +943,8 @@ ${mode === 'wargame'
 forcePowers MUST be a JSON array of integers in the exact order of INVOLVED PARTIES. Example: "forcePowers":[1000,950]. Do NOT use an object/map.
 Return JSON with keys: storyText, forcePowers, imagePrompt. imagePrompt is REQUIRED.`
   : `If PHASE is briefing, provide a concise situation briefing only (no combat actions or damage). If PHASE is battle, continue the battle simulation with tactics, setbacks, and momentum shifts. If FINISH is true, conclude the battle with a decisive outcome and aftermath.
-Return JSON with keys: storyText, imagePrompt. imagePrompt is REQUIRED.`}`;
+Set forcePowers to an empty array [] for scenario mode.
+Return JSON with keys: storyText, forcePowers, imagePrompt. imagePrompt is REQUIRED.`}`;
 
 const normalizeForcePowerKey = (value: string) =>
   value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ').trim();
@@ -955,12 +1008,12 @@ LAST NARRATION:
 ${narration}
 
 TASK:
-Update status fields based on the narration. Return JSON with optional keys:
+Update status fields based on the narration. Return JSON with keys:
 playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
-playerChange should contain only changed fields, plus inventoryChange with add/remove lists.
+playerChange should contain only changed fields; for unchanged values use 0/false/empty lists or objects, including inventoryChange with add/remove lists.
 All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
 Each newNpc entry MUST include appearance (short physical description).
-If no changes are needed, return {}.`;
+If no changes are needed, use empty string/0/false (or []/{} for lists/objects).`;
 
 const buildInventoryRefreshSystem = (targetLang: string) => `You are the Vault-Tec Inventory Auditor.
 1. PURPOSE: Clean and rectify the player's inventory data only.
