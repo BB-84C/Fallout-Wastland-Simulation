@@ -721,7 +721,8 @@ const buildEventSystem = (targetLang: string, year: number, location: string, us
 - Avoid obvious optimal strategies; if present, explain why they weren't adopted or failed.
 - Encourage using indirect means, environmental factors, deception, sabotage, timing, and psychological tactics to alter situations.
 - Storylines should reflect 3–6 steps of implied causality chains, but avoid presenting reasoning as a list.
-- The text in the "outcomeSummary" must remain short but obey the logic above. For example, "Someone done something because of reasons, leading to results." or "A causes B by doing C, resulting in D."
+- The text in the "outcomeSummary" must remain short and concise but obey the logic above, and be precise and comprehensive. For example, "Someone done something because of reasons, leading to results. And/meanwhile A causes B by doing C, resulting in D, the situation ends with E."
+- Update the other keys strictly based on the values in the "outcomeSummary" key. 
 2. MANDATORY LANGUAGE: You MUST output all text fields in ${targetLang}.
 3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
 4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts. Do NOT use ruleViolation for unlucky/partial results, missing tools/items, or to justify item quality; handle those in outcomeSummary/playerChange. If no violation, set ruleViolation to "false".
@@ -743,7 +744,9 @@ const buildEventNarratorSystem = (targetLang: string, year: number, location: st
 4. TRANSLATION: Use "Term (Original)" for unlocalized items.
 5. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
 6. When generating the text for "storyText", use markdown format for better readability. For example, use '>' for dialogues. Use bullet points or numbered lists where appropriate. Use **bold** to highlight important terms. Use *italics* for emphasis. Use underline for key actions or items. Use * for listing available choices.
-${userSystemPrompt && userSystemPrompt.trim() ? `7. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
+7. Please state any status change strictly based on the "EVENT_OUTCOME:" json, for example: state the player inventory changes and other player status change strictly based on the values in "playerChange" under "EVENT_OUTCOME:", do not hallucinate any status change from your own narration.
+8. Use markdown to state the status change. For example: "\` Lost Item:\` **10x Stimpak**", "\` Gained Caps:\` **+50 Caps**", "\` Quest Updated:\` **'Find the Vault' - Completed**", "\`Companion Updated:\` **'Companion Name' - Status Changed**".
+${userSystemPrompt && userSystemPrompt.trim() ? `9. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildStatusSystem = (targetLang: string, year: number, location: string) => `You are the Vault-Tec Status Manager.
 1. PURPOSE: Emit ONLY status changes shown in the status bar (player stats, inventory, caps, quests, known NPCs/companions, location/year/time).
