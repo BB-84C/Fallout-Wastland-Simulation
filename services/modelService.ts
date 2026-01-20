@@ -728,6 +728,7 @@ const buildEventSystem = (targetLang: string, year: number, location: string, us
 5. CONTINUITY CORRECTION: If the player says prior narration missed/forgot plot or lore, comply and correct the continuity in the outcomeSummary (do not flag ruleViolation).
 6. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
 7. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
+7.1. Whenever the narration or outcome mentions using, consuming, looting, or losing items, translate those movements into inventoryChange entries so the status manager can apply them. Do not leave inventoryChange empty when the text already describes tangible loot or consumption.
 8. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
 9. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
 10. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.

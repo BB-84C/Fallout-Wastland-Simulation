@@ -1880,6 +1880,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!currentUser || currentUser.tier === 'guest') return;
     if (!gameState.settings.autoSaveEnabled) return;
+    if (view !== 'playing') return;
     const currentMemory = gameState.compressedMemory || '';
     const currentRawOutput = gameState.rawOutputCache || '';
     const currentInventorySignature = gameState.player
@@ -1928,7 +1929,7 @@ const App: React.FC = () => {
     const key = getSaveKey(currentUser.username);
     localStorage.setItem(key, JSON.stringify(nextState));
     setHasSave(true);
-  }, [gameState, currentUser]);
+  }, [gameState, currentUser, view]);
 
   useEffect(() => {
     if (!isNormal || !currentUser) return;
@@ -2715,28 +2716,45 @@ const App: React.FC = () => {
         status_change: []
       };
 
-        setGameState(prev => {
-          const nextState: GameState = {
-            ...prev,
-            player: normalizedPlayer,
-            knownNpcs: initialKnownNpcs,
-            isThinking: false,
-            tokenUsage: mergeTokenUsage(prev.tokenUsage, creationUsage),
-            compressionTurnCounter: 0,
-            status_track: initialStatusTrack,
-            history: [{ 
-              sender: 'narrator', 
-              text: startNarration, 
-              imageUrl: imgData?.url,
-              groundingSources: imgData?.sources,
-              isSaved: false
-            }]
-          };
-          return {
-            ...nextState,
-            savedSnapshot: buildSavedSnapshot(nextState)
-          };
-        });
+        const baseState = createInitialGameState(
+          gameState.settings,
+          gameState.ap,
+          gameState.apLastUpdated,
+          gameState.language
+        );
+        const nextState: GameState = {
+          ...baseState,
+          currentYear: gameState.currentYear,
+          location: gameState.location,
+          currentTime: gameState.currentTime,
+          player: normalizedPlayer,
+          knownNpcs: initialKnownNpcs,
+          quests: [],
+          isThinking: false,
+          turnCount: 0,
+          tokenUsage: normalizeTokenUsage(creationUsage),
+          compressedMemory: '',
+          rawOutputCache: '',
+          compressionTurnCounter: 0,
+          status_track: initialStatusTrack,
+          history: [{
+            sender: 'narrator',
+            text: startNarration,
+            imageUrl: imgData?.url,
+            groundingSources: imgData?.sources,
+            isSaved: true
+          }]
+        };
+        const finalizedState: GameState = {
+          ...nextState,
+          savedSnapshot: buildSavedSnapshot(nextState)
+        };
+        setGameState(finalizedState);
+        if (currentUser && currentUser.tier !== 'guest') {
+          const key = getSaveKey(currentUser.username);
+          localStorage.setItem(key, JSON.stringify(finalizedState));
+          setHasSave(true);
+        }
       setSystemError(null);
       setLastAction(null);
       setIsCompressing(false);
