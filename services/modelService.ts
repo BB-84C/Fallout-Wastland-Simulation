@@ -721,13 +721,14 @@ const buildEventSystem = (targetLang: string, year: number, location: string, us
 - Avoid obvious optimal strategies; if present, explain why they weren't adopted or failed.
 - Encourage using indirect means, environmental factors, deception, sabotage, timing, and psychological tactics to alter situations.
 - Storylines should reflect 3–6 steps of implied causality chains, but avoid presenting reasoning as a list.
-- The text in the "outcomeSummary" must remain short and concise but obey the logic above, and be precise and comprehensive. For example, "Someone done something because of reasons, leading to results. And/meanwhile A causes B by doing C, resulting in D, the situation ends with E."
+- The text in the "outcomeSummary" must remain short and concise but obey the logic above, and be precise and comprehensive. For example, "Someone done something because of reasons, leading to results. And/meanwhile A causes B by doing C, resulting in D, the situation ends with E.", avoid using any dramatic or decorative language.
 - Update the other keys strictly based on the values in the "outcomeSummary" key. 
 2. MANDATORY LANGUAGE: You MUST output all text fields in ${targetLang}.
 3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
 4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts. Do NOT use ruleViolation for unlucky/partial results, missing tools/items, or to justify item quality; handle those in outcomeSummary/playerChange. If no violation, set ruleViolation to "false".
 5. CONTINUITY CORRECTION: If the player says prior narration missed/forgot plot or lore, comply and correct the continuity in the outcomeSummary (do not flag ruleViolation).
 6. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
+6.1. If a required field has no reasonable value, use empty string/0/false (or []/{} for lists/objects) rather than inventing details.
 7. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
 7.1. Whenever the narration or outcome mentions using, consuming, looting, or losing items, translate those movements into inventoryChange entries so the status manager can apply them. Do not leave inventoryChange empty when the text already describes tangible loot or consumption.
 8. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
@@ -1358,7 +1359,7 @@ const callOpenAiJson = async (
     ? { type: "json_schema", json_schema: { name: schemaName, schema, strict: true } }
     : { type: "json_object" };
   const responseFormatResponses = schema
-    ? { type: "json_schema", name: schemaName, schema, strict: false }
+    ? { type: "json_schema", name: schemaName, schema, strict: true }
     : { type: "json_object" };
   const baseHeaders = {
     "Content-Type": "application/json",
