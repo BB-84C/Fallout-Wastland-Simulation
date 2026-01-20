@@ -1059,6 +1059,48 @@ const callGrokWebSearch = async (
   return { text: trimmed, sources };
 };
 
+const callOpenAiWebSearch = async (
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  prompt: string,
+  maxLength = 800
+): Promise<{ text: string }> => {
+  const res = await fetch(`${baseUrl}/responses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        { role: "user", content: prompt }
+      ],
+      tools: [{ type: "web_search" }]
+    })
+  });
+  if (!res.ok) {
+    throw new Error(await formatHttpError(res, "OpenAI request failed"));
+  }
+  const data = await res.json();
+  let content = "";
+  if (typeof data?.output_text === "string") {
+    content = data.output_text;
+  } else if (Array.isArray(data?.output)) {
+    data.output.forEach((entry: any) => {
+      const parts = Array.isArray(entry?.content) ? entry.content : [];
+      parts.forEach((part: any) => {
+        if (typeof part?.text === "string") {
+          content += part.text;
+        }
+      });
+    });
+  }
+  const trimmed = clampImagePrompt(content, maxLength);
+  return { text: trimmed };
+};
+
 const resolveBaseUrl = (provider: ModelProvider, baseUrl?: string) => {
   const normalized = normalizeBaseUrl(baseUrl);
   if (normalized) return normalized;
@@ -2876,6 +2918,26 @@ export async function generateArenaAvatar(
       } catch {
         finalPrompt = basePrompt;
       }
+    } else if (researchProvider === "openai" && researchApiKey) {
+      try {
+        const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? proxyBaseUrl : undefined);
+        const researchResponse = await callOpenAiWebSearch(
+          researchApiKey,
+          researchBaseUrl,
+          textModel,
+          `Research a Fallout portrait for: ${description}.${guidanceBlock}
+1. Identify key visual traits, attire, and faction motifs.
+2. Use Fallout Wiki terms when possible.
+3. Output a concise portrait description for a concept artist.
+4. Return plain text only, no citations or URLs. Keep it under 500 characters.`
+        , 500
+        );
+        if (researchResponse.text) {
+          finalPrompt = `Fallout dossier portrait. ${researchResponse.text}`;
+        }
+      } catch {
+        finalPrompt = basePrompt;
+      }
     }
   }
 
@@ -3019,6 +3081,27 @@ export async function generateSceneImage(
           } catch {
             // Skip research if not supported.
           }
+        } else if (researchProvider === "openai") {
+          try {
+            const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? proxyBaseUrl : undefined);
+            const researchResponse = await callOpenAiWebSearch(
+              researchApiKey,
+              researchBaseUrl,
+              textModel,
+              `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
+1. Extract 3-5 keywords related to Fallout lore, items, or environment.
+2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
+3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
+4. Format your final response as a detailed scene description for a concept artist.
+5. Return plain text only, no citations or URLs. Keep it under 800 characters.`
+            , 800
+            );
+            if (researchResponse.text) {
+              detailedDescription = researchResponse.text;
+            }
+          } catch {
+            // Skip research if not supported.
+          }
         }
       }
       const finalDescription = imageContextSuffix ? `${detailedDescription}\n${imageContextSuffix}` : detailedDescription;
@@ -3119,6 +3202,27 @@ export async function generateSceneImage(
             detailedDescription = researchResponse.text;
           }
           groundingSources = researchResponse.sources;
+        } catch {
+          // Skip research if not supported.
+        }
+      } else if (researchProvider === "openai") {
+        try {
+          const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? options?.proxyBaseUrl : undefined);
+          const researchResponse = await callOpenAiWebSearch(
+            researchApiKey,
+            researchBaseUrl,
+            options.textModel,
+            `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
+1. Extract 3-5 keywords related to Fallout lore, items, or environment.
+2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
+3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
+4. Format your final response as a detailed scene description for a concept artist.
+5. Return plain text only, no citations or URLs. Keep it under 800 characters.`
+          , 800
+          );
+          if (researchResponse.text) {
+            detailedDescription = researchResponse.text;
+          }
         } catch {
           // Skip research if not supported.
         }
