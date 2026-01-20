@@ -1242,8 +1242,8 @@ const buildUserGuidanceLine = (userSystemPrompt?: string) => {
   return guidance ? `User guidance: ${guidance}` : "";
 };
 
-const buildImageContext = (userSystemPrompt?: string) => {
-  return buildUserGuidanceLine(userSystemPrompt);
+const buildImageContext = (imageUserSystemPrompt?: string) => {
+  return buildUserGuidanceLine(imageUserSystemPrompt);
 };
 
 async function compressImage(base64: string): Promise<string> {
@@ -2804,7 +2804,7 @@ export async function generateArenaAvatar(
     textProvider?: ModelProvider;
     textApiKey?: string;
     textProxyApiKey?: string;
-    userSystemPrompt?: string;
+    imageUserSystemPrompt?: string;
   }
 ): Promise<{ url?: string; error?: string } | undefined> {
   const imageProvider = normalizeProvider(options?.provider);
@@ -2826,7 +2826,7 @@ export async function generateArenaAvatar(
 
   const basePrompt = `Fallout dossier portrait for "${label}". Description: ${description}. Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
   let finalPrompt = basePrompt;
-  const guidanceLine = buildUserGuidanceLine(options?.userSystemPrompt);
+  const guidanceLine = buildUserGuidanceLine(options?.imageUserSystemPrompt);
   const guidanceBlock = guidanceLine ? `\n${guidanceLine}` : "";
 
   if (options?.highQuality !== false && options?.textModel) {
@@ -2930,14 +2930,14 @@ export async function generateArenaAvatar(
 
 export async function generateSceneImage(
   prompt: string,
-  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider; textProvider?: ModelProvider; textApiKey?: string; textProxyApiKey?: string; userSystemPrompt?: string }
+  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider; textProvider?: ModelProvider; textApiKey?: string; textProxyApiKey?: string; imageUserSystemPrompt?: string }
 ): Promise<{ url?: string; sources?: GroundingSource[]; error?: string } | undefined> {
   const imageProvider = normalizeProvider(options?.provider);
   const researchProvider = normalizeProvider(options?.textProvider || options?.provider);
   const useProxy = !!options?.useProxy;
-  const contextSuffix = buildImageContext(options?.userSystemPrompt);
-  const imageContextSuffix = imageProvider === "grok" ? "" : contextSuffix;
-  const guidanceLine = buildUserGuidanceLine(options?.userSystemPrompt);
+  const contextSuffix = buildImageContext(options?.imageUserSystemPrompt);
+  const imageContextSuffix = contextSuffix;
+  const guidanceLine = buildUserGuidanceLine(options?.imageUserSystemPrompt);
   const guidanceBlock = guidanceLine ? `\n${guidanceLine}` : "";
   if (imageProvider === "gemini") {
     if (options?.tier === "guest") {
@@ -3009,7 +3009,7 @@ export async function generateSceneImage(
 2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
 3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
 4. Format your final response as a detailed scene description for a concept artist.
-5. Return plain text only, no citations or URLs. Keep it under 700 characters.`
+5. Return plain text only, no citations or URLs. Keep it under 800 characters.`
             , 800
             );
             if (researchResponse.text) {
@@ -3112,7 +3112,7 @@ export async function generateSceneImage(
 2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
 3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
 4. Format your final response as a detailed scene description for a concept artist.
-5. Return plain text only, no citations or URLs. Keep it under 700 characters.`
+5. Return plain text only, no citations or URLs. Keep it under 800 characters.`
           , 800
           );
           if (researchResponse.text) {

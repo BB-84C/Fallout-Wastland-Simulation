@@ -159,6 +159,7 @@ export interface GameSettings {
   imageModel?: ImageModelId;
   userSystemPrompt?: string;
   userSystemPromptCustom?: boolean;
+  imageUserSystemPrompt?: string;
   maxCompressedMemoryK?: number;
   textScale?: number;
   pipelineMode?: PipelineMode;

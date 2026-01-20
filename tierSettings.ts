@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   imageModel: '',
   userSystemPrompt: '',
   userSystemPromptCustom: false,
+  imageUserSystemPrompt: '',
   maxCompressedMemoryK: 25,
   textScale: 1,
   pipelineMode: 'event',

@@ -909,6 +909,7 @@ const normalizeProviderSettings = (settings: GameSettings): GameSettings => {
     imageProvider: settings.imageProvider || fallbackProvider,
     userSystemPrompt: settings.userSystemPrompt ?? '',
     userSystemPromptCustom: settings.userSystemPromptCustom ?? false,
+    imageUserSystemPrompt: settings.imageUserSystemPrompt ?? '',
     pipelineMode: settings.pipelineMode ?? 'event',
     autoSaveEnabled: settings.autoSaveEnabled ?? false,
     textScale,
@@ -1583,6 +1584,7 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isUserPromptOpen, setIsUserPromptOpen] = useState(false);
+  const [isImagePromptOpen, setIsImagePromptOpen] = useState(false);
   const [isArenaPromptOpen, setIsArenaPromptOpen] = useState(false);
   const [isTipOpen, setIsTipOpen] = useState(false);
   const [arenaError, setArenaError] = useState<string | null>(null);
@@ -1876,7 +1878,7 @@ const App: React.FC = () => {
   }, [gameState.settings]);
 
   useEffect(() => {
-    if (!currentUser || !canManualSave) return;
+    if (!currentUser || currentUser.tier === 'guest') return;
     if (!gameState.settings.autoSaveEnabled) return;
     const currentMemory = gameState.compressedMemory || '';
     const currentRawOutput = gameState.rawOutputCache || '';
@@ -1887,7 +1889,19 @@ const App: React.FC = () => {
     const memoryChanged = currentMemory !== lastCompressedMemory.current;
     const inventoryChanged = currentInventorySignature !== lastInventorySignature.current;
     const rawOutputChanged = currentRawOutput !== lastRawOutputCache.current;
-    if (!historyChanged && !memoryChanged && !inventoryChanged && !rawOutputChanged) {
+    const hasUnsavedHistory = gameState.history.some(entry => entry.isSaved === false);
+    const hasUnsavedStatusChanges = gameState.status_track?.status_change?.some(change => change.isSaved === false);
+    const savedSnapshot = buildSavedSnapshot(gameState);
+    const savedSnapshotChanged = JSON.stringify(gameState.savedSnapshot || {}) !== JSON.stringify(savedSnapshot);
+    if (
+      !historyChanged
+      && !memoryChanged
+      && !inventoryChanged
+      && !rawOutputChanged
+      && !hasUnsavedHistory
+      && !hasUnsavedStatusChanges
+      && !savedSnapshotChanged
+    ) {
       lastHistoryLength.current = gameState.history.length;
       return;
     }
@@ -1895,10 +1909,26 @@ const App: React.FC = () => {
     lastCompressedMemory.current = currentMemory;
     lastInventorySignature.current = currentInventorySignature;
     lastRawOutputCache.current = currentRawOutput;
+    const savedHistory = hasUnsavedHistory ? markHistorySaved(gameState.history) : gameState.history;
+    const savedStatusTrack = hasUnsavedStatusChanges && gameState.status_track
+      ? {
+        ...gameState.status_track,
+        status_change: markStatusChangesSaved(gameState.status_track.status_change)
+      }
+      : gameState.status_track;
+    const nextState: GameState = {
+      ...gameState,
+      history: savedHistory,
+      status_track: savedStatusTrack,
+      savedSnapshot
+    };
+    if (hasUnsavedHistory || hasUnsavedStatusChanges || savedSnapshotChanged) {
+      setGameState(nextState);
+    }
     const key = getSaveKey(currentUser.username);
-    localStorage.setItem(key, JSON.stringify(gameState));
+    localStorage.setItem(key, JSON.stringify(nextState));
     setHasSave(true);
-  }, [gameState, currentUser, canManualSave]);
+  }, [gameState, currentUser]);
 
   useEffect(() => {
     if (!isNormal || !currentUser) return;
@@ -2649,7 +2679,7 @@ const App: React.FC = () => {
       const imagePromise = allowImages
         ? generateSceneImage(
           `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
-          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl: imageProxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel, userSystemPrompt: gameState.settings.userSystemPrompt }
+          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl: imageProxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel, imageUserSystemPrompt: gameState.settings.imageUserSystemPrompt }
         )
         : Promise.resolve(undefined);
       const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
@@ -2944,7 +2974,7 @@ const App: React.FC = () => {
             textApiKey: currentUser?.textApiKey,
             textProxyApiKey: currentUser?.textProxyKey,
             textModel: effectiveTextModel,
-            userSystemPrompt: arenaState.userPrompt
+            imageUserSystemPrompt: gameState.settings.imageUserSystemPrompt
           }).catch(err => {
             setArenaImageStage('error');
             throw err;
@@ -2970,7 +3000,7 @@ const App: React.FC = () => {
               textApiKey: currentUser?.textApiKey,
               textProxyApiKey: currentUser?.textProxyKey,
               textModel: effectiveTextModel,
-              userSystemPrompt: arenaState.userPrompt
+              imageUserSystemPrompt: gameState.settings.imageUserSystemPrompt
             });
             if (avatar?.url) {
               return { party: { ...party, avatarUrl: avatar.url } };
@@ -3300,7 +3330,7 @@ const App: React.FC = () => {
             textApiKey: currentUser?.textApiKey,
             textProxyApiKey: currentUser?.textProxyKey,
             textModel: effectiveTextModel,
-            userSystemPrompt: actionSettings.userSystemPrompt
+            imageUserSystemPrompt: actionSettings.imageUserSystemPrompt
           }).catch(err => {
             setImageStage('error');
             throw err;
@@ -3505,7 +3535,7 @@ const App: React.FC = () => {
           textApiKey: currentUser?.textApiKey,
           textProxyApiKey: currentUser?.textProxyKey,
           textModel: effectiveTextModel,
-          userSystemPrompt: actionSettings.userSystemPrompt
+          imageUserSystemPrompt: actionSettings.imageUserSystemPrompt
         }).catch(err => {
           setImageStage('error');
           throw err;
@@ -4449,6 +4479,16 @@ const App: React.FC = () => {
     }));
   };
 
+  const updateImageUserSystemPrompt = (value: string) => {
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        imageUserSystemPrompt: value
+      }
+    }));
+  };
+
   const updateArenaSystemPrompt = (value: string) => {
     setArenaState(prev => ({
       ...prev,
@@ -5358,8 +5398,8 @@ const App: React.FC = () => {
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '其它' : 'Other'}</div>
             <div className="opacity-80">
               {isZh
-                ? '支持中英文切换、用户系统提示、斗兽场系统提示，以及打赏二维码入口。'
-                : 'Supports EN/中文 toggle, user system prompt, arena system prompt, and the tip/donate menu.'}
+                ? '支持中英文切换、文本/图像用户系统提示、斗兽场系统提示，以及打赏二维码入口。'
+                : 'Supports EN/中文 toggle, text/image user prompts, arena system prompt, and the tip/donate menu.'}
             </div>
           </div>
         </div>
@@ -5370,7 +5410,7 @@ const App: React.FC = () => {
     <div className="fixed top-0 left-0 w-full h-full z-[3000] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
       <div className="max-w-xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-2xl font-bold uppercase">{isZh ? '用户系统提示' : 'User System Prompt'}</h3>
+          <h3 className="text-2xl font-bold uppercase">{isZh ? '文本用户系统提示' : 'Text User System Prompt'}</h3>
           <button
             onClick={() => setIsUserPromptOpen(false)}
             className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
@@ -5380,8 +5420,8 @@ const App: React.FC = () => {
         </div>
         <div className="text-xs opacity-70 mb-3">
           {isZh
-            ? '用于控制模型行为，例如：要求每次给出 3 个可选行动、输出超过 2000 token，或将输出限制在 1000 token 内。'
-            : 'Use this to control model behavior, e.g. always give 3 available actions, output more than 2000 tokens, or keep the output within 1000 tokens.'}
+            ? '用于控制文本模型行为，例如：要求每次给出 3 个可选行动、输出超过 2000 token，或将输出限制在 1000 token 内。'
+            : 'Use this to control text model behavior, e.g. always give 3 available actions, output more than 2000 tokens, or keep the output within 1000 tokens.'}
         </div>
         <div className="text-xs opacity-70 mb-4">
           <div className="uppercase tracking-widest opacity-60 mb-2">
@@ -5409,7 +5449,33 @@ const App: React.FC = () => {
           value={gameState.settings.userSystemPrompt || ''}
           onChange={(e) => updateUserSystemPrompt(e.target.value)}
           className="w-full h-40 md:h-48 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-xs focus:outline-none"
-          placeholder={isZh ? '输入用户系统提示...' : 'Enter user system prompt...'}
+          placeholder={isZh ? '输入文本用户系统提示...' : 'Enter text user system prompt...'}
+        />
+      </div>
+    </div>
+  );
+  const imagePromptModal = isImagePromptOpen && (
+    <div className="fixed top-0 left-0 w-full h-full z-[3000] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-2xl font-bold uppercase">{isZh ? '图像用户系统提示' : 'Image User System Prompt'}</h3>
+          <button
+            onClick={() => setIsImagePromptOpen(false)}
+            className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+          >
+            {isZh ? '关闭' : 'Close'}
+          </button>
+        </div>
+        <div className="text-xs opacity-70 mb-3">
+          {isZh
+            ? '用于控制图像生成风格，例如：构图偏写实、色调偏暖、重点突出某种材质或氛围。'
+            : 'Use this to guide image generation style, e.g. realism, warm palette, or focus on certain materials and mood.'}
+        </div>
+        <textarea
+          value={gameState.settings.imageUserSystemPrompt || ''}
+          onChange={(e) => updateImageUserSystemPrompt(e.target.value)}
+          className="w-full h-40 md:h-48 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-3 text-[color:var(--pip-color)] text-xs focus:outline-none"
+          placeholder={isZh ? '输入图像用户系统提示...' : 'Enter image user system prompt...'}
         />
       </div>
     </div>
@@ -5916,6 +5982,7 @@ const App: React.FC = () => {
         {settingsModal}
         {helpModal}
         {userPromptModal}
+        {imagePromptModal}
         {arenaPromptModal}
         <div className="max-w-3xl w-full space-y-6 md:space-y-8 pip-boy-border p-6 md:p-12 bg-black/60 shadow-2xl relative">
           <div className="absolute top-4 right-4 flex space-x-2">
@@ -5937,7 +6004,13 @@ const App: React.FC = () => {
               onClick={() => setIsUserPromptOpen(true)}
               className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
-              {isZh ? '提示' : 'PROMPT'}
+              {isZh ? '文本提示' : 'TEXT PROMPT'}
+            </button>
+            <button
+              onClick={() => setIsImagePromptOpen(true)}
+              className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+            >
+              {isZh ? '图像提示' : 'IMAGE PROMPT'}
             </button>
             {isAdmin && (
               <button
@@ -6463,6 +6536,7 @@ const App: React.FC = () => {
       {rawOutputModal}
       {helpModal}
       {userPromptModal}
+      {imagePromptModal}
       {arenaPromptModal}
       {legacyCompressionModal}
       {legacyInventoryModal}
@@ -6514,7 +6588,13 @@ const App: React.FC = () => {
               onClick={() => setIsUserPromptOpen(true)}
               className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
-              {isZh ? '提示' : 'PROMPT'}
+              {isZh ? '文本提示' : 'TEXT PROMPT'}
+            </button>
+            <button
+              onClick={() => setIsImagePromptOpen(true)}
+              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+            >
+              {isZh ? '图像提示' : 'IMAGE PROMPT'}
             </button>
             <button 
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
