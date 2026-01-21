@@ -1693,7 +1693,6 @@ const App: React.FC = () => {
   const [saveBlocked, setSaveBlocked] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
-  const [saveNeedsMigration, setSaveNeedsMigration] = useState(false);
   const [terminalHistory, setTerminalHistory] = useState<HistoryEntry[]>([]);
   const [terminalHistoryOffset, setTerminalHistoryOffset] = useState(0);
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
@@ -2036,27 +2035,40 @@ const App: React.FC = () => {
   }, [currentUser, effectiveSaveMode]);
 
   useEffect(() => {
-    if (!currentUser || currentUser.tier === 'guest') {
-      setSaveNeedsMigration(false);
-      return;
-    }
-    if (effectiveSaveMode !== 'web') {
-      setSaveNeedsMigration(false);
-      return;
-    }
+    if (!currentUser || currentUser.tier === 'guest') return;
+    if (effectiveSaveMode !== 'web') return;
     let active = true;
     const saveKey = getSaveKey(currentUser.username);
-    saveRepoRef.current.hasSave(saveKey)
-      .then(async (hasLocal) => {
-        if (!hasLocal) {
-          if (active) setSaveNeedsMigration(false);
-          return;
-        }
-        const hasIndexed = await saveRepoRef.current.hasIndexedData(saveKey);
-        if (active) setSaveNeedsMigration(hasLocal && !hasIndexed);
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(saveKey);
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const isLegacy = !parsed || typeof parsed !== 'object' || !('gameState' in parsed);
+    if (!isLegacy) return;
+    saveRepoRef.current
+      .loadRuntimeState(saveKey)
+      .then((loaded) => {
+        if (!active || !loaded) return null;
+        const nextState = buildCommitState(loaded.gameState);
+        return saveRepoRef.current.commitRuntimeState(saveKey, nextState, {
+          username: currentUser.username,
+          localHistoryLimit: getStorageHistoryLimit(nextState.settings, DEFAULT_LOCAL_HISTORY_LIMIT)
+        });
+      })
+      .then(() => {
+        if (active) setHasSave(true);
       })
       .catch(() => {
-        if (active) setSaveNeedsMigration(false);
+        // Silent legacy migration.
       });
     return () => {
       active = false;
@@ -2377,7 +2389,6 @@ const App: React.FC = () => {
       setHasSave(true);
       setSaveBlocked(false);
       setSaveNotice(null);
-      setSaveNeedsMigration(false);
       return true;
     } catch (err) {
       handleSaveError(err, notify);
@@ -2514,7 +2525,6 @@ const App: React.FC = () => {
           await saveRepoRef.current.importZip(key, file, { username });
           if (currentUser && currentUser.username === username) {
             setHasSave(true);
-            setSaveNeedsMigration(false);
           }
           alert(isZh ? '存档导入成功。' : 'Save imported.');
           onSuccess?.();
@@ -2540,7 +2550,6 @@ const App: React.FC = () => {
         });
         if (currentUser && currentUser.username === username) {
           setHasSave(true);
-          setSaveNeedsMigration(false);
         }
         alert(isZh ? '存档导入成功。' : 'Save imported.');
         onSuccess?.();
@@ -2641,31 +2650,6 @@ const App: React.FC = () => {
     }));
     setSaveNotice(isZh ? '已切换至浏览器存档。' : 'Switched to browser storage.');
   }, [currentUser, isZh]);
-
-  const handleMigrateLegacySave = useCallback(async () => {
-    if (!currentUser) return;
-    setSaveBusy(true);
-    try {
-      const key = getSaveKey(currentUser.username);
-      const loaded = await saveRepoRef.current.loadRuntimeState(key);
-      if (!loaded) {
-        alert(isZh ? '未找到可迁移的存档。' : 'No save found to migrate.');
-        return;
-      }
-      const nextState = buildCommitState(loaded.gameState);
-      await saveRepoRef.current.commitRuntimeState(key, nextState, {
-        username: currentUser.username,
-        localHistoryLimit: getStorageHistoryLimit(nextState.settings, DEFAULT_LOCAL_HISTORY_LIMIT)
-      });
-      setSaveNeedsMigration(false);
-      setSaveBlocked(false);
-      setSaveNotice(isZh ? '迁移完成。' : 'Migration completed.');
-    } catch (err) {
-      handleSaveError(err, true);
-    } finally {
-      setSaveBusy(false);
-    }
-  }, [currentUser, handleSaveError, isZh]);
 
   const handleMigrateToLocalFolder = useCallback(async () => {
     if (!currentUser) return;
@@ -5503,6 +5487,11 @@ const App: React.FC = () => {
                 ? '浏览器模式使用 localStorage + IndexedDB；本地模式将相同结构写入选定文件夹。'
                 : 'Browser mode uses localStorage + IndexedDB; local mode writes the same structure into a chosen folder.'}
             </div>
+            <div className="text-[10px] opacity-60">
+              {isZh
+                ? '若要迁移到本地模式，请先在浏览器模式导出 ZIP，再启用本地模式并导入该 ZIP。'
+                : 'To migrate to local mode, export a ZIP in browser mode first, then enable local mode and import the ZIP.'}
+            </div>
             <div className="text-[11px] uppercase opacity-60">
               {isZh ? '当前模式' : 'Current mode'}: {effectiveSaveMode === 'fs' ? (isZh ? '本地文件夹' : 'Local folder') : (isZh ? '浏览器' : 'Browser')}
             </div>
@@ -5560,24 +5549,6 @@ const App: React.FC = () => {
                 {isZh ? '导入 ZIP' : 'Import ZIP'}
               </button>
             </div>
-            {supportsFsAccess && effectiveSaveMode === 'web' && (
-              <button
-                onClick={handleMigrateToLocalFolder}
-                disabled={!hasSave || saveBusy}
-                className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:var(--pip-color)] hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40"
-              >
-                {isZh ? '迁移到本地文件夹' : 'Migrate to local folder'}
-              </button>
-            )}
-            {saveNeedsMigration && effectiveSaveMode === 'web' && (
-              <button
-                onClick={handleMigrateLegacySave}
-                disabled={saveBusy}
-                className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:var(--pip-color)] hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40"
-              >
-                {isZh ? '迁移旧存档' : 'Migrate legacy save'}
-              </button>
-            )}
             {!supportsFsAccess && (
               <div className="text-[10px] opacity-50">
                 {isZh ? '此浏览器不支持本地文件夹存档（iOS 可能不支持）。' : 'Local folder saves are not supported on this browser (iOS may be unsupported).'}
