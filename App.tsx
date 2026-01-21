@@ -872,6 +872,105 @@ const buildNarratorHistory = (
   ];
 };
 
+const buildEventOutcomeHistory = (
+  history: HistoryEntry[],
+  statusTrack: StatusTrack | null,
+  limit: number | null,
+  compressedMemory: string | undefined
+) => {
+  const entries: HistoryEntry[] = [];
+  const memoryText = (compressedMemory || '').trim();
+  if (memoryText) {
+    entries.push({
+      sender: 'narrator',
+      text: `${MEMORY_ENTRY_TAG}:\n${memoryText}`,
+      isSaved: true
+    });
+  }
+  const allOutcomes = (statusTrack?.status_change ?? [])
+    .map(entry => entry?.outcomeSummary)
+    .filter((summary): summary is string => typeof summary === 'string' && summary.trim().length > 0);
+  const effectiveLimit = typeof limit === 'number' && limit > 0 ? limit : allOutcomes.length;
+  const recentOutcomes = effectiveLimit === 0 ? [] : allOutcomes.slice(-effectiveLimit);
+  recentOutcomes.forEach((summary) => {
+    entries.push({
+      sender: 'narrator',
+      text: `OUTCOME SUMMARY:\n${summary}`,
+      isSaved: true
+    });
+  });
+  const lastNarration = [...history]
+    .reverse()
+    .find(entry => entry.sender === 'narrator' && entry.meta !== 'memory' && !isErrorHistoryEntry(entry));
+  if (lastNarration) {
+    entries.push(lastNarration);
+  }
+  return entries;
+};
+
+const hasMeaningfulNumber = (value: unknown) =>
+  typeof value === 'number' && Number.isFinite(value) && value !== 0;
+
+const hasNonEmptyString = (value: unknown) =>
+  typeof value === 'string' && value.trim().length > 0;
+
+const hasNonEmptyArray = (value: unknown) =>
+  Array.isArray(value) && value.length > 0;
+
+const isPlayerChangeEmpty = (change?: PlayerChange | null) => {
+  if (!change || typeof change !== 'object') return true;
+  if (hasMeaningfulNumber(change.health)) return false;
+  if (hasMeaningfulNumber(change.maxHealth)) return false;
+  if (hasMeaningfulNumber(change.karma)) return false;
+  if (hasMeaningfulNumber(change.caps)) return false;
+  if (change.special && Object.values(change.special).some(value => hasMeaningfulNumber(value as number))) {
+    return false;
+  }
+  if (change.skills && Object.values(change.skills).some(value => hasMeaningfulNumber(value as number))) {
+    return false;
+  }
+  if (hasNonEmptyArray(change.perksAdd)) return false;
+  if (hasNonEmptyArray(change.perksRemove)) return false;
+  const inventoryChange = change.inventoryChange;
+  if (inventoryChange && (hasNonEmptyArray(inventoryChange.add) || hasNonEmptyArray(inventoryChange.remove))) {
+    return false;
+  }
+  return true;
+};
+
+const mergeEventOutcomeWithStatusUpdate = (
+  eventOutcome: StatusChange,
+  statusUpdate?: StatusChange | null
+) => {
+  if (!statusUpdate || typeof statusUpdate !== 'object') return eventOutcome;
+  const merged: StatusChange = { ...eventOutcome };
+  if (typeof statusUpdate.timePassedMinutes === 'number' && Number.isFinite(statusUpdate.timePassedMinutes)) {
+    merged.timePassedMinutes = statusUpdate.timePassedMinutes;
+  }
+  if (!isPlayerChangeEmpty(statusUpdate.playerChange)) {
+    merged.playerChange = statusUpdate.playerChange;
+  }
+  if (hasNonEmptyArray(statusUpdate.questUpdates)) {
+    merged.questUpdates = statusUpdate.questUpdates;
+  }
+  if (hasNonEmptyArray(statusUpdate.companionUpdates)) {
+    merged.companionUpdates = statusUpdate.companionUpdates;
+  }
+  if (hasNonEmptyArray(statusUpdate.newNpc)) {
+    merged.newNpc = statusUpdate.newNpc;
+  }
+  if (hasNonEmptyString(statusUpdate.location)) {
+    merged.location = statusUpdate.location;
+  }
+  if (typeof statusUpdate.currentYear === 'number' && Number.isFinite(statusUpdate.currentYear)) {
+    merged.currentYear = statusUpdate.currentYear;
+  }
+  if (hasNonEmptyString(statusUpdate.currentTime)) {
+    merged.currentTime = statusUpdate.currentTime;
+  }
+  return merged;
+};
+
 const buildCompressionPayload = (state: GameState, limit: number) => {
   const nonMemory = state.history.filter(item => item.meta !== 'memory' && !isErrorHistoryEntry(item));
   const recentHistory = nonMemory.slice(-limit);
@@ -1571,6 +1670,7 @@ const App: React.FC = () => {
   const [companionAvatarPending, setCompanionAvatarPending] = useState<Record<string, boolean>>({});
   const [isStatusRebuilding, setIsStatusRebuilding] = useState(false);
   const [statusRebuildPrompt, setStatusRebuildPrompt] = useState<StatusRebuildPrompt | null>(null);
+  const [eventOutcomeStage, setEventOutcomeStage] = useState<StageStatus>('idle');
   const [narrationStage, setNarrationStage] = useState<StageStatus>('idle');
   const [statusStage, setStatusStage] = useState<StageStatus>('idle');
   const [imageStage, setImageStage] = useState<StageStatus>('idle');
@@ -1706,21 +1806,46 @@ const App: React.FC = () => {
   const canReroll = !!lastAction && !gameState.isThinking && !compressionLocked && !inventoryLocked && !statusRebuildLocked;
   const inputLocked = gameState.isThinking || compressionLocked || inventoryLocked || statusRebuildLocked;
   const useEventPipeline = gameState.settings.pipelineMode === 'event';
-  const progressVisible = gameState.isThinking || narrationStage === 'error' || statusStage === 'error' || imageStage === 'error';
-  const progressStages = progressVisible ? [
-    {
-      label: isZh ? '叙事生成' : 'Narration',
-      status: narrationStage
-    },
-    {
-      label: useEventPipeline ? (isZh ? '事件管理' : 'Event') : (isZh ? '状态管理' : 'Status'),
-      status: statusStage
-    },
-    {
-      label: isZh ? '图像生成' : 'Image',
-      status: imageStage
-    }
-  ] : [];
+  const progressVisible = gameState.isThinking
+    || eventOutcomeStage === 'error'
+    || narrationStage === 'error'
+    || statusStage === 'error'
+    || imageStage === 'error';
+  const progressStages = progressVisible
+    ? (useEventPipeline
+      ? [
+        {
+          label: isZh ? '事件结果' : 'Outcome',
+          status: eventOutcomeStage
+        },
+        {
+          label: isZh ? '状态更新' : 'Status',
+          status: statusStage
+        },
+        {
+          label: isZh ? '叙事生成' : 'Narration',
+          status: narrationStage
+        },
+        {
+          label: isZh ? '图像生成' : 'Image',
+          status: imageStage
+        }
+      ]
+      : [
+        {
+          label: isZh ? '叙事生成' : 'Narration',
+          status: narrationStage
+        },
+        {
+          label: isZh ? '状态管理' : 'Status',
+          status: statusStage
+        },
+        {
+          label: isZh ? '图像生成' : 'Image',
+          status: imageStage
+        }
+      ])
+    : [];
   const stageStatusLabels = isZh
     ? {
       idle: '待命',
@@ -2391,6 +2516,7 @@ const App: React.FC = () => {
     lastRawOutputCache.current = '';
     setLegacyInventoryPrompt(null);
     setInventoryRefreshError(null);
+    setEventOutcomeStage('idle');
     setNarrationStage('idle');
     setStatusStage('idle');
     setImageStage('idle');
@@ -3188,9 +3314,11 @@ const App: React.FC = () => {
     setSystemError(null);
     setStatusManagerError(null);
     if (useEventPipelineAction) {
+      setEventOutcomeStage('running');
       setNarrationStage('pending');
-      setStatusStage('running');
+      setStatusStage('pending');
     } else {
+      setEventOutcomeStage('idle');
       setNarrationStage('running');
       setStatusStage('pending');
     }
@@ -3212,6 +3340,9 @@ const App: React.FC = () => {
       state.compressedMemory,
       useMemory
     );
+    const eventHistory = useEventPipelineAction
+      ? buildEventOutcomeHistory(baseHistory, state.status_track, historyLimitAction, state.compressedMemory)
+      : trimmedHistory;
     const lockedImageTurns = isNormal && !hasTextAuthKeyAction
       ? normalDefaultImageTurns
       : (isGuest ? guestFixedImageTurns : null);
@@ -3247,7 +3378,7 @@ const App: React.FC = () => {
           const eventKnownNpcs = state.knownNpcs.map(({ avatarUrl, ...rest }) => rest);
           const eventResult = await getEventOutcome(
             state.player,
-            trimmedHistory,
+            eventHistory,
             actionText,
             state.currentYear,
             state.location,
@@ -3268,9 +3399,9 @@ const App: React.FC = () => {
           );
           eventOutcome = eventResult;
           eventTokenUsage = eventResult.tokenUsage;
-          setStatusStage('done');
+          setEventOutcomeStage('done');
         } catch (eventErr) {
-          setStatusStage('error');
+          setEventOutcomeStage('error');
           cacheRawOutput(eventErr);
           const detail = appendJsonParseGuidance(
             eventErr instanceof Error ? eventErr.message : String(eventErr),
@@ -3280,6 +3411,9 @@ const App: React.FC = () => {
             ? `VAULT-TEC ERROR: Event manager failed.\n[LOG] ${detail}`
             : `避难所科技错误：事件管理失败。\n[日志] ${detail}`;
           setStatusManagerError(statusErrorMessage);
+          setNarrationStage('skipped');
+          setStatusStage('skipped');
+          setImageStage('skipped');
           throw eventErr;
         }
 
@@ -3289,6 +3423,7 @@ const App: React.FC = () => {
 
         if (eventOutcome.ruleViolation) {
           setNarrationStage('skipped');
+          setStatusStage('skipped');
           setImageStage('skipped');
           setLastAction(prev => (prev ? { ...prev, status: 'resolved' } : prev));
           setGameState(prev => ({
@@ -3308,12 +3443,64 @@ const App: React.FC = () => {
 
         const eventOutcomeForNarration = { ...eventOutcome };
         delete (eventOutcomeForNarration as { tokenUsage?: TokenUsage }).tokenUsage;
+        let statusChange: StatusChange | null = null;
+        let statusTokenUsage: TokenUsage | undefined;
+        try {
+          setStatusStage('running');
+          const statusKnownNpcs = state.knownNpcs.map(({ avatarUrl, ...rest }) => rest);
+          const statusResult = await getStatusUpdate(
+            state.player,
+            state.quests,
+            statusKnownNpcs,
+            state.currentYear,
+            state.location,
+            state.currentTime,
+            eventOutcome.outcomeSummary || '',
+            state.language,
+            {
+              tier: activeTier,
+              apiKey: currentUser?.textApiKey,
+              proxyApiKey: currentUser?.textProxyKey,
+              proxyBaseUrl: textProxyBaseUrlAction,
+              useProxy: useProxyAction,
+              textModel: effectiveTextModel,
+              provider: textProviderAction
+            }
+          );
+          statusChange = statusResult.update || null;
+          statusTokenUsage = statusResult.tokenUsage;
+          setStatusStage('done');
+        } catch (statusErr) {
+          setStatusStage('error');
+          cacheRawOutput(statusErr);
+          const detail = appendJsonParseGuidance(
+            statusErr instanceof Error ? statusErr.message : String(statusErr),
+            isZhAction
+          );
+          const statusErrorMessage = state.language === 'en'
+            ? `VAULT-TEC ERROR: Status manager failed.\n[LOG] ${detail}`
+            : `避难所科技错误：状态管理失败。\n[日志] ${detail}`;
+          setStatusManagerError(statusErrorMessage);
+          console.error('Status manager error:', statusErr);
+        }
+
+        const eventStatusChange = mergeEventOutcomeWithStatusUpdate(
+          { ...eventOutcomeForNarration },
+          statusChange
+        );
+        const questUpdates = eventStatusChange.questUpdates;
+        const { merged: mergedQuests, completedNotes } = applyQuestUpdates(state.quests, questUpdates);
+
         setNarrationStage('running');
+        const narratorKnownNpcs = state.knownNpcs.map(({ inventory: _inventory, avatarUrl: _avatarUrl, ...rest }) => rest);
+        const narratorQuests = mergedQuests.filter(quest => quest.status !== 'completed');
         const narrationResponse: EventNarrationResponse = await getEventNarration(
           state.player,
+          narratorKnownNpcs,
+          narratorQuests,
           state.currentYear,
           state.location,
-          eventOutcomeForNarration,
+          eventStatusChange,
           state.language,
           {
             tier: activeTier,
@@ -3330,7 +3517,10 @@ const App: React.FC = () => {
         setNarrationStage('done');
 
         const newTime = new Date(state.currentTime);
-        newTime.setMinutes(newTime.getMinutes() + (eventOutcome.timePassedMinutes || 0));
+        const timePassedMinutes = typeof eventStatusChange.timePassedMinutes === 'number'
+          ? eventStatusChange.timePassedMinutes
+          : 0;
+        newTime.setMinutes(newTime.getMinutes() + timePassedMinutes);
 
         const visualPrompt = narrationResponse.imagePrompt || eventOutcome.outcomeSummary || actionText;
         setImageStage(shouldGenerateImage ? 'running' : 'skipped');
@@ -3355,12 +3545,6 @@ const App: React.FC = () => {
           })
           : Promise.resolve(undefined);
 
-        const eventStatusChange: StatusChange = {
-          ...eventOutcomeForNarration
-        };
-
-        const questUpdates = eventStatusChange.questUpdates;
-        const { merged: mergedQuests, completedNotes } = applyQuestUpdates(state.quests, questUpdates);
         let storyText = narrationResponse.storyText;
         if (completedNotes.length > 0) {
           storyText += `\n\n${completedNotes.join('\n\n')}`;
@@ -3467,7 +3651,10 @@ const App: React.FC = () => {
         const nextTime = typeof eventStatusChange.currentTime === 'string' && eventStatusChange.currentTime.trim()
           ? eventStatusChange.currentTime.trim()
           : newTime.toISOString();
-        const tokenDelta = mergeTokenUsage(normalizeTokenUsage(narratorTokenUsage), eventTokenUsage);
+        const tokenDelta = mergeTokenUsage(
+          mergeTokenUsage(normalizeTokenUsage(narratorTokenUsage), eventTokenUsage),
+          statusTokenUsage
+        );
         const nextState: GameState = {
           ...state,
           isThinking: false,
@@ -3729,6 +3916,9 @@ const App: React.FC = () => {
         err instanceof Error ? err.message : String(err),
         isZhAction
       );
+      if (useEventPipelineAction) {
+        setEventOutcomeStage('error');
+      }
       setNarrationStage('error');
       setStatusStage(prev => (prev === 'error' ? 'error' : 'idle'));
       setImageStage('idle');

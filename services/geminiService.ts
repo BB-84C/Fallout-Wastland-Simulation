@@ -259,30 +259,30 @@ const statusSchema = {
       type: Type.ARRAY,
       items: actorSchema
     },
+    timePassedMinutes: { type: Type.NUMBER },
     location: { type: Type.STRING },
     currentYear: { type: Type.NUMBER },
     currentTime: { type: Type.STRING }
-  }
+  },
+  required: [
+    "playerChange",
+    "questUpdates",
+    "companionUpdates",
+    "newNpc",
+    "timePassedMinutes",
+    "location",
+    "currentYear",
+    "currentTime"
+  ]
 };
 
 const eventSchema = {
   type: Type.OBJECT,
   properties: {
     outcomeSummary: { type: Type.STRING },
-    ruleViolation: { type: Type.STRING },
-    timePassedMinutes: { type: Type.NUMBER },
-    playerChange: playerChangeSchema,
-    questUpdates: questSchema,
-    companionUpdates: companionUpdatesSchema,
-    newNpc: {
-      type: Type.ARRAY,
-      items: actorSchema
-    },
-    location: { type: Type.STRING },
-    currentYear: { type: Type.NUMBER },
-    currentTime: { type: Type.STRING }
+    ruleViolation: { type: Type.STRING }
   },
-  required: ["outcomeSummary", "timePassedMinutes"]
+  required: ["outcomeSummary", "ruleViolation"]
 };
 
 const inventoryItemSchema = {
@@ -686,30 +686,24 @@ export async function getEventOutcome(
 
     TASK:
     1. Determine the outcome of the action.
-    2. Define the concrete event outcomes and state changes (diff-only).
+    2. Summarize the concrete outcome in outcomeSummary (concise, causal, no decorative language).
     3. Avoid assuming the player is the protagonist, unless the user specified or the player background says so.
     4. You are encouraged to create new events for the player that fit within the Fallout universe to enhance the story.
     5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
     6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, set the outcome where the player realizes they don't have the item.
-    7. All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
-    8. Only return ruleViolation when the player explicitly dictates outcomes or facts; otherwise set ruleViolation to "false". If required tools/items are missing, narrate the failure or workaround instead of flagging ruleViolation.
-    9. If the player notes that prior narration missed/forgot plot or lore, comply and correct the continuity in your outcomeSummary.
-    Return strict JSON with keys: outcomeSummary, ruleViolation, timePassedMinutes, playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
+    7. Only return ruleViolation when the player explicitly dictates outcomes or facts; otherwise set ruleViolation to "false". If required tools/items are missing, narrate the failure or workaround instead of flagging ruleViolation.
+    8. If the player notes that prior narration missed/forgot plot or lore, comply and correct the continuity in your outcomeSummary.
+    Return strict JSON with keys: outcomeSummary, ruleViolation.
   `;
   const systemInstruction = `You are the Vault-Tec Event Manager.
           1. SOURCE: Strictly source all lore, item stats, and location details from the Fallout Wiki in English.
           1.1. OUTPUT RULE: Never cite sources, URLs, or parenthetical provenance in player-facing text.
           2. MANDATORY LANGUAGE: You MUST output all text fields in ${targetLang}.
-          3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
-          4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts. Do NOT use ruleViolation for unlucky/partial results, missing tools/items, or to justify item quality; handle those in outcomeSummary/playerChange. If no violation, set ruleViolation to "false".
+          3. PURPOSE: Determine the concrete outcome summary and ruleViolation only. Status changes are handled by a separate manager.
+          4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts. Do NOT use ruleViolation for unlucky/partial results or missing tools/items; handle those in outcomeSummary. If no violation, set ruleViolation to "false".
           5. CONTINUITY CORRECTION: If the player says prior narration missed/forgot plot or lore, comply and correct the continuity in the outcomeSummary (do not flag ruleViolation).
-          6. DIFF ONLY: Output only changed fields. Omit keys when no changes occur.
-          7. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
-          8. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
-          9. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
-          10. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-          11. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
-          ${options?.userSystemPrompt?.trim() ? `12. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
+          6. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+          ${options?.userSystemPrompt?.trim() ? `7. USER DIRECTIVE: ${options.userSystemPrompt.trim()}` : ''}`;
 
   const response = await ai.models.generateContent({
     model: selectedTextModel,
@@ -739,11 +733,13 @@ export async function getEventOutcome(
       (normalized as any).tokenUsage = tokenUsage;
       return normalized as EventOutcome;
     }
-    return { outcomeSummary: '', timePassedMinutes: 0, tokenUsage } as EventOutcome;
+    return { outcomeSummary: '', ruleViolation: null, tokenUsage } as EventOutcome;
   }
 
 export async function getEventNarration(
   player: Actor,
+  knownNpcs: Array<Omit<Actor, "inventory">>,
+  quests: Quest[],
   year: number,
   location: string,
   eventOutcome: EventOutcome,
@@ -759,6 +755,8 @@ export async function getEventNarration(
     Environment Year: ${year}
     Environment Location: ${location}
     Current Player Profile: ${JSON.stringify(player)}
+    Known NPCs (inventory omitted): ${JSON.stringify(knownNpcs)}
+    Current Quests (completed omitted): ${JSON.stringify(quests)}
 
     EVENT_OUTCOME:
     ${JSON.stringify(eventOutcome)}
@@ -931,27 +929,27 @@ export async function getStatusUpdate(
     Current Quests: ${JSON.stringify(quests)}
     Known NPCs: ${JSON.stringify(knownNpcs)}
 
-    LAST NARRATION:
+    INPUT TEXT:
     ${narration}
 
     TASK:
-    Update status fields based on the narration. Return JSON with optional keys:
-    playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
-    playerChange should contain only changed fields, plus inventoryChange with add/remove lists.
+    Update status fields based on the input text. Return JSON with keys:
+    playerChange, questUpdates, companionUpdates, newNpc (array), timePassedMinutes, location, currentYear, currentTime.
+    playerChange should contain only changed fields; for unchanged values use 0/false/empty lists or objects, including inventoryChange with add/remove lists.
     All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
     Each newNpc entry MUST include appearance (short physical description).
-    If no changes are needed, return {}.
+    If no changes are needed, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
   `;
   const systemInstruction = `You are the Vault-Tec Status Manager.
-          1. PURPOSE: Emit ONLY status changes shown in the status bar (player stats, inventory, caps, quests, known NPCs/companions, location/year/time).
-          2. INPUTS: Use the CURRENT STATUS and the LAST NARRATION only. Do NOT infer changes that are not explicitly stated or clearly implied by the narration.
+          1. PURPOSE: Emit ONLY status changes shown in the status bar (player stats, inventory, caps, quests, known NPCs/companions, location/year/time, timePassedMinutes).
+          2. INPUTS: Use the CURRENT STATUS and the INPUT TEXT only (event outcome summary or narration). Do NOT infer changes that are not explicitly stated or clearly implied by the text.
           3. CONSISTENCY: Keep existing items, caps, perks, SPECIAL, skills, and quests unless the narration clearly changes them. Never invent trades or items.
           4. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
           5. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
           6. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
           7. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
           8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-          9. RETURN FORMAT: Return JSON only. If nothing changes, return an empty object {}.
+          9. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
           10. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
   const response = await ai.models.generateContent({

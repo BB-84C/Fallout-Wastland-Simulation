@@ -282,30 +282,30 @@ const statusSchema = {
       type: Type.ARRAY,
       items: actorSchema
     },
-    location: { type: Type.STRING },
-    currentYear: { type: Type.NUMBER },
-    currentTime: { type: Type.STRING }
-  }
-};
-
-const eventSchema = {
-  type: Type.OBJECT,
-  properties: {
-    outcomeSummary: { type: Type.STRING },
-    ruleViolation: { type: Type.STRING },
     timePassedMinutes: { type: Type.NUMBER },
-    playerChange: playerChangeSchema,
-    questUpdates: questSchema,
-    companionUpdates: companionUpdatesSchema,
-    newNpc: {
-      type: Type.ARRAY,
-      items: actorSchema
-    },
     location: { type: Type.STRING },
     currentYear: { type: Type.NUMBER },
     currentTime: { type: Type.STRING }
   },
-  required: ["outcomeSummary", "timePassedMinutes"]
+  required: [
+    "playerChange",
+    "questUpdates",
+    "companionUpdates",
+    "newNpc",
+    "timePassedMinutes",
+    "location",
+    "currentYear",
+    "currentTime"
+  ]
+};
+
+const eventOutcomeSchema = {
+  type: Type.OBJECT,
+  properties: {
+    outcomeSummary: { type: Type.STRING },
+    ruleViolation: { type: Type.STRING }
+  },
+  required: ["outcomeSummary", "ruleViolation"]
 };
 
 const inventoryItemSchema = {
@@ -600,6 +600,7 @@ const jsonStatusSchema: JsonSchema = {
       type: "array",
       items: jsonActorSchema
     },
+    timePassedMinutes: { type: "number" },
     location: { type: "string" },
     currentYear: { type: "number" },
     currentTime: { type: "string" }
@@ -609,6 +610,7 @@ const jsonStatusSchema: JsonSchema = {
     "questUpdates",
     "companionUpdates",
     "newNpc",
+    "timePassedMinutes",
     "location",
     "currentYear",
     "currentTime"
@@ -651,10 +653,28 @@ const jsonEventSchema: JsonSchema = {
   additionalProperties: false
 };
 
+const jsonEventOutcomeSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    outcomeSummary: { type: "string" },
+    ruleViolation: { type: ["string", "null"] }
+  },
+  required: ["outcomeSummary", "ruleViolation"],
+  additionalProperties: false
+};
+
 const jsonEventSchemaDoubao: JsonSchema = {
   ...jsonEventSchema,
   properties: {
     ...jsonEventSchema.properties,
+    ruleViolation: { type: "string" }
+  }
+};
+
+const jsonEventOutcomeSchemaDoubao: JsonSchema = {
+  ...jsonEventOutcomeSchema,
+  properties: {
+    ...jsonEventOutcomeSchema.properties,
     ruleViolation: { type: "string" }
   }
 };
@@ -774,19 +794,11 @@ const buildEventSystem = (targetLang: string, year: number, location: string, us
 - Encourage using indirect means, environmental factors, deception, sabotage, timing, and psychological tactics to alter situations.
 - Storylines should reflect 3–6 steps of implied causality chains, but avoid presenting reasoning as a list.
 - The text in the "outcomeSummary" must remain short and concise but obey the logic above, and be precise and comprehensive. For example, "Someone done something because of reasons, leading to results. And/meanwhile A causes B by doing C, resulting in D, the situation ends with E.", avoid using any dramatic or decorative language.
-- Update the other keys strictly based on the values in the "outcomeSummary" key. 
 2. MANDATORY LANGUAGE: You MUST output all text fields in ${targetLang}.
-3. PURPOSE: Determine the concrete outcome of the player action and emit ONLY the state deltas.
-4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts. Do NOT use ruleViolation for unlucky/partial results, missing tools/items, or to justify item quality; handle those in outcomeSummary/playerChange. If no violation, set ruleViolation to "false".
+3. PURPOSE: Determine the concrete outcome summary and ruleViolation only. Status changes are handled by a separate manager.
+4. RULE GUARD: Only set ruleViolation when the player explicitly dictates outcomes or facts. If no violation, set ruleViolation to "false".
 5. CONTINUITY CORRECTION: If the player says prior narration missed/forgot plot or lore, comply and correct the continuity in the outcomeSummary (do not flag ruleViolation).
-6. DIFF ONLY: Use deltas for numeric changes; keep all required keys present.
-6.1. If a required field has no reasonable value, use empty string/0/false (or []/{} for lists/objects) rather than inventing details.
-7. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
-7.1. Whenever the narration or outcome mentions using, consuming, looting, or losing items, translate those movements into inventoryChange entries so the status manager can apply them. Do not leave inventoryChange empty when the text already describes tangible loot or consumption.
-8. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
-9. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
-10. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-11. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
+6. CONSISTENCY: Ensure current year (${year}) and location (${location}) lore is followed.
 ${userSystemPrompt && userSystemPrompt.trim() ? `12. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildEventNarratorSystem = (targetLang: string, year: number, location: string, userSystemPrompt?: string) => `You are the Fallout Overseer.
@@ -802,15 +814,15 @@ const buildEventNarratorSystem = (targetLang: string, year: number, location: st
 ${userSystemPrompt && userSystemPrompt.trim() ? `9. USER DIRECTIVE: ${userSystemPrompt.trim()}` : ''}`;
 
 const buildStatusSystem = (targetLang: string, year: number, location: string) => `You are the Vault-Tec Status Manager.
-1. PURPOSE: Emit ONLY status changes shown in the status bar (player stats, inventory, caps, quests, known NPCs/companions, location/year/time).
-2. INPUTS: Use the CURRENT STATUS and the LAST NARRATION only. Do NOT infer changes that are not explicitly stated or clearly implied by the narration.
+1. PURPOSE: Emit ONLY status changes shown in the status bar (player stats, inventory, caps, quests, known NPCs/companions, location/year/time, timePassedMinutes).
+2. INPUTS: Use the CURRENT STATUS and the INPUT TEXT only (event outcome summary or narration). Do NOT infer changes that are not explicitly stated or clearly implied by the text.
 3. CONSISTENCY: Keep existing items, caps, perks, SPECIAL, skills, and quests unless the narration clearly changes them. Never invent trades or items.
 4. INVENTORY CHANGE: Use inventoryChange.add/remove only. add items with full details; remove uses name + count. Do NOT output full inventory lists.
 5. PLAYER CHANGE: All numeric playerChange fields are DELTAS (positive or negative), not final totals. special and skills are per-stat deltas.
 6. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
 7. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
 8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-9. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects).
+9. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
 10. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
 const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', userSystemPrompt?: string) => `You are the Wasteland Smash Arena simulator.
@@ -885,18 +897,19 @@ Player's current intent/action: "${userInput}"
 
 TASK:
 1. Determine the outcome of the action.
-2. Define the concrete event outcomes and state changes (diff-only).
+2. Summarize the concrete outcome in outcomeSummary (concise, causal, no decorative language).
 3. Avoid assuming the player is the protagonist, unless the user specified or the player background says so.
 4. You are encouraged to create new events for the player that fit within the Fallout universe to enhance the story.
 5. You are not encouraged to force bind the existed wiki events/quest to the player. Only do that occasionally if it fits well.
 6. If the player's action includes using an item that is not in their inventory, don't return a rule violation. Instead, set the outcome where the player realizes they don't have the item.
 7. Only set ruleViolation when the player explicitly dictates outcomes or facts; missing tools/items or unmet conditions are not violations. If no violation, set ruleViolation to "false".
 8. If the player notes that prior narration missed/forgot plot or lore, comply and correct the continuity in outcomeSummary.
-9. All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
-Return strict JSON with keys: outcomeSummary, ruleViolation, timePassedMinutes, playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.`;
+Return strict JSON with keys: outcomeSummary, ruleViolation.`;
 
 const buildEventNarratorPrompt = (
   player: Actor,
+  knownNpcs: Array<Omit<Actor, "inventory">>,
+  quests: Quest[],
   year: number,
   location: string,
   eventOutcome: EventOutcome
@@ -904,6 +917,8 @@ const buildEventNarratorPrompt = (
 Environment Year: ${year}
 Environment Location: ${location}
 Current Player Profile: ${JSON.stringify(player)}
+Known NPCs (inventory omitted): ${JSON.stringify(knownNpcs)}
+Current Quests (completed omitted): ${JSON.stringify(quests)}
 
 EVENT_OUTCOME:
 ${JSON.stringify(eventOutcome)}
@@ -1004,12 +1019,12 @@ Current Player Status: ${JSON.stringify(player)}
 Current Quests: ${JSON.stringify(quests)}
 Known NPCs: ${JSON.stringify(knownNpcs)}
 
-LAST NARRATION:
+INPUT TEXT:
 ${narration}
 
 TASK:
-Update status fields based on the narration. Return JSON with keys:
-playerChange, questUpdates, companionUpdates, newNpc (array), location, currentYear, currentTime.
+Update status fields based on the input text. Return JSON with keys:
+playerChange, questUpdates, companionUpdates, newNpc (array), timePassedMinutes, location, currentYear, currentTime.
 playerChange should contain only changed fields; for unchanged values use 0/false/empty lists or objects, including inventoryChange with add/remove lists.
 All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
 Each newNpc entry MUST include appearance (short physical description).
@@ -1310,6 +1325,20 @@ const parseEventOutcome = (raw: any) => {
     location: normalized?.location,
     currentYear: normalized?.currentYear,
     currentTime: normalized?.currentTime
+  };
+};
+
+const parseEventOutcomeSummary = (raw: any) => {
+  const outcomeSummary = typeof raw?.outcomeSummary === "string" ? raw.outcomeSummary : "";
+  const ruleViolationRaw = typeof raw?.ruleViolation === "string" ? raw.ruleViolation.trim() : "";
+  const normalizedRuleViolation = ruleViolationRaw
+    && ruleViolationRaw.toLowerCase() !== "null"
+    && ruleViolationRaw.toLowerCase() !== "false"
+    ? ruleViolationRaw
+    : null;
+  return {
+    outcomeSummary,
+    ruleViolation: normalizedRuleViolation
   };
 };
 
@@ -2038,7 +2067,7 @@ export async function getEventOutcome(
       contents: prompt,
       config: {
         responseMimeType: "application/json",
-        responseSchema: eventSchema,
+        responseSchema: eventOutcomeSchema,
         systemInstruction: system
       }
     });
@@ -2051,7 +2080,7 @@ export async function getEventOutcome(
       totalTokens: response.usageMetadata?.totalTokenCount
     }, `${system}\n${prompt}`, response.text);
     const parsed = safeJsonParse(response.text);
-    const outcome = { ...parseEventOutcome(parsed), tokenUsage };
+    const outcome = { ...parseEventOutcomeSummary(parsed), tokenUsage };
     return outcome as EventOutcome;
   }
 
@@ -2065,7 +2094,7 @@ export async function getEventOutcome(
     throw new Error("Missing text model name.");
   }
 
-  const eventSchemaForProvider = provider === "doubao" ? jsonEventSchemaDoubao : jsonEventSchema;
+  const eventSchemaForProvider = provider === "doubao" ? jsonEventOutcomeSchemaDoubao : jsonEventOutcomeSchema;
   const result = isOpenAiCompatible(provider)
     ? await callOpenAiJson(
       apiKey,
@@ -2082,12 +2111,14 @@ export async function getEventOutcome(
       : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, eventSchemaForProvider, "event_outcome");
 
   const parsed = safeJsonParse(result.content);
-  const outcome = { ...parseEventOutcome(parsed), tokenUsage: result.tokenUsage };
+  const outcome = { ...parseEventOutcomeSummary(parsed), tokenUsage: result.tokenUsage };
   return outcome as EventOutcome;
 }
 
 export async function getEventNarration(
   player: Actor,
+  knownNpcs: Array<Omit<Actor, "inventory">>,
+  quests: Quest[],
   year: number,
   location: string,
   eventOutcome: EventOutcome,
@@ -2098,11 +2129,11 @@ export async function getEventNarration(
   const useProxy = !!options?.useProxy;
   const targetLang = lang === "zh" ? "Chinese" : "English";
   const system = buildEventNarratorSystem(targetLang, year, location, options?.userSystemPrompt);
-  const prompt = buildEventNarratorPrompt(player, year, location, eventOutcome);
+  const prompt = buildEventNarratorPrompt(player, knownNpcs, quests, year, location, eventOutcome);
 
   if (provider === "gemini") {
     if (options?.tier === "guest") {
-      return getGeminiEventNarration(player, year, location, eventOutcome, lang, {
+      return getGeminiEventNarration(player, knownNpcs, quests, year, location, eventOutcome, lang, {
         tier: options?.tier,
         apiKey: options?.apiKey,
         textModel: options?.textModel,

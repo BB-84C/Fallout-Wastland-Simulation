@@ -261,14 +261,6 @@ export interface NarratorResponse {
 export interface EventOutcome {
   outcomeSummary: string;
   ruleViolation?: string | null;
-  timePassedMinutes: number;
-  playerChange?: PlayerChange;
-  questUpdates?: Quest[];
-  companionUpdates?: CompanionUpdate[];
-  newNpc?: Actor[];
-  location?: string;
-  currentYear?: number;
-  currentTime?: string;
   tokenUsage?: TokenUsage;
 }
 
