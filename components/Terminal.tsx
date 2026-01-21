@@ -6,6 +6,7 @@ import { HistoryEntry, Language } from '../types';
 
 interface TerminalProps {
   history: HistoryEntry[];
+  historyIndexOffset?: number;
   isThinking: boolean;
   language: Language;
   progressStages?: { label: string; status: 'idle' | 'pending' | 'running' | 'done' | 'error' | 'skipped' }[];
@@ -23,10 +24,16 @@ interface TerminalProps {
   canReroll?: boolean;
   rerollLabel?: string;
   forceScrollbar?: boolean;
+  onFetchHistoryBefore?: (beforeIndex: number, limitEntries: number) => void | Promise<void>;
+  hasMoreHistory?: boolean;
+  isFetchingHistory?: boolean;
+  onResolveImageUrl?: (historyIndex: number) => Promise<string | null>;
+  historyFetchBatchSize?: number;
 }
 
 const Terminal: React.FC<TerminalProps> = ({
   history,
+  historyIndexOffset = 0,
   isThinking,
   language,
   progressStages,
@@ -43,26 +50,36 @@ const Terminal: React.FC<TerminalProps> = ({
   onReroll,
   canReroll,
   rerollLabel,
-  forceScrollbar
+  forceScrollbar,
+  onFetchHistoryBefore,
+  hasMoreHistory,
+  isFetchingHistory,
+  onResolveImageUrl,
+  historyFetchBatchSize
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAdjustingRef = useRef(false);
   const anchorRef = useRef<{ index: number; offset: number } | null>(null);
   const scrollTargetRef = useRef<'top' | 'bottom' | null>(null);
+  const resolvingRef = useRef<Set<number>>(new Set());
   const WINDOW_STEP = 10;
   const WINDOW_MAX = WINDOW_STEP * 2;
   const SCROLL_THRESHOLD = 24;
-  const displayHistory = history.filter(entry => entry.meta !== 'memory');
+  const indexedHistory = useMemo(
+    () => history.map((entry, index) => ({ entry, historyIndex: historyIndexOffset + index })),
+    [history, historyIndexOffset]
+  );
+  const displayHistory = indexedHistory.filter(item => item.entry.meta !== 'memory');
   const isZh = language === 'zh';
   const rounds = useMemo(() => {
-    const grouped: { entry: HistoryEntry; index: number }[][] = [];
-    let current: { entry: HistoryEntry; index: number }[] = [];
-    displayHistory.forEach((entry, index) => {
-      if (entry.sender === 'player' && current.length > 0) {
+    const grouped: { entry: HistoryEntry; historyIndex: number }[][] = [];
+    let current: { entry: HistoryEntry; historyIndex: number }[] = [];
+    displayHistory.forEach((item) => {
+      if (item.entry.sender === 'player' && current.length > 0) {
         grouped.push(current);
         current = [];
       }
-      current.push({ entry, index });
+      current.push({ entry: item.entry, historyIndex: item.historyIndex });
     });
     if (current.length > 0) grouped.push(current);
     return grouped;
@@ -273,6 +290,33 @@ const Terminal: React.FC<TerminalProps> = ({
     return () => window.cancelAnimationFrame(handle);
   }, [windowRange, isPinnedToBottom]);
 
+  const [resolvedImages, setResolvedImages] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    if (!onResolveImageUrl) return;
+    visibleHistory.forEach(item => {
+      const historyIndex = item.historyIndex;
+      if (item.entry.imageUrl || resolvedImages[historyIndex]) return;
+      if (resolvingRef.current.has(historyIndex)) return;
+      resolvingRef.current.add(historyIndex);
+      Promise.resolve(onResolveImageUrl(historyIndex))
+        .then((url) => {
+          if (url) {
+            setResolvedImages(prev => ({ ...prev, [historyIndex]: url }));
+          }
+        })
+        .finally(() => {
+          resolvingRef.current.delete(historyIndex);
+        });
+    });
+  }, [visibleHistory, onResolveImageUrl, resolvedImages]);
+
+  const effectiveHasMoreHistory = typeof hasMoreHistory === 'boolean'
+    ? hasMoreHistory
+    : historyIndexOffset > 0;
+  const fetchBatchSize = historyFetchBatchSize ?? 80;
+  const firstHistoryIndex = indexedHistory.length > 0 ? indexedHistory[0].historyIndex : historyIndexOffset;
+
   const stageLabel = (status: 'idle' | 'pending' | 'running' | 'done' | 'error' | 'skipped') => {
     if (stageStatusLabels && stageStatusLabels[status]) {
       return stageStatusLabels[status] as string;
@@ -316,6 +360,17 @@ const Terminal: React.FC<TerminalProps> = ({
             }
             return;
           }
+          if (
+            atTop
+            && windowRange.start <= 0
+            && onFetchHistoryBefore
+            && effectiveHasMoreHistory
+            && !isFetchingHistory
+          ) {
+            captureAnchor();
+            onFetchHistoryBefore(firstHistoryIndex, fetchBatchSize);
+            return;
+          }
           if (atBottom && windowRange.end < totalRounds) {
             const currentSize = windowRange.end - windowRange.start;
             captureAnchor();
@@ -330,8 +385,8 @@ const Terminal: React.FC<TerminalProps> = ({
       >
         {visibleHistory.map((item, i) => (
           <div
-            key={item.index}
-            data-history-index={item.index}
+            key={item.historyIndex}
+            data-history-index={item.historyIndex}
             className={`flex flex-col ${item.entry.sender === 'player' ? 'items-end' : 'items-start'}`}
           >
           <div className={`max-w-[85%] p-3 rounded ${
@@ -352,9 +407,13 @@ const Terminal: React.FC<TerminalProps> = ({
               )}
             </div>
           </div>
-          {item.entry.imageUrl && (
+          {(item.entry.imageUrl || resolvedImages[item.historyIndex]) && (
             <div className="mt-4 border-2 border-[color:rgba(var(--pip-color-rgb),0.5)] p-1 bg-black/60 shadow-lg max-w-2xl">
-              <img src={item.entry.imageUrl} alt="Scene" className="w-full h-auto rounded-sm opacity-90 hover:opacity-100 transition-opacity" />
+              <img
+                src={item.entry.imageUrl || resolvedImages[item.historyIndex]}
+                alt="Scene"
+                className="w-full h-auto rounded-sm opacity-90 hover:opacity-100 transition-opacity"
+              />
               <div className="text-[10px] text-center mt-1 opacity-40 uppercase">VAULT-TEC VISUAL RECONSTRUCTION</div>
               {/* Render grounding sources from Search Grounding to follow SDK requirements */}
               {item.entry.groundingSources && item.entry.groundingSources.length > 0 && (

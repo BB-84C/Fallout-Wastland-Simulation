@@ -12,6 +12,7 @@
   "dependencies": {
     "@google/genai": "^1.35.0",
     "express": "^4.19.2",
+    "jszip": "^3.10.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-markdown": "^9.1.0",

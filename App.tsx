@@ -6,6 +6,8 @@ import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
 import StatBar from './components/StatBar';
 import { createPlayerCharacter, getNarrativeResponse, getArenaNarration, getStatusUpdate, getEventOutcome, getEventNarration, auditInventoryWeights, recoverInventoryStatus, generateSceneImage, generateArenaAvatar, generateCompanionAvatar, compressMemory } from './services/modelService';
+import { SaveRepository, WebBackend, FSBackend, DEFAULT_LOCAL_HISTORY_LIMIT, getStorageHistoryLimit } from './save';
+import { clearFsHandle, loadFsHandle, saveFsHandle } from './save/handleStore';
 import wechatQr from './assets/wech.png';
 import alipayQr from './assets/zhif.png';
 import venmoQr from './assets/venm.png';
@@ -192,6 +194,23 @@ const markHistorySaved = (history: HistoryEntry[]) =>
 const markStatusChangesSaved = (changes: StatusChangeEntry[]) =>
   changes.map(change => ({ ...change, isSaved: true }));
 
+const buildCommitState = (state: GameState): GameState => {
+  const savedSnapshot = buildSavedSnapshot(state);
+  const savedHistory = markHistorySaved(state.history);
+  const savedStatusTrack = state.status_track
+    ? {
+      ...state.status_track,
+      status_change: markStatusChangesSaved(state.status_track.status_change)
+    }
+    : state.status_track;
+  return {
+    ...state,
+    history: savedHistory,
+    status_track: savedStatusTrack,
+    savedSnapshot
+  };
+};
+
 const filterUnsavedHistory = (history: HistoryEntry[]) =>
   history.filter(entry => entry.isSaved !== false);
 
@@ -245,6 +264,11 @@ const appendJsonParseGuidance = (detail: string, isZh: boolean) => {
     : 'Please open Settings and check the information in the "Raw Output Cache." If you see normal text dialogue but notice that a sentence abruptly ends without finishing, and there is no closing "]" or "}" character, this typically indicates a connection interruption between the device and the model provider. This can occur due to factors such as using mobile data while commuting, an unstable VPN connection, or poor network conditions.';
   return `${detail}\n${guidance}`;
 };
+
+const buildSaveQuotaMessage = (isZh: boolean) =>
+  isZh
+    ? '保存失败：存档空间不足。请迁移到新版存档、导出 ZIP 或启用本地模式。'
+    : 'Save failed: storage quota exceeded. Please migrate to the new save format, export a ZIP, or enable local folder mode.';
 
 const clampColorChannel = (value: number, fallback: number) => {
   if (!Number.isFinite(value)) return fallback;
@@ -1254,6 +1278,15 @@ const downloadTextFile = (content: string, filename: string, mimeType: string) =
   URL.revokeObjectURL(url);
 };
 
+const downloadBlobFile = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
 const formatCreationProgress = (message: string, isZh: boolean, showDebug: boolean) => {
   if (message.startsWith('Requesting character profile')) {
     return getCreationPhaseText('request', isZh);
@@ -1657,6 +1690,16 @@ const App: React.FC = () => {
   const [charDescription, setCharDescription] = useState('');
   const [hasSave, setHasSave] = useState(false);
   const [hasArenaSave, setHasArenaSave] = useState(false);
+  const [saveBlocked, setSaveBlocked] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const [saveNeedsMigration, setSaveNeedsMigration] = useState(false);
+  const [terminalHistory, setTerminalHistory] = useState<HistoryEntry[]>([]);
+  const [terminalHistoryOffset, setTerminalHistoryOffset] = useState(0);
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [isHistoryFetching, setIsHistoryFetching] = useState(false);
+  const [terminalPinnedToTail, setTerminalPinnedToTail] = useState(true);
+  const [fsSaveHandle, setFsSaveHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [systemError, setSystemError] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<LastActionState | null>(null);
   const [isCompressing, setIsCompressing] = useState(false);
@@ -1717,6 +1760,7 @@ const App: React.FC = () => {
   const lastCompressedMemory = useRef('');
   const lastInventorySignature = useRef('');
   const lastRawOutputCache = useRef('');
+  const saveRepoRef = useRef<SaveRepository>(new SaveRepository(new WebBackend()));
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(0);
   const compressionStatusTimeout = useRef<number | null>(null);
@@ -1750,8 +1794,9 @@ const App: React.FC = () => {
   const rawHistoryLimit = Number.isFinite(gameState.settings.maxHistoryTurns)
     ? Math.trunc(gameState.settings.maxHistoryTurns)
     : DEFAULT_SETTINGS.maxHistoryTurns;
-    const lockedHistoryLimit = isGuest ? getHistoryLimitForTier('guest') : rawHistoryLimit;
-    const historyLimit = lockedHistoryLimit === -1 ? null : Math.max(1, lockedHistoryLimit);
+  const lockedHistoryLimit = isGuest ? getHistoryLimitForTier('guest') : rawHistoryLimit;
+  const historyLimit = lockedHistoryLimit === -1 ? null : Math.max(1, lockedHistoryLimit);
+  const storageHistoryLimit = getStorageHistoryLimit(gameState.settings, DEFAULT_LOCAL_HISTORY_LIMIT);
   const textProvider: ModelProvider = isGuest || isAdmin
     ? 'gemini'
     : (gameState.settings.textProvider || gameState.settings.modelProvider || 'gemini');
@@ -1764,6 +1809,11 @@ const App: React.FC = () => {
   const effectiveTextModel = selectedTextModel;
   const effectiveImageModel = selectedImageModel;
   const isZh = gameState.language === 'zh';
+  const supportsFsAccess = typeof window !== 'undefined' && 'showDirectoryPicker' in window;
+  const saveMode = gameState.settings.saveMode ?? 'web';
+  const savePath = (gameState.settings.savePath || '').trim();
+  const saveFolderName = (fsSaveHandle?.name || savePath).trim();
+  const effectiveSaveMode = saveMode === 'fs' && fsSaveHandle ? 'fs' : 'web';
   const canManualSave = isAdmin || normalKeyUnlocked;
   const canAdjustImageFrequency = isAdmin || normalKeyUnlocked;
   const arenaTokenUsage = normalizeTokenUsage(arenaState.tokenUsage);
@@ -1931,16 +1981,87 @@ const App: React.FC = () => {
   }, [isNormal, isModelConfigured, textProvider, hasTextUserKey]);
 
   useEffect(() => {
+    if (saveMode === 'fs' && fsSaveHandle) {
+      saveRepoRef.current.setBackend(new FSBackend(fsSaveHandle));
+    } else {
+      saveRepoRef.current.setBackend(new WebBackend());
+    }
+  }, [saveMode, fsSaveHandle]);
+
+  useEffect(() => {
+    if (!currentUser || currentUser.tier === 'guest') return;
+    if (saveMode !== 'fs' || fsSaveHandle) return;
+    let active = true;
+    const key = getSaveKey(currentUser.username);
+    loadFsHandle(key)
+      .then(async (handle) => {
+        if (!active || !handle) return;
+        try {
+          const permission = await handle.queryPermission({ mode: 'readwrite' });
+          if (permission === 'granted' && active) {
+            setFsSaveHandle(handle);
+          }
+        } catch {
+          // Ignore permission lookup failures.
+        }
+      })
+      .catch(() => {
+        // Ignore restore failures.
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentUser, saveMode, fsSaveHandle]);
+
+  useEffect(() => {
     if (!currentUser || currentUser.tier === 'guest') {
       setHasSave(false);
       setHasArenaSave(false);
       return;
     }
-    const saved = localStorage.getItem(getSaveKey(currentUser.username));
-    setHasSave(!!saved);
+    let active = true;
+    saveRepoRef.current
+      .hasSave(getSaveKey(currentUser.username))
+      .then((exists) => {
+        if (active) setHasSave(exists);
+      })
+      .catch(() => {
+        if (active) setHasSave(false);
+      });
     const arenaSaved = localStorage.getItem(getArenaSaveKey(currentUser.username));
     setHasArenaSave(!!arenaSaved);
-  }, [currentUser]);
+    return () => {
+      active = false;
+    };
+  }, [currentUser, effectiveSaveMode]);
+
+  useEffect(() => {
+    if (!currentUser || currentUser.tier === 'guest') {
+      setSaveNeedsMigration(false);
+      return;
+    }
+    if (effectiveSaveMode !== 'web') {
+      setSaveNeedsMigration(false);
+      return;
+    }
+    let active = true;
+    const saveKey = getSaveKey(currentUser.username);
+    saveRepoRef.current.hasSave(saveKey)
+      .then(async (hasLocal) => {
+        if (!hasLocal) {
+          if (active) setSaveNeedsMigration(false);
+          return;
+        }
+        const hasIndexed = await saveRepoRef.current.hasIndexedData(saveKey);
+        if (active) setSaveNeedsMigration(hasLocal && !hasIndexed);
+      })
+      .catch(() => {
+        if (active) setSaveNeedsMigration(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentUser, effectiveSaveMode]);
 
   useEffect(() => {
     if (view !== 'playing' || !apRecovery) return;
@@ -2006,6 +2127,7 @@ const App: React.FC = () => {
     if (!currentUser || currentUser.tier === 'guest') return;
     if (!gameState.settings.autoSaveEnabled) return;
     if (view !== 'playing') return;
+    if (saveBlocked) return;
     const currentMemory = gameState.compressedMemory || '';
     const currentRawOutput = gameState.rawOutputCache || '';
     const currentInventorySignature = gameState.player
@@ -2052,9 +2174,55 @@ const App: React.FC = () => {
       setGameState(nextState);
     }
     const key = getSaveKey(currentUser.username);
-    localStorage.setItem(key, JSON.stringify(nextState));
-    setHasSave(true);
-  }, [gameState, currentUser, view]);
+    saveRepoRef.current
+      .commitRuntimeState(key, nextState, {
+        username: currentUser.username,
+        localHistoryLimit: storageHistoryLimit
+      })
+      .then(() => {
+        setHasSave(true);
+        setSaveBlocked(false);
+      })
+      .catch((err) => {
+        const isQuota = err && typeof err === 'object' && 'name' in err && (err as any).name === 'QuotaExceededError';
+        const message = isQuota
+          ? buildSaveQuotaMessage(isZh)
+          : (isZh ? '自动保存失败。' : 'Auto-save failed.');
+        setSaveBlocked(isQuota);
+        setSaveNotice(message);
+        setSystemError(message);
+        alert(message);
+      });
+  }, [gameState, currentUser, view, saveBlocked, storageHistoryLimit, isZh]);
+
+  useEffect(() => {
+    if (!gameState.history.length) {
+      if (terminalHistory.length > 0) {
+        setTerminalHistory([]);
+        setTerminalHistoryOffset(0);
+      }
+      setHasMoreHistory(false);
+      return;
+    }
+    const currentEnd = terminalHistoryOffset + terminalHistory.length;
+    if (gameState.history.length <= currentEnd) {
+      setHasMoreHistory(terminalHistoryOffset > 0);
+      return;
+    }
+    const nextEntries = gameState.history.slice(currentEnd);
+    let nextHistory = [...terminalHistory, ...nextEntries];
+    let nextOffset = terminalHistoryOffset;
+    if (terminalPinnedToTail && nextHistory.length > storageHistoryLimit) {
+      const overflow = nextHistory.length - storageHistoryLimit;
+      nextHistory = nextHistory.slice(overflow);
+      nextOffset += overflow;
+    }
+    setTerminalHistory(nextHistory);
+    if (nextOffset !== terminalHistoryOffset) {
+      setTerminalHistoryOffset(nextOffset);
+    }
+    setHasMoreHistory(nextOffset > 0);
+  }, [gameState.history, terminalHistory, terminalHistoryOffset, terminalPinnedToTail, storageHistoryLimit]);
 
   useEffect(() => {
     if (!isNormal || !currentUser) return;
@@ -2179,52 +2347,82 @@ const App: React.FC = () => {
     };
   }, [draggingPanel]);
 
+  const handleSaveError = useCallback((err: unknown, notify: boolean) => {
+    const isQuota = err && typeof err === 'object' && 'name' in err && (err as any).name === 'QuotaExceededError';
+    const message = isQuota
+      ? buildSaveQuotaMessage(isZh)
+      : (isZh ? '保存失败。' : 'Save failed.');
+    setSaveBlocked(isQuota);
+    setSaveNotice(message);
+    setSystemError(message);
+    if (notify || isQuota) {
+      alert(message);
+    }
+  }, [isZh]);
+
+  const performSave = useCallback(async (state: GameState, notify: boolean) => {
+    if (!currentUser || currentUser.tier === 'guest') return false;
+    if (saveBlocked) {
+      if (notify) {
+        alert(buildSaveQuotaMessage(isZh));
+      }
+      return false;
+    }
+    const key = getSaveKey(currentUser.username);
+    try {
+      await saveRepoRef.current.commitRuntimeState(key, state, {
+        username: currentUser.username,
+        localHistoryLimit: storageHistoryLimit
+      });
+      setHasSave(true);
+      setSaveBlocked(false);
+      setSaveNotice(null);
+      setSaveNeedsMigration(false);
+      return true;
+    } catch (err) {
+      handleSaveError(err, notify);
+      return false;
+    }
+  }, [currentUser, saveBlocked, storageHistoryLimit, handleSaveError, isZh]);
+
   const saveGame = useCallback((notify = true) => {
     if (!currentUser || !canManualSave) return;
-    try {
-      if (gameState.isThinking) {
-        alert(gameState.language === 'en'
-          ? "Narration is still running. It's safer to wait for it to finish before closing or refreshing. If you leave now, the next load will reset the pending state."
-          : "叙事仍在进行中。建议等待叙事完成后再关闭或刷新。如果你现在离开，下次加载会重置未完成状态。");
-      }
-      const savedSnapshot = buildSavedSnapshot(gameState);
-      const savedHistory = markHistorySaved(gameState.history);
-      const savedStatusTrack = gameState.status_track
-        ? {
-          ...gameState.status_track,
-          status_change: markStatusChangesSaved(gameState.status_track.status_change)
-        }
-        : gameState.status_track;
-      let nextState: GameState = {
-        ...gameState,
-        history: savedHistory,
-        status_track: savedStatusTrack,
-        savedSnapshot
-      };
-      setGameState(nextState);
-      const data = JSON.stringify(nextState);
-      const key = getSaveKey(currentUser.username);
-      localStorage.setItem(key, data);
-      setHasSave(true);
-      if (notify) {
+    if (gameState.isThinking) {
+      alert(gameState.language === 'en'
+        ? "Narration is still running. It's safer to wait for it to finish before closing or refreshing. If you leave now, the next load will reset the pending state."
+        : "叙事仍在进行中。建议等待叙事完成后再关闭或刷新。如果你现在离开，下次加载会重置未完成状态。");
+    }
+    const nextState = buildCommitState(gameState);
+    setGameState(nextState);
+    performSave(nextState, notify).then((ok) => {
+      if (ok && notify) {
         alert(gameState.language === 'en' ? "Game Saved Successfully!" : "游戏保存成功！");
       }
-    } catch (e) {
-      console.error("Save failed", e);
-      if (notify) {
-        alert(gameState.language === 'en' 
-          ? "Save failed! Local storage may be full." 
-          : "保存失败！本地存储可能已满。");
-      }
-    }
-  }, [gameState, currentUser, canManualSave]);
+    });
+  }, [gameState, currentUser, canManualSave, performSave]);
 
-  const exportData = (format: 'log-md' | 'log-pdf' | 'save-json') => {
+  const exportData = (format: 'log-md' | 'log-pdf' | 'save-zip') => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    if (format === 'save-json') {
-      const payload = buildSaveExportPayload(gameState, currentUser?.username);
-      const content = JSON.stringify(payload, null, 2);
-      downloadTextFile(content, `fallout-save-${timestamp}.json`, 'application/json;charset=utf-8');
+    if (format === 'save-zip') {
+      if (!currentUser) {
+        alert(isZh ? '请先登录后导出存档。' : 'Please log in to export a save.');
+        return;
+      }
+      const nextState = buildCommitState(gameState);
+      setGameState(nextState);
+      performSave(nextState, false).then(async () => {
+        try {
+          const key = getSaveKey(currentUser.username);
+          const blob = await saveRepoRef.current.exportZip(key);
+          if (!blob) {
+            alert(isZh ? '暂无可导出的存档。' : 'No save data to export.');
+            return;
+          }
+          downloadBlobFile(blob, `fallout-save-${timestamp}.zip`);
+        } catch (err) {
+          handleSaveError(err, true);
+        }
+      });
       return;
     }
     if (!gameState.history.length) {
@@ -2299,11 +2497,29 @@ const App: React.FC = () => {
   const importSave = (targetUsername?: string, onSuccess?: () => void) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'application/json';
+    input.accept = '.zip,application/zip,application/x-zip-compressed,application/json';
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
       try {
+        const isZip = file.name.toLowerCase().endsWith('.zip') || file.type.includes('zip');
+        const fallbackPrompt = isZh ? '请输入存档用户名：' : 'Enter username for this save:';
+        if (isZip) {
+          const username = (targetUsername || prompt(fallbackPrompt) || '').trim();
+          if (!username) {
+            alert(isZh ? '导入失败：需要用户名。' : 'Import failed: username required.');
+            return;
+          }
+          const key = getSaveKey(username);
+          await saveRepoRef.current.importZip(key, file, { username });
+          if (currentUser && currentUser.username === username) {
+            setHasSave(true);
+            setSaveNeedsMigration(false);
+          }
+          alert(isZh ? '存档导入成功。' : 'Save imported.');
+          onSuccess?.();
+          return;
+        }
         const raw = await readFileText(file);
         const parsed = JSON.parse(raw);
         const extracted = extractImportedSave(parsed);
@@ -2311,15 +2527,20 @@ const App: React.FC = () => {
           alert(isZh ? '导入失败：文件格式不正确。' : 'Import failed: invalid save format.');
           return;
         }
-        const fallbackPrompt = isZh ? '请输入存档用户名：' : 'Enter username for this save:';
         const username = (targetUsername || extracted.username || prompt(fallbackPrompt) || '').trim();
         if (!username) {
           alert(isZh ? '导入失败：需要用户名。' : 'Import failed: username required.');
           return;
         }
-        localStorage.setItem(getSaveKey(username), JSON.stringify(extracted.gameState));
+        const key = getSaveKey(username);
+        const nextState = buildCommitState(extracted.gameState);
+        await saveRepoRef.current.commitRuntimeState(key, nextState, {
+          username,
+          localHistoryLimit: getStorageHistoryLimit(nextState.settings, DEFAULT_LOCAL_HISTORY_LIMIT)
+        });
         if (currentUser && currentUser.username === username) {
           setHasSave(true);
+          setSaveNeedsMigration(false);
         }
         alert(isZh ? '存档导入成功。' : 'Save imported.');
         onSuccess?.();
@@ -2331,11 +2552,178 @@ const App: React.FC = () => {
     input.click();
   };
 
-  const loadGame = useCallback(() => {
+  const fetchHistoryBefore = useCallback(async (beforeIndex: number, limitEntries: number) => {
+    if (!currentUser || isHistoryFetching) return;
+    if (beforeIndex <= 0 || limitEntries <= 0) {
+      setHasMoreHistory(false);
+      return;
+    }
+    setIsHistoryFetching(true);
+    try {
+      const key = getSaveKey(currentUser.username);
+      const entries = await saveRepoRef.current.fetchHistoryBefore(key, beforeIndex, limitEntries);
+      if (entries.length === 0) {
+        setHasMoreHistory(false);
+        return;
+      }
+      setTerminalHistory(prev => [...entries, ...prev]);
+      setTerminalHistoryOffset(prev => Math.max(0, prev - entries.length));
+      setTerminalPinnedToTail(false);
+      setHasMoreHistory(beforeIndex - entries.length > 0);
+    } finally {
+      setIsHistoryFetching(false);
+    }
+  }, [currentUser, isHistoryFetching]);
+
+  const resolveHistoryImageUrl = useCallback(async (historyIndex: number) => {
+    if (!currentUser) return null;
+    const key = getSaveKey(currentUser.username);
+    try {
+      return await saveRepoRef.current.resolveImageUrl(key, historyIndex);
+    } catch {
+      return null;
+    }
+  }, [currentUser]);
+
+  const handleSelectSaveFolder = useCallback(async () => {
+    if (!supportsFsAccess) {
+      alert(isZh ? '当前浏览器不支持本地文件夹模式。' : 'Local folder mode is not supported in this browser.');
+      return;
+    }
+    try {
+      const picker = (window as any).showDirectoryPicker as ((options?: any) => Promise<FileSystemDirectoryHandle>) | undefined;
+      if (!picker) {
+        alert(isZh ? '当前浏览器不支持本地文件夹模式。' : 'Local folder mode is not supported in this browser.');
+        return;
+      }
+      const handle = await picker({ mode: 'readwrite' });
+      const permission = await handle.requestPermission({ mode: 'readwrite' });
+      if (permission !== 'granted') {
+        alert(isZh ? '未授予文件夹写入权限。' : 'Folder access was not granted.');
+        return;
+      }
+      setFsSaveHandle(handle);
+      if (currentUser) {
+        const key = getSaveKey(currentUser.username);
+        saveFsHandle(key, handle).catch(() => {
+          // Ignore handle persistence errors.
+        });
+      }
+      setGameState(prev => ({
+        ...prev,
+        settings: {
+          ...prev.settings,
+          saveMode: 'fs',
+          savePath: handle.name
+        }
+      }));
+      setSaveBlocked(false);
+      setSaveNotice(isZh ? '已启用本地存档目录。' : 'Local folder mode enabled.');
+    } catch (err) {
+      console.error(err);
+      alert(isZh ? '无法打开本地文件夹。' : 'Failed to open local folder.');
+    }
+  }, [supportsFsAccess, isZh, currentUser]);
+
+  const handleSwitchToWebSave = useCallback(() => {
+    if (currentUser) {
+      const key = getSaveKey(currentUser.username);
+      clearFsHandle(key).catch(() => {
+        // Ignore handle cleanup errors.
+      });
+    }
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        saveMode: 'web'
+      }
+    }));
+    setSaveNotice(isZh ? '已切换至浏览器存档。' : 'Switched to browser storage.');
+  }, [currentUser, isZh]);
+
+  const handleMigrateLegacySave = useCallback(async () => {
+    if (!currentUser) return;
+    setSaveBusy(true);
+    try {
+      const key = getSaveKey(currentUser.username);
+      const loaded = await saveRepoRef.current.loadRuntimeState(key);
+      if (!loaded) {
+        alert(isZh ? '未找到可迁移的存档。' : 'No save found to migrate.');
+        return;
+      }
+      const nextState = buildCommitState(loaded.gameState);
+      await saveRepoRef.current.commitRuntimeState(key, nextState, {
+        username: currentUser.username,
+        localHistoryLimit: getStorageHistoryLimit(nextState.settings, DEFAULT_LOCAL_HISTORY_LIMIT)
+      });
+      setSaveNeedsMigration(false);
+      setSaveBlocked(false);
+      setSaveNotice(isZh ? '迁移完成。' : 'Migration completed.');
+    } catch (err) {
+      handleSaveError(err, true);
+    } finally {
+      setSaveBusy(false);
+    }
+  }, [currentUser, handleSaveError, isZh]);
+
+  const handleMigrateToLocalFolder = useCallback(async () => {
+    if (!currentUser) return;
+    if (!supportsFsAccess) {
+      alert(isZh ? '当前浏览器不支持本地文件夹模式。' : 'Local folder mode is not supported in this browser.');
+      return;
+    }
+    setSaveBusy(true);
+    try {
+      const picker = (window as any).showDirectoryPicker as ((options?: any) => Promise<FileSystemDirectoryHandle>) | undefined;
+      if (!picker) {
+        alert(isZh ? '当前浏览器不支持本地文件夹模式。' : 'Local folder mode is not supported in this browser.');
+        return;
+      }
+      const handle = await picker({ mode: 'readwrite' });
+      const permission = await handle.requestPermission({ mode: 'readwrite' });
+      if (permission !== 'granted') {
+        alert(isZh ? '未授予文件夹写入权限。' : 'Folder access was not granted.');
+        return;
+      }
+      const nextState = buildCommitState(gameState);
+      setGameState(nextState);
+      await performSave(nextState, false);
+      const key = getSaveKey(currentUser.username);
+      const blob = await saveRepoRef.current.exportZip(key);
+      if (!blob) {
+        alert(isZh ? '暂无可迁移的存档。' : 'No save data to migrate.');
+        return;
+      }
+      const fsRepo = new SaveRepository(new FSBackend(handle));
+      await fsRepo.importZip(key, blob, { username: currentUser.username });
+      setFsSaveHandle(handle);
+      saveFsHandle(key, handle).catch(() => {
+        // Ignore handle persistence errors.
+      });
+      setGameState(prev => ({
+        ...prev,
+        settings: {
+          ...prev.settings,
+          saveMode: 'fs',
+          savePath: handle.name
+        }
+      }));
+      setSaveBlocked(false);
+      setSaveNotice(isZh ? '已迁移到本地文件夹。' : 'Migrated to local folder.');
+    } catch (err) {
+      console.error(err);
+      handleSaveError(err, true);
+    } finally {
+      setSaveBusy(false);
+    }
+  }, [currentUser, supportsFsAccess, handleSaveError, isZh, gameState, performSave]);
+
+  const loadGame = useCallback(async () => {
     if (!currentUser || isGuest || (isNormal && !isModelConfigured)) return;
-    const saved = localStorage.getItem(getSaveKey(currentUser.username));
-    if (saved) {
-      const parsed = JSON.parse(saved);
+    const loaded = await saveRepoRef.current.loadRuntimeState(getSaveKey(currentUser.username));
+    if (loaded) {
+      const parsed = loaded.gameState;
       const savedSnapshotRaw = parsed?.savedSnapshot;
       const parsedPlayer = parsed?.player ? normalizeActor(parsed.player) : null;
       const knownNpcNormalization = normalizeKnownNpcList(parsed?.knownNpcs);
@@ -2452,6 +2840,12 @@ const App: React.FC = () => {
         ? clampCompressedMemory(nextState.compressedMemory, memoryCap, nextState.language)
         : '';
       nextState.compressedMemory = normalizedMemory;
+      const localHistoryLimit = getStorageHistoryLimit(nextSettings, DEFAULT_LOCAL_HISTORY_LIMIT);
+      const terminalTail = nextState.history.slice(-localHistoryLimit);
+      setTerminalHistory(terminalTail);
+      setTerminalHistoryOffset(Math.max(0, nextState.history.length - terminalTail.length));
+      setHasMoreHistory(nextState.history.length > terminalTail.length);
+      setTerminalPinnedToTail(true);
       setGameState(nextState);
       const pendingAction = getPendingPlayerAction(nextState.history);
       if (pendingAction) {
@@ -2510,6 +2904,14 @@ const App: React.FC = () => {
     setArenaState(createInitialArenaState(session.settings, gameState.language));
     setHasSave(false);
     setHasArenaSave(false);
+    setTerminalHistory([]);
+    setTerminalHistoryOffset(0);
+    setHasMoreHistory(false);
+    setTerminalPinnedToTail(true);
+    setSaveBlocked(false);
+    setSaveNotice(null);
+    setSaveBusy(false);
+    setIsHistoryFetching(false);
     lastHistoryLength.current = 0;
     lastCompressedMemory.current = '';
     lastInventorySignature.current = '';
@@ -2885,10 +3287,14 @@ const App: React.FC = () => {
           savedSnapshot: buildSavedSnapshot(nextState)
         };
         setGameState(finalizedState);
+        const localHistoryLimit = getStorageHistoryLimit(finalizedState.settings, DEFAULT_LOCAL_HISTORY_LIMIT);
+        const terminalTail = finalizedState.history.slice(-localHistoryLimit);
+        setTerminalHistory(terminalTail);
+        setTerminalHistoryOffset(Math.max(0, finalizedState.history.length - terminalTail.length));
+        setHasMoreHistory(finalizedState.history.length > terminalTail.length);
+        setTerminalPinnedToTail(true);
         if (currentUser && currentUser.tier !== 'guest') {
-          const key = getSaveKey(currentUser.username);
-          localStorage.setItem(key, JSON.stringify(finalizedState));
-          setHasSave(true);
+          performSave(finalizedState, false);
         }
       setSystemError(null);
       setLastAction(null);
@@ -4272,11 +4678,8 @@ const App: React.FC = () => {
   const handleLegacyKnownNpcCleanupNow = () => {
     if (!legacyKnownNpcPrompt) return;
     if (currentUser) {
-      try {
-        localStorage.setItem(getSaveKey(currentUser.username), JSON.stringify(legacyKnownNpcPrompt.state));
-      } catch {
-        // Ignore storage errors.
-      }
+      const nextState = buildCommitState(legacyKnownNpcPrompt.state);
+      performSave(nextState, false);
     }
     setLegacyKnownNpcPrompt(null);
     setSystemError(isZh ? '已清理旧存档的 NPC 列表。' : 'Save cleanup applied to known NPCs.');
@@ -5091,6 +5494,105 @@ const App: React.FC = () => {
             </div>
           </div>
 
+          <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-3">
+            <div className="text-sm font-bold uppercase">
+              {isZh ? '存档管理' : 'Save management'}
+            </div>
+            <div className="text-xs opacity-70">
+              {isZh
+                ? '浏览器模式使用 localStorage + IndexedDB；本地模式将相同结构写入选定文件夹。'
+                : 'Browser mode uses localStorage + IndexedDB; local mode writes the same structure into a chosen folder.'}
+            </div>
+            <div className="text-[11px] uppercase opacity-60">
+              {isZh ? '当前模式' : 'Current mode'}: {effectiveSaveMode === 'fs' ? (isZh ? '本地文件夹' : 'Local folder') : (isZh ? '浏览器' : 'Browser')}
+            </div>
+            {effectiveSaveMode === 'fs' && saveFolderName && (
+              <div className="text-[10px] opacity-60">
+                {isZh ? '目录名称：' : 'Folder:'} {saveFolderName}
+              </div>
+            )}
+            {saveMode === 'fs' && !fsSaveHandle && (
+              <div className="text-[10px] opacity-60">
+                {isZh
+                  ? (savePath ? `上次目录：${savePath}。请重新选择本地目录以恢复本地模式。` : '请重新选择本地目录以恢复本地模式。')
+                  : (savePath ? `Last folder: ${savePath}. Select the folder again to restore local mode.` : 'Select the folder again to restore local mode.')}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              {effectiveSaveMode === 'fs' ? (
+                <>
+                  <button
+                    onClick={handleSwitchToWebSave}
+                    disabled={saveBusy}
+                    className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+                  >
+                    {isZh ? '切回浏览器' : 'Use browser'}
+                  </button>
+                  <button
+                    onClick={handleSelectSaveFolder}
+                    disabled={!supportsFsAccess || saveBusy}
+                    className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+                  >
+                    {isZh ? '更换目录' : 'Change folder'}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleSelectSaveFolder}
+                  disabled={!supportsFsAccess || saveBusy}
+                  className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+                >
+                  {isZh ? '启用本地模式' : 'Enable local mode'}
+                </button>
+              )}
+              <button
+                onClick={() => exportData('save-zip')}
+                disabled={!hasSave || saveBusy}
+                className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+              >
+                {isZh ? '导出 ZIP' : 'Export ZIP'}
+              </button>
+              <button
+                onClick={() => importSave(currentUser?.username)}
+                disabled={saveBusy}
+                className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+              >
+                {isZh ? '导入 ZIP' : 'Import ZIP'}
+              </button>
+            </div>
+            {supportsFsAccess && effectiveSaveMode === 'web' && (
+              <button
+                onClick={handleMigrateToLocalFolder}
+                disabled={!hasSave || saveBusy}
+                className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:var(--pip-color)] hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40"
+              >
+                {isZh ? '迁移到本地文件夹' : 'Migrate to local folder'}
+              </button>
+            )}
+            {saveNeedsMigration && effectiveSaveMode === 'web' && (
+              <button
+                onClick={handleMigrateLegacySave}
+                disabled={saveBusy}
+                className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:var(--pip-color)] hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40"
+              >
+                {isZh ? '迁移旧存档' : 'Migrate legacy save'}
+              </button>
+            )}
+            {!supportsFsAccess && (
+              <div className="text-[10px] opacity-50">
+                {isZh ? '此浏览器不支持本地文件夹存档（iOS 可能不支持）。' : 'Local folder saves are not supported on this browser (iOS may be unsupported).'}
+              </div>
+            )}
+            {saveBlocked && (
+              <div className="text-[10px] text-yellow-300 uppercase">
+                {isZh ? '存档空间不足，请迁移或导出 ZIP。' : 'Storage is full. Migrate or export a ZIP.'}
+              </div>
+            )}
+            {saveNotice && (
+              <div className="text-[10px] opacity-60">{saveNotice}</div>
+            )}
+          </div>
+
           <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-4">
             <div>
               <div className="text-sm font-bold uppercase">
@@ -5585,8 +6087,8 @@ const App: React.FC = () => {
             </div>
             <div className="opacity-80 mt-2">
               {isZh
-                ? 'JSON 导出/导入是跨浏览器与设备迁移存档的唯一方式，可在登录与档案生成界面导入。'
-                : 'JSON export/import is the only way to move saves across browsers/devices, and can be imported from the login or profile screens.'}
+                ? 'ZIP 导出/导入是跨浏览器与设备迁移存档的推荐方式，可在登录与档案生成界面导入。'
+                : 'ZIP export/import is the recommended way to move saves across browsers/devices, and can be imported from the login or profile screens.'}
             </div>
             <div className="opacity-80 mt-2">
               {isZh
@@ -6827,7 +7329,8 @@ const App: React.FC = () => {
         </header>
 
         <Terminal
-          history={gameState.history}
+          history={terminalHistory}
+          historyIndexOffset={terminalHistoryOffset}
           isThinking={gameState.isThinking}
           language={gameState.language}
           progressStages={progressStages}
@@ -6844,6 +7347,10 @@ const App: React.FC = () => {
           onReroll={handleReroll}
           canReroll={canReroll}
           rerollLabel={isZh ? '重掷' : 'REROLL'}
+          onFetchHistoryBefore={fetchHistoryBefore}
+          hasMoreHistory={hasMoreHistory}
+          isFetchingHistory={isHistoryFetching}
+          onResolveImageUrl={resolveHistoryImageUrl}
         />
 
         <form onSubmit={handleAction} className="p-3 md:p-4 bg-black/80 border-t border-[color:rgba(var(--pip-color-rgb),0.3)] flex space-x-2 md:space-x-4">

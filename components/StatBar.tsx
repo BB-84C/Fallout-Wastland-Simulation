@@ -22,7 +22,7 @@ interface StatBarProps {
   autoSaveEnabled: boolean;
   onToggleAutoSave: () => void;
   onSave: () => void;
-  onExport: (format: 'log-md' | 'log-pdf' | 'save-json') => void;
+  onExport: (format: 'log-md' | 'log-pdf' | 'save-zip') => void;
   showSave: boolean;
   onRefreshInventory: () => void;
   inventoryRefreshing: boolean;
@@ -592,15 +592,15 @@ const StatBar: React.FC<StatBarProps> = ({
                       {language === 'en' ? 'LOG PDF' : '终端 PDF'}
                     </button>
                     <button
-                      onClick={() => { onExport('save-json'); setShowExportMenu(false); }}
+                      onClick={() => { onExport('save-zip'); setShowExportMenu(false); }}
                       className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-colors"
                     >
-                      {language === 'en' ? 'SAVE JSON' : '存档 JSON'}
+                      {language === 'en' ? 'SAVE ZIP' : '存档 ZIP'}
                     </button>
                     <div className="px-2 py-1 text-[0.5625rem] opacity-60">
                       {language === 'en'
-                        ? 'JSON export is the only way to transfer saves between browsers/devices.'
-                        : '导出 JSON 是跨浏览器/设备转移存档的唯一方式。'}
+                        ? 'ZIP export is the recommended way to move saves across devices.'
+                        : '导出 ZIP 是跨设备转移存档的推荐方式。'}
                     </div>
                   </div>
                 )}

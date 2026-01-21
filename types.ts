@@ -148,6 +148,8 @@ export interface GameSettings {
   imagesEnabled?: boolean;
   imageEveryTurns: number;
   maxHistoryTurns: number;
+  saveMode?: 'web' | 'fs';
+  savePath?: string;
   useProxy?: boolean;
   proxyBaseUrl?: string;
   textProxyBaseUrl?: string;
