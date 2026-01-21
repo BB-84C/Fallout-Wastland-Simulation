@@ -939,11 +939,11 @@ const isPlayerChangeEmpty = (change?: PlayerChange | null) => {
 };
 
 const mergeEventOutcomeWithStatusUpdate = (
-  eventOutcome: StatusChange,
+  eventOutcome: EventOutcome,
   statusUpdate?: StatusChange | null
-) => {
+): EventOutcome & StatusChange => {
   if (!statusUpdate || typeof statusUpdate !== 'object') return eventOutcome;
-  const merged: StatusChange = { ...eventOutcome };
+  const merged: EventOutcome & StatusChange = { ...eventOutcome };
   if (typeof statusUpdate.timePassedMinutes === 'number' && Number.isFinite(statusUpdate.timePassedMinutes)) {
     merged.timePassedMinutes = statusUpdate.timePassedMinutes;
   }
@@ -4102,8 +4102,8 @@ const App: React.FC = () => {
     if (!state.player) return;
     setIsInventoryRefreshing(true);
     setInventoryRefreshError(null);
+    const isZhRefresh = state.language === 'zh';
     try {
-      const isZhRefresh = state.language === 'zh';
       const provider = (state.settings.textProvider || state.settings.modelProvider || 'gemini') as ModelProvider;
       const baseOptions = {
         tier: activeTier,

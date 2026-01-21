@@ -1675,34 +1675,33 @@ const callDoubaoJson = async (
 ) => {
   const baseBody = {
     model,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: prompt }
-    ],
-    max_tokens: 2048
+    input: [
+      { role: "system", content: [{ type: "input_text", text: system }] },
+      { role: "user", content: [{ type: "input_text", text: prompt }] }
+    ]
   };
-  const responseFormat = schema
-    ? { type: "json_schema", json_schema: { name: schemaName, schema, strict: true } }
+  const textFormat = schema
+    ? { type: "json_schema", name: schemaName, schema, strict: true }
     : { type: "json_object" };
-  let res = await fetch(`${baseUrl}/chat/completions`, {
+  let res = await fetch(`${baseUrl}/responses`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify({ ...baseBody, response_format: responseFormat })
+    body: JSON.stringify({ ...baseBody, text: { format: textFormat } })
   });
   if (!res.ok) {
     const text = await res.text();
-    const formatRejected = text.includes("response_format") || text.includes("json_schema");
+    const formatRejected = text.includes("response_format") || text.includes("text.format") || text.includes("json_schema");
     if (schema && formatRejected) {
-      res = await fetch(`${baseUrl}/chat/completions`, {
+      res = await fetch(`${baseUrl}/responses`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`
         },
-        body: JSON.stringify({ ...baseBody, response_format: { type: "json_object" } })
+        body: JSON.stringify({ ...baseBody, text: { format: { type: "json_object" } } })
       });
       if (!res.ok) {
         throw new Error(await formatHttpError(res, "Doubao request failed"));
@@ -1715,14 +1714,24 @@ const callDoubaoJson = async (
     }
   }
   const data = await res.json();
-  const content = data?.choices?.[0]?.message?.content || "";
+  const output = Array.isArray(data?.output) ? data.output : [];
+  const outputText = output
+    .filter((item: any) => item?.type === "message" && item?.role === "assistant")
+    .flatMap((item: any) => Array.isArray(item?.content) ? item.content : [])
+    .filter((part: any) => part?.type === "output_text" && typeof part?.text === "string")
+    .map((part: any) => part.text)
+    .join("")
+    .trim();
+  const content = typeof data?.output_text === "string"
+    ? data.output_text.trim()
+    : outputText;
   const usage = data?.usage;
   const tokenUsage = normalizeTokenUsage({
-    promptTokens: usage?.prompt_tokens,
-    completionTokens: usage?.completion_tokens,
+    promptTokens: usage?.input_tokens,
+    completionTokens: usage?.output_tokens,
     totalTokens: usage?.total_tokens
-  }, `${system}\n${prompt}`, content);
-  return { content, tokenUsage };
+  }, `${system}\n${prompt}`, content || "");
+  return { content: content || "", tokenUsage };
 };
 
 const fetchImageAsBase64 = async (url: string) => {
