@@ -2842,7 +2842,7 @@ Return JSON: {"memory": "..."} only.`;
 
 export async function generateCompanionAvatar(
   npc: Actor,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; provider?: ModelProvider; imageUserSystemPrompt?: string }
 ): Promise<{ url?: string; error?: string } | undefined> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -2851,7 +2851,8 @@ export async function generateCompanionAvatar(
       return generateGeminiAvatar(npc, {
         tier: options?.tier,
         apiKey: options?.apiKey,
-        imageModel: options?.imageModel
+        imageModel: options?.imageModel,
+        imageUserSystemPrompt: options?.imageUserSystemPrompt
       });
     }
     const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
@@ -2865,7 +2866,9 @@ export async function generateCompanionAvatar(
     }
     const appearance = npc.appearance?.trim() || npc.lore?.trim();
     const appearanceLine = appearance ? `Appearance: ${appearance}.` : '';
-    const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. ${appearanceLine} Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
+    const guidanceLine = buildUserGuidanceLine(options?.imageUserSystemPrompt);
+    const guidanceBlock = guidanceLine ? `\n${guidanceLine}` : "";
+    const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. ${appearanceLine} Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.${guidanceBlock}`;
     try {
       const imageAi = new GoogleGenAI({
         apiKey,

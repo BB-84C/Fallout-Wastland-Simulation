@@ -1178,13 +1178,15 @@ Return JSON: {"memory": "..."} only.`;
 
 export async function generateCompanionAvatar(
   npc: Actor,
-  options?: { tier?: UserTier; apiKey?: string; imageModel?: ImageModelId }
+  options?: { tier?: UserTier; apiKey?: string; imageModel?: ImageModelId; imageUserSystemPrompt?: string }
 ): Promise<{ url?: string; error?: string } | undefined> {
   const selectedImageModel = options?.imageModel || DEFAULT_IMAGE_MODEL;
   const { key: apiKey } = resolveApiKey(options?.apiKey);
   const appearance = npc.appearance?.trim() || npc.lore?.trim();
   const appearanceLine = appearance ? `Appearance: ${appearance}.` : '';
-  const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. ${appearanceLine} Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
+  const guidanceLine = options?.imageUserSystemPrompt?.trim();
+  const guidanceBlock = guidanceLine ? `\nUser guidance: ${guidanceLine}` : '';
+  const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. ${appearanceLine} Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.${guidanceBlock}`;
 
   try {
     const imageAi = new GoogleGenAI({ apiKey: apiKey || '' });

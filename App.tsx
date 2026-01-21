@@ -2801,7 +2801,16 @@ const App: React.FC = () => {
 
       const startNarration = `${introMsg} ${player.lore}`;
       const avatarPromise = allowAvatars && seededCompanions.length > 0
-        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, { tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl: imageProxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider })))
+        ? Promise.all(seededCompanions.map(companion => generateCompanionAvatar(companion, {
+          tier: activeTier,
+          apiKey: currentUser?.imageApiKey,
+          proxyApiKey: currentUser?.imageProxyKey,
+          proxyBaseUrl: imageProxyBaseUrl,
+          useProxy,
+          imageModel: effectiveImageModel,
+          provider: imageProvider,
+          imageUserSystemPrompt: gameState.settings.imageUserSystemPrompt
+        })))
         : Promise.resolve([]);
       const imagePromise = allowImages
         ? generateSceneImage(
@@ -3572,7 +3581,8 @@ const App: React.FC = () => {
             proxyBaseUrl: imageProxyBaseUrlAction,
             useProxy: useProxyAction,
             imageModel: effectiveImageModel,
-            provider: imageProviderAction
+            provider: imageProviderAction,
+            imageUserSystemPrompt: actionSettings.imageUserSystemPrompt
           })))
           : Promise.resolve([]);
         const [imgData, avatarResults] = await Promise.all([sceneImagePromise, avatarPromise]);
@@ -3819,7 +3829,8 @@ const App: React.FC = () => {
           proxyBaseUrl: imageProxyBaseUrlAction,
           useProxy: useProxyAction,
           imageModel: effectiveImageModel,
-          provider: imageProviderAction
+          provider: imageProviderAction,
+          imageUserSystemPrompt: actionSettings.imageUserSystemPrompt
         })))
         : Promise.resolve([]);
       const [imgData, avatarResults] = await Promise.all([sceneImagePromise, avatarPromise]);
@@ -4306,7 +4317,8 @@ const App: React.FC = () => {
         proxyBaseUrl: imageProxyBaseUrl,
         useProxy,
         imageModel: effectiveImageModel,
-        provider: imageProvider
+        provider: imageProvider,
+        imageUserSystemPrompt: gameState.settings.imageUserSystemPrompt
       });
       if (result?.url) {
         setGameState(prev => ({
