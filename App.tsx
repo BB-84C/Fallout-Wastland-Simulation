@@ -194,6 +194,25 @@ const markHistorySaved = (history: HistoryEntry[]) =>
 const markStatusChangesSaved = (changes: StatusChangeEntry[]) =>
   changes.map(change => ({ ...change, isSaved: true }));
 
+const buildTerminalTail = (history: HistoryEntry[], limit: number) => {
+  const safeLimit = Math.max(1, Math.floor(limit || 1));
+  if (!history.length) {
+    return { tail: [] as HistoryEntry[], offset: 0 };
+  }
+  let lastPlayerIndex = -1;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i].sender === 'player') {
+      lastPlayerIndex = i;
+      break;
+    }
+  }
+  const minEntries = lastPlayerIndex >= 0 ? history.length - lastPlayerIndex : 1;
+  const tailSize = Math.min(history.length, Math.max(safeLimit, minEntries));
+  const tail = history.slice(history.length - tailSize);
+  const offset = Math.max(0, history.length - tail.length);
+  return { tail, offset };
+};
+
 const buildCommitState = (state: GameState): GameState => {
   const savedSnapshot = buildSavedSnapshot(state);
   const savedHistory = markHistorySaved(state.history);
@@ -2217,6 +2236,22 @@ const App: React.FC = () => {
       return;
     }
     const currentEnd = terminalHistoryOffset + terminalHistory.length;
+    const lastGameEntry = gameState.history[gameState.history.length - 1];
+    const lastTerminalEntry = terminalHistory.length
+      ? terminalHistory[terminalHistory.length - 1]
+      : null;
+    const lastEntryMismatch = !lastTerminalEntry
+      || lastTerminalEntry.sender !== lastGameEntry.sender
+      || lastTerminalEntry.text !== lastGameEntry.text
+      || (lastTerminalEntry.imageUrl || '') !== (lastGameEntry.imageUrl || '');
+    if (gameState.history.length < currentEnd || lastEntryMismatch) {
+      const { tail, offset } = buildTerminalTail(gameState.history, storageHistoryLimit);
+      setTerminalHistory(tail);
+      setTerminalHistoryOffset(offset);
+      setHasMoreHistory(offset > 0);
+      setTerminalPinnedToTail(true);
+      return;
+    }
     if (gameState.history.length <= currentEnd) {
       setHasMoreHistory(terminalHistoryOffset > 0);
       return;
@@ -2224,10 +2259,10 @@ const App: React.FC = () => {
     const nextEntries = gameState.history.slice(currentEnd);
     let nextHistory = [...terminalHistory, ...nextEntries];
     let nextOffset = terminalHistoryOffset;
-    if (terminalPinnedToTail && nextHistory.length > storageHistoryLimit) {
-      const overflow = nextHistory.length - storageHistoryLimit;
-      nextHistory = nextHistory.slice(overflow);
-      nextOffset += overflow;
+    if (terminalPinnedToTail) {
+      const tailState = buildTerminalTail(gameState.history, storageHistoryLimit);
+      nextHistory = tailState.tail;
+      nextOffset = tailState.offset;
     }
     setTerminalHistory(nextHistory);
     if (nextOffset !== terminalHistoryOffset) {
@@ -2825,10 +2860,10 @@ const App: React.FC = () => {
         : '';
       nextState.compressedMemory = normalizedMemory;
       const localHistoryLimit = getStorageHistoryLimit(nextSettings, DEFAULT_LOCAL_HISTORY_LIMIT);
-      const terminalTail = nextState.history.slice(-localHistoryLimit);
-      setTerminalHistory(terminalTail);
-      setTerminalHistoryOffset(Math.max(0, nextState.history.length - terminalTail.length));
-      setHasMoreHistory(nextState.history.length > terminalTail.length);
+      const terminalState = buildTerminalTail(nextState.history, localHistoryLimit);
+      setTerminalHistory(terminalState.tail);
+      setTerminalHistoryOffset(terminalState.offset);
+      setHasMoreHistory(terminalState.offset > 0);
       setTerminalPinnedToTail(true);
       setGameState(nextState);
       const pendingAction = getPendingPlayerAction(nextState.history);
@@ -3272,10 +3307,10 @@ const App: React.FC = () => {
         };
         setGameState(finalizedState);
         const localHistoryLimit = getStorageHistoryLimit(finalizedState.settings, DEFAULT_LOCAL_HISTORY_LIMIT);
-        const terminalTail = finalizedState.history.slice(-localHistoryLimit);
-        setTerminalHistory(terminalTail);
-        setTerminalHistoryOffset(Math.max(0, finalizedState.history.length - terminalTail.length));
-        setHasMoreHistory(finalizedState.history.length > terminalTail.length);
+        const terminalState = buildTerminalTail(finalizedState.history, localHistoryLimit);
+        setTerminalHistory(terminalState.tail);
+        setTerminalHistoryOffset(terminalState.offset);
+        setHasMoreHistory(terminalState.offset > 0);
         setTerminalPinnedToTail(true);
         if (currentUser && currentUser.tier !== 'guest') {
           performSave(finalizedState, false);
