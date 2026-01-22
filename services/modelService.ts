@@ -217,6 +217,26 @@ const partialSkillsSchema = {
   )
 };
 
+const knownNpcUpdateSchema = {
+  type: Type.OBJECT,
+  properties: {
+    name: { type: Type.STRING },
+    appearance: { type: Type.STRING },
+    lore: { type: Type.STRING },
+    age: { type: Type.NUMBER },
+    gender: { type: Type.STRING },
+    faction: { type: Type.STRING },
+    health: { type: Type.NUMBER },
+    maxHealth: { type: Type.NUMBER },
+    karma: { type: Type.NUMBER },
+    caps: { type: Type.NUMBER },
+    special: partialSpecialSchema,
+    skills: partialSkillsSchema,
+    perks: { type: Type.ARRAY, items: perkSchema }
+  },
+  required: ["name"]
+};
+
 const inventoryChangeSchema = {
   type: Type.OBJECT,
   properties: {
@@ -282,6 +302,10 @@ const statusSchema = {
       type: Type.ARRAY,
       items: actorSchema
     },
+    knownNpcsUpdates: {
+      type: Type.ARRAY,
+      items: knownNpcUpdateSchema
+    },
     timePassedMinutes: { type: Type.NUMBER },
     location: { type: Type.STRING },
     currentYear: { type: Type.NUMBER },
@@ -292,6 +316,7 @@ const statusSchema = {
     "questUpdates",
     "companionUpdates",
     "newNpc",
+    "knownNpcsUpdates",
     "timePassedMinutes",
     "location",
     "currentYear",
@@ -540,6 +565,35 @@ const jsonActorSchema: JsonSchema = {
   additionalProperties: false
 };
 
+const jsonKnownNpcUpdateSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    appearance: { type: "string" },
+    lore: { type: "string" },
+    age: { type: "number" },
+    gender: { type: "string" },
+    faction: { type: "string" },
+    health: { type: "number" },
+    maxHealth: { type: "number" },
+    karma: { type: "number" },
+    caps: { type: "number" },
+    special: {
+      type: "object",
+      properties: specialJsonProperties,
+      additionalProperties: false
+    },
+    skills: {
+      type: "object",
+      properties: skillsJsonProperties,
+      additionalProperties: false
+    },
+    perks: { type: "array", items: jsonPerkSchema }
+  },
+  required: ["name"],
+  additionalProperties: false
+};
+
 const jsonPlayerCreationSchema: JsonSchema = {
   type: "object",
   properties: {
@@ -600,6 +654,10 @@ const jsonStatusSchema: JsonSchema = {
       type: "array",
       items: jsonActorSchema
     },
+    knownNpcsUpdates: {
+      type: "array",
+      items: jsonKnownNpcUpdateSchema
+    },
     timePassedMinutes: { type: "number" },
     location: { type: "string" },
     currentYear: { type: "number" },
@@ -610,6 +668,7 @@ const jsonStatusSchema: JsonSchema = {
     "questUpdates",
     "companionUpdates",
     "newNpc",
+    "knownNpcsUpdates",
     "timePassedMinutes",
     "location",
     "currentYear",
@@ -822,8 +881,9 @@ const buildStatusSystem = (targetLang: string, year: number, location: string) =
 6. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
 7. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
 8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-9. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
-10. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
+9. KNOWN NPC UPDATES: Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Do not add new NPCs there.
+10. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
+11. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
 const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', userSystemPrompt?: string) => `You are the Wasteland Smash Arena simulator.
 1. LORE: Always consult the Fallout Wiki in English when possible. If a party is not in the wiki, infer from established Fallout lore.
@@ -1024,10 +1084,11 @@ ${narration}
 
 TASK:
 Update status fields based on the input text. Return JSON with keys:
-playerChange, questUpdates, companionUpdates, newNpc (array), timePassedMinutes, location, currentYear, currentTime.
+playerChange, questUpdates, companionUpdates, newNpc (array), knownNpcsUpdates (array), timePassedMinutes, location, currentYear, currentTime.
 playerChange should contain only changed fields; for unchanged values use 0/false/empty lists or objects, including inventoryChange with add/remove lists.
 All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
 Each newNpc entry MUST include appearance (short physical description).
+Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Use newNpc only for newly discovered NPCs.
 If no changes are needed, use empty string/0/false (or []/{} for lists/objects).`;
 
 const buildInventoryRefreshSystem = (targetLang: string) => `You are the Vault-Tec Inventory Auditor.

@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState, PipelineMode, EventOutcome, EventNarrationResponse, InterfaceColor, SavedStatusSnapshot } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, KnownNpcUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState, PipelineMode, EventOutcome, EventNarrationResponse, InterfaceColor, SavedStatusSnapshot } from './types';
 import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
@@ -766,6 +766,8 @@ const rebuildStatusFromTrack = (track: StatusTrack) => {
         nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
       }
     });
+    const knownNpcUpdates = normalizeKnownNpcUpdates(change.knownNpcsUpdates);
+    nextKnownNpcs = applyKnownNpcUpdates(nextKnownNpcs, knownNpcUpdates);
     if (change.companionUpdates) {
       nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, change.companionUpdates);
     }
@@ -1001,6 +1003,9 @@ const mergeEventOutcomeWithStatusUpdate = (
   }
   if (hasNonEmptyArray(statusUpdate.newNpc)) {
     merged.newNpc = statusUpdate.newNpc;
+  }
+  if (hasNonEmptyArray(statusUpdate.knownNpcsUpdates)) {
+    merged.knownNpcsUpdates = statusUpdate.knownNpcsUpdates;
   }
   if (hasNonEmptyString(statusUpdate.location)) {
     merged.location = statusUpdate.location;
@@ -1655,6 +1660,49 @@ const normalizeNewNpcList = (value: unknown) => {
     }
   }
   return [];
+};
+
+const normalizeKnownNpcUpdates = (value: unknown): KnownNpcUpdate[] => {
+  if (!value) return [];
+  const isUpdate = (entry: unknown): entry is KnownNpcUpdate =>
+    !!entry && typeof entry === 'object' && typeof (entry as KnownNpcUpdate).name === 'string';
+  if (Array.isArray(value)) {
+    return value.filter(isUpdate);
+  }
+  if (isUpdate(value)) return [value];
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    const numeric = entries
+      .filter(([key, entry]) => /^\d+$/.test(key) && isUpdate(entry))
+      .map(([, entry]) => entry as KnownNpcUpdate);
+    if (numeric.length > 0) {
+      return numeric;
+    }
+  }
+  return [];
+};
+
+const applyKnownNpcUpdates = (list: Actor[], updates?: KnownNpcUpdate[]) => {
+  if (!updates || updates.length === 0) return list;
+  const updatesByKey = new Map<string, KnownNpcUpdate>();
+  updates.forEach((update) => {
+    const key = normalizeKey(update.name);
+    if (key) {
+      updatesByKey.set(key, update);
+    }
+  });
+  if (!updatesByKey.size) return list;
+  return list.map((npc) => {
+    const key = normalizeKey(npc.name);
+    const update = updatesByKey.get(key);
+    if (!update) return npc;
+    const merged = mergeActor(npc, update as Actor);
+    return {
+      ...merged,
+      ifCompanion: update.ifCompanion ?? npc.ifCompanion,
+      avatarUrl: typeof update.avatarUrl === 'string' ? update.avatarUrl : npc.avatarUrl
+    };
+  });
 };
 
 type UserSession = {
@@ -3991,6 +4039,8 @@ const App: React.FC = () => {
             nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
           }
         });
+        const knownNpcUpdates = normalizeKnownNpcUpdates(eventStatusChange.knownNpcsUpdates);
+        nextKnownNpcs = applyKnownNpcUpdates(nextKnownNpcs, knownNpcUpdates);
         const companionUpdates = eventStatusChange.companionUpdates;
         nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, companionUpdates);
 
@@ -4239,6 +4289,8 @@ const App: React.FC = () => {
           nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
         }
       });
+      const knownNpcUpdates = normalizeKnownNpcUpdates(statusChange?.knownNpcsUpdates);
+      nextKnownNpcs = applyKnownNpcUpdates(nextKnownNpcs, knownNpcUpdates);
       const companionUpdates = statusChange?.companionUpdates;
       nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, companionUpdates);
 
@@ -4854,6 +4906,8 @@ const App: React.FC = () => {
                 nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
               }
             });
+            const knownNpcUpdates = normalizeKnownNpcUpdates(update?.knownNpcsUpdates);
+            nextKnownNpcs = applyKnownNpcUpdates(nextKnownNpcs, knownNpcUpdates);
             nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, update?.companionUpdates);
             knownNpcs = nextKnownNpcs.map(npc => normalizeActor(npc));
             if (typeof update?.location === 'string' && update.location.trim()) {

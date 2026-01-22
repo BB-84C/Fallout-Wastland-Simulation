@@ -85,6 +85,7 @@ export interface StatusChange {
   questUpdates?: Quest[];
   companionUpdates?: CompanionUpdate[];
   newNpc?: Actor[];
+  knownNpcsUpdates?: KnownNpcUpdate[];
   location?: string;
   currentYear?: number;
   currentTime?: string;
@@ -198,6 +199,8 @@ export interface CompanionUpdate {
   ifCompanion: boolean;
   reason?: string;
 }
+
+export type KnownNpcUpdate = Partial<Actor> & { name: string };
 
 export type StatusUpdate = StatusChange;
 
