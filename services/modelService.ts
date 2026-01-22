@@ -234,7 +234,15 @@ const knownNpcUpdateSchema = {
     caps: { type: Type.NUMBER },
     special: partialSpecialSchema,
     skills: partialSkillsSchema,
-    perks: { type: Type.ARRAY, items: perkSchema }
+    perksAdd: { type: Type.ARRAY, items: perkSchema },
+    perksRemove: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: { name: { type: Type.STRING } },
+        required: ["name"]
+      }
+    }
   },
   required: ["name"]
 };
@@ -594,7 +602,16 @@ const jsonKnownNpcUpdateSchema: JsonSchema = {
       properties: skillsJsonProperties,
       additionalProperties: false
     },
-    perks: { type: "array", items: jsonPerkSchema }
+    perksAdd: { type: "array", items: jsonPerkSchema },
+    perksRemove: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+        additionalProperties: false
+      }
+    }
   },
   required: ["name"],
   additionalProperties: false
@@ -891,10 +908,11 @@ const buildStatusSystem = (targetLang: string, year: number, location: string) =
 6. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
 7. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
 8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-9. KNOWN NPC UPDATES: Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Do not add new NPCs there.
-10. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
-11. TIME FORMAT: currentTime MUST be full ISO 8601 UTC, e.g. 2281-07-15T17:05:00.000Z. Do NOT return time-only like "16:17".
-12. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
+9. KNOWN NPC UPDATES: Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Do not add new NPCs there. Use perksAdd/perksRemove to add/remove NPC/companion perks; avoid replacing the full perks array unless you must fully redefine it.
+10. PERKS: Use playerChange.perksAdd/perksRemove to add/remove player perks.
+11. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
+12. TIME FORMAT: currentTime MUST be full ISO 8601 UTC, e.g. 2281-07-15T17:05:00.000Z. Do NOT return time-only like "16:17".
+13. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
 const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', userSystemPrompt?: string) => `You are the Wasteland Smash Arena simulator.
 1. LORE: Always consult the Fallout Wiki in English when possible. If a party is not in the wiki, infer from established Fallout lore.
@@ -1102,6 +1120,7 @@ playerChange should contain only changed fields; for unchanged values use 0/fals
 All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
 Each newNpc entry MUST include appearance (short physical description).
 Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Use newNpc only for newly discovered NPCs.
+Use playerChange.perksAdd/perksRemove to add/remove player perks. Use knownNpcsUpdates.perksAdd/perksRemove to add/remove NPC/companion perks; avoid replacing the full perks array unless necessary.
 currentTime MUST be full ISO 8601 UTC, e.g. 2281-07-15T17:05:00.000Z.
 If no changes are needed, use empty string/0/false (or []/{} for lists/objects).`;
 

@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, KnownNpcUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState, PipelineMode, EventOutcome, EventNarrationResponse, InterfaceColor, SavedStatusSnapshot } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, KnownNpcUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState, PipelineMode, EventOutcome, EventNarrationResponse, InterfaceColor, SavedStatusSnapshot, Perk } from './types';
 import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
@@ -631,6 +631,28 @@ const applyInventoryChange = (items: InventoryItem[], change?: InventoryChange |
   return normalizeInventory(next);
 };
 
+const applyPerkDelta = (
+  basePerks: Perk[],
+  perksAdd?: Perk[],
+  perksRemove?: { name: string }[]
+) => {
+  let next = Array.isArray(basePerks) ? [...basePerks] : [];
+  if (Array.isArray(perksAdd) && perksAdd.length > 0) {
+    const existingNames = new Set(next.map(perk => perk.name));
+    perksAdd.forEach((perk) => {
+      if (perk?.name && !existingNames.has(perk.name)) {
+        next.push(perk);
+        existingNames.add(perk.name);
+      }
+    });
+  }
+  if (Array.isArray(perksRemove) && perksRemove.length > 0) {
+    const removeNames = new Set(perksRemove.map(perk => perk.name));
+    next = next.filter(perk => !removeNames.has(perk.name));
+  }
+  return next;
+};
+
 const applyPlayerChange = (base: Actor, change?: PlayerChange | null) => {
   if (!change) return base;
   const next: Actor = { ...base };
@@ -677,15 +699,7 @@ const applyPlayerChange = (base: Actor, change?: PlayerChange | null) => {
     });
     next.skills = updatedSkills;
   }
-  if (Array.isArray(change.perksAdd) && change.perksAdd.length > 0) {
-    const existingNames = new Set(next.perks.map(perk => perk.name));
-    const added = change.perksAdd.filter(perk => perk?.name && !existingNames.has(perk.name));
-    next.perks = [...next.perks, ...added];
-  }
-  if (Array.isArray(change.perksRemove) && change.perksRemove.length > 0) {
-    const removeNames = new Set(change.perksRemove.map(perk => perk.name));
-    next.perks = next.perks.filter(perk => !removeNames.has(perk.name));
-  }
+  next.perks = applyPerkDelta(next.perks, change.perksAdd, change.perksRemove);
   if (change.inventoryChange) {
     next.inventory = applyInventoryChange(next.inventory, change.inventoryChange);
   }
@@ -1730,8 +1744,13 @@ const applyKnownNpcUpdates = (list: Actor[], updates?: KnownNpcUpdate[]) => {
     const update = updatesByKey.get(key);
     if (!update) return npc;
     const merged = mergeActor(npc, update as Actor);
+    const hasPerkDelta = Array.isArray(update.perksAdd) || Array.isArray(update.perksRemove);
+    const nextPerks = hasPerkDelta
+      ? applyPerkDelta(npc.perks, update.perksAdd, update.perksRemove)
+      : merged.perks;
     return {
       ...merged,
+      perks: nextPerks,
       ifCompanion: update.ifCompanion ?? npc.ifCompanion,
       avatarUrl: typeof update.avatarUrl === 'string' ? update.avatarUrl : npc.avatarUrl
     };

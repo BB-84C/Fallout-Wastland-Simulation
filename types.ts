@@ -200,7 +200,11 @@ export interface CompanionUpdate {
   reason?: string;
 }
 
-export type KnownNpcUpdate = Partial<Actor> & { name: string };
+export type KnownNpcUpdate = Partial<Actor> & {
+  name: string;
+  perksAdd?: Perk[];
+  perksRemove?: { name: string }[];
+};
 
 export type StatusUpdate = StatusChange;
 
