@@ -2,6 +2,8 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Actor, NarratorResponse, SpecialAttr, Skill, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, TokenUsage, StatusUpdate, InventoryItem, HistoryEntry, EventOutcome, EventNarrationResponse } from "../types";
 
+const ISO_DATE_TIME_PATTERN = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$";
+
 const actorSchema = {
   type: Type.OBJECT,
   properties: {
@@ -286,7 +288,11 @@ const statusSchema = {
     timePassedMinutes: { type: Type.NUMBER },
     location: { type: Type.STRING },
     currentYear: { type: Type.NUMBER },
-    currentTime: { type: Type.STRING }
+    currentTime: {
+      type: Type.STRING,
+      description: "ISO 8601 UTC date-time, e.g. 2281-07-15T17:05:00.000Z",
+      pattern: ISO_DATE_TIME_PATTERN
+    }
   },
   required: [
     "playerChange",
@@ -767,6 +773,7 @@ export async function getEventNarration(
   quests: Quest[],
   year: number,
   location: string,
+  currentTime: string,
   eventOutcome: EventOutcome,
   lang: Language,
   options?: { tier?: UserTier; apiKey?: string; textModel?: TextModelId; userSystemPrompt?: string }
@@ -779,6 +786,7 @@ export async function getEventNarration(
   const prompt = `
     Environment Year: ${year}
     Environment Location: ${location}
+    Current Time: ${currentTime}
     Current Player Profile: ${JSON.stringify(player)}
     Known NPCs (inventory omitted): ${JSON.stringify(knownNpcs)}
     Current Quests (completed omitted): ${JSON.stringify(quests)}
@@ -964,6 +972,7 @@ export async function getStatusUpdate(
     All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
     Each newNpc entry MUST include appearance (short physical description).
     Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Use newNpc only for newly discovered NPCs.
+    currentTime MUST be full ISO 8601 UTC, e.g. 2281-07-15T17:05:00.000Z.
     If no changes are needed, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
   `;
   const systemInstruction = `You are the Vault-Tec Status Manager.
@@ -977,7 +986,8 @@ export async function getStatusUpdate(
           8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
           9. KNOWN NPC UPDATES: Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Do not add new NPCs there.
           10. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
-          11. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
+          11. TIME FORMAT: currentTime MUST be full ISO 8601 UTC, e.g. 2281-07-15T17:05:00.000Z. Do NOT return time-only like "16:17".
+          12. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
   const response = await ai.models.generateContent({
     model: selectedTextModel,

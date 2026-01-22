@@ -59,6 +59,8 @@ Perks must include name, rank, and a non-empty description.
 Inventory items must include count (number) and isConsumable (boolean).
 Skills must include numeric values for: Small Guns, Big Guns, Energy Weapons, Unarmed, Melee Weapons, Medicine, Repair, Science, Sneak, Lockpick, Steal, Speech, Barter, Survival.`;
 
+const ISO_DATE_TIME_PATTERN = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$";
+
 const actorSchema = {
   type: Type.OBJECT,
   properties: {
@@ -309,7 +311,11 @@ const statusSchema = {
     timePassedMinutes: { type: Type.NUMBER },
     location: { type: Type.STRING },
     currentYear: { type: Type.NUMBER },
-    currentTime: { type: Type.STRING }
+    currentTime: {
+      type: Type.STRING,
+      description: "ISO 8601 UTC date-time, e.g. 2281-07-15T17:05:00.000Z",
+      pattern: ISO_DATE_TIME_PATTERN
+    }
   },
   required: [
     "playerChange",
@@ -661,7 +667,11 @@ const jsonStatusSchema: JsonSchema = {
     timePassedMinutes: { type: "number" },
     location: { type: "string" },
     currentYear: { type: "number" },
-    currentTime: { type: "string" }
+    currentTime: {
+      type: "string",
+      description: "ISO 8601 UTC date-time, e.g. 2281-07-15T17:05:00.000Z",
+      pattern: ISO_DATE_TIME_PATTERN
+    }
   },
   required: [
     "playerChange",
@@ -883,7 +893,8 @@ const buildStatusSystem = (targetLang: string, year: number, location: string) =
 8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
 9. KNOWN NPC UPDATES: Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Do not add new NPCs there.
 10. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
-11. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
+11. TIME FORMAT: currentTime MUST be full ISO 8601 UTC, e.g. 2281-07-15T17:05:00.000Z. Do NOT return time-only like "16:17".
+12. LORE: Respect Fallout lore for year ${year} and location ${location}.`;
 
 const buildArenaSystem = (targetLang: string, mode: 'scenario' | 'wargame', userSystemPrompt?: string) => `You are the Wasteland Smash Arena simulator.
 1. LORE: Always consult the Fallout Wiki in English when possible. If a party is not in the wiki, infer from established Fallout lore.
@@ -972,10 +983,12 @@ const buildEventNarratorPrompt = (
   quests: Quest[],
   year: number,
   location: string,
+  currentTime: string,
   eventOutcome: EventOutcome
 ) => `
 Environment Year: ${year}
 Environment Location: ${location}
+Current Time: ${currentTime}
 Current Player Profile: ${JSON.stringify(player)}
 Known NPCs (inventory omitted): ${JSON.stringify(knownNpcs)}
 Current Quests (completed omitted): ${JSON.stringify(quests)}
@@ -1089,6 +1102,7 @@ playerChange should contain only changed fields; for unchanged values use 0/fals
 All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
 Each newNpc entry MUST include appearance (short physical description).
 Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Use newNpc only for newly discovered NPCs.
+currentTime MUST be full ISO 8601 UTC, e.g. 2281-07-15T17:05:00.000Z.
 If no changes are needed, use empty string/0/false (or []/{} for lists/objects).`;
 
 const buildInventoryRefreshSystem = (targetLang: string) => `You are the Vault-Tec Inventory Auditor.
@@ -2191,6 +2205,7 @@ export async function getEventNarration(
   quests: Quest[],
   year: number,
   location: string,
+  currentTime: string,
   eventOutcome: EventOutcome,
   lang: Language,
   options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string }
@@ -2199,11 +2214,11 @@ export async function getEventNarration(
   const useProxy = !!options?.useProxy;
   const targetLang = lang === "zh" ? "Chinese" : "English";
   const system = buildEventNarratorSystem(targetLang, year, location, options?.userSystemPrompt);
-  const prompt = buildEventNarratorPrompt(player, knownNpcs, quests, year, location, eventOutcome);
+  const prompt = buildEventNarratorPrompt(player, knownNpcs, quests, year, location, currentTime, eventOutcome);
 
   if (provider === "gemini") {
     if (options?.tier === "guest") {
-      return getGeminiEventNarration(player, knownNpcs, quests, year, location, eventOutcome, lang, {
+      return getGeminiEventNarration(player, knownNpcs, quests, year, location, currentTime, eventOutcome, lang, {
         tier: options?.tier,
         apiKey: options?.apiKey,
         textModel: options?.textModel,

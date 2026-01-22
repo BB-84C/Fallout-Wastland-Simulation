@@ -971,6 +971,30 @@ const hasNonEmptyString = (value: unknown) =>
 const hasNonEmptyArray = (value: unknown) =>
   Array.isArray(value) && value.length > 0;
 
+const ISO_DATE_TIME_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const TIME_ONLY_REGEX = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\.(\d{1,3}))?$/;
+
+const normalizeIsoDateTime = (value: unknown, fallbackIso: string) => {
+  if (typeof value !== 'string') return fallbackIso;
+  const trimmed = value.trim();
+  if (!trimmed) return fallbackIso;
+  if (ISO_DATE_TIME_REGEX.test(trimmed)) return trimmed;
+  const timeMatch = TIME_ONLY_REGEX.exec(trimmed);
+  if (timeMatch) {
+    const base = new Date(fallbackIso);
+    if (Number.isNaN(base.getTime())) return fallbackIso;
+    const hours = Number(timeMatch[1]);
+    const minutes = Number(timeMatch[2]);
+    const seconds = Number(timeMatch[3] ?? '0');
+    const ms = Number((timeMatch[4] ?? '0').padEnd(3, '0'));
+    base.setUTCHours(hours, minutes, seconds, ms);
+    return base.toISOString();
+  }
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  return fallbackIso;
+};
+
 const isPlayerChangeEmpty = (change?: PlayerChange | null) => {
   if (!change || typeof change !== 'object') return true;
   if (hasMeaningfulNumber(change.health)) return false;
@@ -4080,16 +4104,49 @@ const App: React.FC = () => {
         );
         const questUpdates = eventStatusChange.questUpdates;
         const { merged: mergedQuests, completedNotes } = applyQuestUpdates(state.quests, questUpdates);
+        const timePassedMinutes = typeof eventStatusChange.timePassedMinutes === 'number'
+          ? eventStatusChange.timePassedMinutes
+          : 0;
+        const timeBase = new Date(state.currentTime);
+        if (Number.isNaN(timeBase.getTime())) {
+          timeBase.setTime(Date.now());
+        }
+        timeBase.setMinutes(timeBase.getMinutes() + timePassedMinutes);
+        const nextTime = normalizeIsoDateTime(eventStatusChange.currentTime, timeBase.toISOString());
+        if (hasNonEmptyString(eventStatusChange.currentTime)) {
+          eventStatusChange.currentTime = nextTime;
+        }
+        const nextLocation = hasNonEmptyString(eventStatusChange.location)
+          ? eventStatusChange.location.trim()
+          : state.location;
+        const nextYear = typeof eventStatusChange.currentYear === 'number' && Number.isFinite(eventStatusChange.currentYear)
+          ? Math.trunc(eventStatusChange.currentYear)
+          : state.currentYear;
+        const statusPlayer = eventStatusChange.playerChange && state.player
+          ? applyPlayerChange(state.player, eventStatusChange.playerChange)
+          : state.player;
+        let nextKnownNpcs: Actor[] = state.knownNpcs.map(withCompanionFlag);
+        const newNpcList = normalizeNewNpcList(eventStatusChange.newNpc);
+        newNpcList.forEach(npc => {
+          if (npc) {
+            nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
+          }
+        });
+        const knownNpcUpdates = normalizeKnownNpcUpdates(eventStatusChange.knownNpcsUpdates);
+        nextKnownNpcs = applyKnownNpcUpdates(nextKnownNpcs, knownNpcUpdates);
+        const companionUpdates = eventStatusChange.companionUpdates;
+        nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, companionUpdates);
 
         setNarrationStage('running');
-        const narratorKnownNpcs = state.knownNpcs.map(({ inventory: _inventory, avatarUrl: _avatarUrl, ...rest }) => rest);
+        const narratorKnownNpcs = nextKnownNpcs.map(({ inventory: _inventory, avatarUrl: _avatarUrl, ...rest }) => rest);
         const narratorQuests = mergedQuests.filter(quest => quest.status !== 'completed');
         const narrationResponse: EventNarrationResponse = await getEventNarration(
-          state.player,
+          statusPlayer || state.player,
           narratorKnownNpcs,
           narratorQuests,
-          state.currentYear,
-          state.location,
+          nextYear,
+          nextLocation,
+          nextTime,
           eventStatusChange,
           state.language,
           {
@@ -4106,13 +4163,8 @@ const App: React.FC = () => {
         const narratorTokenUsage = narrationResponse.tokenUsage;
         setNarrationStage('done');
 
-        const newTime = new Date(state.currentTime);
-        const timePassedMinutes = typeof eventStatusChange.timePassedMinutes === 'number'
-          ? eventStatusChange.timePassedMinutes
-          : 0;
-        newTime.setMinutes(newTime.getMinutes() + timePassedMinutes);
-
-        const visualPrompt = narrationResponse.imagePrompt || eventOutcome.outcomeSummary || actionText;
+        const visualPromptBase = narrationResponse.imagePrompt || eventOutcome.outcomeSummary || actionText;
+        const visualPrompt = `${visualPromptBase}\nLocation: ${nextLocation}\nTime: ${nextTime}`;
         setImageStage(shouldGenerateImage ? 'running' : 'skipped');
         const sceneImagePromise = shouldGenerateImage
           ? generateSceneImage(visualPrompt, {
@@ -4139,18 +4191,6 @@ const App: React.FC = () => {
         if (completedNotes.length > 0) {
           storyText += `\n\n${completedNotes.join('\n\n')}`;
         }
-
-        let nextKnownNpcs: Actor[] = state.knownNpcs.map(withCompanionFlag);
-        const newNpcList = normalizeNewNpcList(eventStatusChange.newNpc);
-        newNpcList.forEach(npc => {
-          if (npc) {
-            nextKnownNpcs = upsertNpc(nextKnownNpcs, npc);
-          }
-        });
-        const knownNpcUpdates = normalizeKnownNpcUpdates(eventStatusChange.knownNpcsUpdates);
-        nextKnownNpcs = applyKnownNpcUpdates(nextKnownNpcs, knownNpcUpdates);
-        const companionUpdates = eventStatusChange.companionUpdates;
-        nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, companionUpdates);
 
         const companionsNeedingAvatar = !imagesEnabledAction || isGuest
           ? []
@@ -4232,18 +4272,6 @@ const App: React.FC = () => {
           : null;
         const compressionActive = !!historyLimitAction && state.compressionEnabled !== false;
         const nextCounter = compressionActive ? (state.compressionTurnCounter || 0) + 1 : 0;
-        const statusPlayer = eventStatusChange.playerChange
-          ? applyPlayerChange(state.player, eventStatusChange.playerChange)
-          : null;
-        const nextLocation = typeof eventStatusChange.location === 'string' && eventStatusChange.location.trim()
-          ? eventStatusChange.location.trim()
-          : state.location;
-        const nextYear = typeof eventStatusChange.currentYear === 'number' && Number.isFinite(eventStatusChange.currentYear)
-          ? Math.trunc(eventStatusChange.currentYear)
-          : state.currentYear;
-        const nextTime = typeof eventStatusChange.currentTime === 'string' && eventStatusChange.currentTime.trim()
-          ? eventStatusChange.currentTime.trim()
-          : newTime.toISOString();
         const tokenDelta = mergeTokenUsage(
           mergeTokenUsage(normalizeTokenUsage(narratorTokenUsage), eventTokenUsage),
           statusTokenUsage
@@ -4260,7 +4288,7 @@ const App: React.FC = () => {
           apLastUpdated: nextApLastUpdated,
           turnCount: nextTurn,
           tokenUsage: mergeTokenUsage(state.tokenUsage, tokenDelta),
-          player: statusPlayer ? statusPlayer : state.player,
+          player: statusPlayer || state.player,
           history: nextHistory,
           status_track: nextStatusTrack,
           compressionTurnCounter: nextCounter
