@@ -1832,6 +1832,7 @@ const App: React.FC = () => {
   const [galleryImages, setGalleryImages] = useState<GalleryImage[]>([]);
   const [galleryLoading, setGalleryLoading] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
+  const [galleryPage, setGalleryPage] = useState(1);
   const [showUtilityMenu, setShowUtilityMenu] = useState(false);
   const [statusManagerError, setStatusManagerError] = useState<string | null>(null);
   const [isManualCompressionConfirmOpen, setIsManualCompressionConfirmOpen] = useState(false);
@@ -5447,7 +5448,14 @@ const App: React.FC = () => {
     }));
   };
 
+  const GALLERY_PAGE_SIZE = 9;
   const openGallery = () => setIsGalleryOpen(true);
+
+  useEffect(() => {
+    if (isGalleryOpen) {
+      setGalleryPage(1);
+    }
+  }, [isGalleryOpen]);
 
   const toggleGallerySelection = (imageId: string) => {
     setGalleryImages(prev => prev.map(item =>
@@ -5493,6 +5501,55 @@ const App: React.FC = () => {
     const selectedCount = galleryImages.filter(item => item.selected).length;
     return { totalBytes, selectedBytes, selectedCount };
   }, [galleryImages]);
+  const galleryPageCount = useMemo(
+    () => Math.max(1, Math.ceil(galleryImages.length / GALLERY_PAGE_SIZE)),
+    [galleryImages.length]
+  );
+  useEffect(() => {
+    setGalleryPage(prev => Math.min(prev, galleryPageCount));
+  }, [galleryPageCount]);
+  const galleryPageIndex = Math.min(galleryPage, galleryPageCount);
+  const galleryPageItems = useMemo(() => {
+    const start = (galleryPageIndex - 1) * GALLERY_PAGE_SIZE;
+    return galleryImages.slice(start, start + GALLERY_PAGE_SIZE);
+  }, [galleryImages, galleryPageIndex]);
+  const galleryPager = galleryImages.length > 0 && (
+    <div className="flex items-center justify-between mb-4 text-[10px] uppercase">
+      <div className="opacity-70">
+        {isZh ? `页 ${galleryPageIndex} / ${galleryPageCount}` : `Page ${galleryPageIndex} / ${galleryPageCount}`}
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setGalleryPage(1)}
+          disabled={galleryPageIndex <= 1}
+          className="px-2 py-1 border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+        >
+          {isZh ? '首页' : 'First'}
+        </button>
+        <button
+          onClick={() => setGalleryPage(prev => Math.max(1, prev - 1))}
+          disabled={galleryPageIndex <= 1}
+          className="px-2 py-1 border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+        >
+          {isZh ? '上一页' : 'Prev'}
+        </button>
+        <button
+          onClick={() => setGalleryPage(prev => Math.min(galleryPageCount, prev + 1))}
+          disabled={galleryPageIndex >= galleryPageCount}
+          className="px-2 py-1 border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+        >
+          {isZh ? '下一页' : 'Next'}
+        </button>
+        <button
+          onClick={() => setGalleryPage(galleryPageCount)}
+          disabled={galleryPageIndex >= galleryPageCount}
+          className="px-2 py-1 border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+        >
+          {isZh ? '末页' : 'Last'}
+        </button>
+      </div>
+    </div>
+  );
   const usersEditorModal = isUsersEditorOpen && (
     <div className="fixed top-0 left-0 w-full h-full z-[3100] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
       <div className="max-w-3xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black">
@@ -6217,6 +6274,7 @@ const App: React.FC = () => {
             {isZh ? '删除已选' : 'Delete selected'}
           </button>
         </div>
+        {galleryPager}
         {galleryError && (
           <div className="text-xs text-red-500 mb-3">{galleryError}</div>
         )}
@@ -6225,8 +6283,8 @@ const App: React.FC = () => {
         ) : galleryImages.length === 0 ? (
           <div className="text-xs opacity-70">{isZh ? '暂无图片。' : 'No images found.'}</div>
         ) : (
-          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-            {galleryImages.map(item => {
+          <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+            {galleryPageItems.map(item => {
               const relationLabel = item.related === null
                 ? (isZh ? '未知' : 'Unknown')
                 : (item.related ? (isZh ? '当前存档' : 'Current save') : (isZh ? '已孤立' : 'Orphaned'));
@@ -6260,6 +6318,7 @@ const App: React.FC = () => {
             })}
           </div>
         )}
+        {galleryPager}
       </div>
     </div>
   );
