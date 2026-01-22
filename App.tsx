@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, KnownNpcUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState, PipelineMode, EventOutcome, EventNarrationResponse, InterfaceColor, SavedStatusSnapshot } from './types';
 import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
@@ -212,6 +212,15 @@ const buildTerminalTail = (history: HistoryEntry[], limit: number) => {
   const offset = Math.max(0, history.length - tail.length);
   return { tail, offset };
 };
+
+const parseImageIndex = (imageId: string) => {
+  const match = /^h_(\d+)$/.exec(imageId);
+  if (!match) return null;
+  const index = Number(match[1]);
+  return Number.isFinite(index) ? index : null;
+};
+
+const formatMb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(2);
 
 const buildCommitState = (state: GameState): GameState => {
   const savedSnapshot = buildSavedSnapshot(state);
@@ -1745,6 +1754,15 @@ type StatusRebuildPrompt = {
 
 type StageStatus = 'idle' | 'pending' | 'running' | 'done' | 'error' | 'skipped';
 
+type GalleryImage = {
+  imageId: string;
+  historyIndex: number | null;
+  url: string;
+  size: number;
+  related: boolean | null;
+  selected: boolean;
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<'auth' | 'start' | 'creation' | 'playing' | 'arena_setup' | 'arena_play'>('auth');
   const [gameState, setGameState] = useState<GameState>(
@@ -1786,6 +1804,11 @@ const App: React.FC = () => {
   const [arenaNarrationStage, setArenaNarrationStage] = useState<StageStatus>('idle');
   const [arenaImageStage, setArenaImageStage] = useState<StageStatus>('idle');
   const [arenaAvatarStage, setArenaAvatarStage] = useState<StageStatus>('idle');
+  const [isGalleryOpen, setIsGalleryOpen] = useState(false);
+  const [galleryImages, setGalleryImages] = useState<GalleryImage[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryError, setGalleryError] = useState<string | null>(null);
+  const [showUtilityMenu, setShowUtilityMenu] = useState(false);
   const [statusManagerError, setStatusManagerError] = useState<string | null>(null);
   const [isManualCompressionConfirmOpen, setIsManualCompressionConfirmOpen] = useState(false);
   const [keyAlert, setKeyAlert] = useState(false);
@@ -1826,6 +1849,7 @@ const App: React.FC = () => {
   const lastCompressedMemory = useRef('');
   const lastInventorySignature = useRef('');
   const lastRawOutputCache = useRef('');
+  const galleryUrlsRef = useRef<string[]>([]);
   const saveRepoRef = useRef<SaveRepository>(new SaveRepository(new WebBackend()));
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(0);
@@ -2318,6 +2342,90 @@ const App: React.FC = () => {
     }
     setHasMoreHistory(nextOffset > 0);
   }, [gameState.history, terminalHistory, terminalHistoryOffset, terminalPinnedToTail, storageHistoryLimit]);
+
+  useEffect(() => {
+    if (!isGalleryOpen) {
+      galleryUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      galleryUrlsRef.current = [];
+      setGalleryImages([]);
+      setGalleryError(null);
+      setGalleryLoading(false);
+      return;
+    }
+    let active = true;
+    galleryUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    galleryUrlsRef.current = [];
+    setGalleryImages([]);
+    setGalleryLoading(true);
+    setGalleryError(null);
+    if (!currentUser) {
+      setGalleryError(isZh ? '请先登录后查看图库。' : 'Please log in to view the gallery.');
+      setGalleryLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+    if (saveMode === 'fs' && !fsSaveHandle) {
+      setGalleryError(isZh ? '请先重新选择本地目录以读取图库。' : 'Select the local folder again to load the gallery.');
+      setGalleryLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+    const saveKey = getSaveKey(currentUser.username);
+    (async () => {
+      try {
+        const [imageIds, historyExtent] = await Promise.all([
+          saveRepoRef.current.listImageIds(saveKey),
+          saveRepoRef.current.getHistoryExtent(saveKey)
+        ]);
+        const totalHistory = historyExtent.total;
+        const urls: string[] = [];
+        const images = (await Promise.all(
+          imageIds.map(async (imageId) => {
+            const data = await saveRepoRef.current.getImageData(saveKey, imageId);
+            if (!data) return null;
+            const url = URL.createObjectURL(data.blob);
+            urls.push(url);
+            const historyIndex = parseImageIndex(imageId);
+            const related = historyIndex === null ? null : historyIndex < totalHistory;
+            return {
+              imageId,
+              historyIndex,
+              url,
+              size: data.blob.size,
+              related,
+              selected: false
+            } as GalleryImage;
+          })
+        )).filter(Boolean) as GalleryImage[];
+        if (!active) {
+          urls.forEach((url) => URL.revokeObjectURL(url));
+          return;
+        }
+        galleryUrlsRef.current = urls;
+        images.sort((a, b) => {
+          const aIndex = a.historyIndex ?? Number.MAX_SAFE_INTEGER;
+          const bIndex = b.historyIndex ?? Number.MAX_SAFE_INTEGER;
+          if (aIndex === bIndex) return a.imageId.localeCompare(b.imageId);
+          return aIndex - bIndex;
+        });
+        setGalleryImages(images);
+      } catch (err) {
+        console.error(err);
+        if (active) {
+          setGalleryError(isZh ? '读取图库失败。' : 'Failed to load gallery.');
+        }
+      } finally {
+        if (active) {
+          setGalleryLoading(false);
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [isGalleryOpen, currentUser, fsSaveHandle, saveMode, isZh]);
 
   useEffect(() => {
     if (!isNormal || !currentUser) return;
@@ -5311,8 +5419,52 @@ const App: React.FC = () => {
     }));
   };
 
+  const openGallery = () => setIsGalleryOpen(true);
+
+  const toggleGallerySelection = (imageId: string) => {
+    setGalleryImages(prev => prev.map(item =>
+      item.imageId === imageId ? { ...item, selected: !item.selected } : item
+    ));
+  };
+
+  const selectAllGallery = () => {
+    setGalleryImages(prev => prev.map(item => ({ ...item, selected: true })));
+  };
+
+  const clearGallerySelection = () => {
+    setGalleryImages(prev => prev.map(item => ({ ...item, selected: false })));
+  };
+
+  const deleteSelectedGallery = useCallback(async () => {
+    if (!currentUser) return;
+    const selected = galleryImages.filter(item => item.selected);
+    if (selected.length === 0) return;
+    const message = isZh
+      ? `确定删除已选 ${selected.length} 张图片？此操作不可撤销。`
+      : `Delete ${selected.length} selected images? This cannot be undone.`;
+    if (!window.confirm(message)) return;
+    try {
+      const saveKey = getSaveKey(currentUser.username);
+      const selectedIds = selected.map(item => item.imageId);
+      await saveRepoRef.current.deleteImages(saveKey, selectedIds);
+      const selectedUrlSet = new Set(selected.map(item => item.url));
+      selected.forEach(item => URL.revokeObjectURL(item.url));
+      galleryUrlsRef.current = galleryUrlsRef.current.filter(url => !selectedUrlSet.has(url));
+      setGalleryImages(prev => prev.filter(item => !selectedIds.includes(item.imageId)));
+    } catch (err) {
+      console.error(err);
+      setGalleryError(isZh ? '删除失败。' : 'Delete failed.');
+    }
+  }, [currentUser, galleryImages, isZh]);
+
   const displayLocation = localizeLocation(gameState.location, gameState.language);
   const displayYear = formatYear(gameState.currentYear, gameState.language);
+  const galleryTotals = useMemo(() => {
+    const totalBytes = galleryImages.reduce((sum, item) => sum + item.size, 0);
+    const selectedBytes = galleryImages.reduce((sum, item) => sum + (item.selected ? item.size : 0), 0);
+    const selectedCount = galleryImages.filter(item => item.selected).length;
+    return { totalBytes, selectedBytes, selectedCount };
+  }, [galleryImages]);
   const usersEditorModal = isUsersEditorOpen && (
     <div className="fixed top-0 left-0 w-full h-full z-[3100] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
       <div className="max-w-3xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black">
@@ -5989,6 +6141,97 @@ const App: React.FC = () => {
           )}
 
         </div>
+      </div>
+    </div>
+  );
+  const galleryModal = isGalleryOpen && (
+    <div className="fixed top-0 left-0 w-full h-full z-[3050] flex items-start justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="max-w-5xl w-full max-h-[90vh] overflow-y-auto pip-boy-border p-6 md:p-8 bg-black">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-2xl font-bold uppercase">{isZh ? '图库' : 'Gallery'}</h3>
+          <button
+            onClick={() => setIsGalleryOpen(false)}
+            className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+          >
+            {isZh ? '关闭' : 'Close'}
+          </button>
+        </div>
+        <div className="text-xs opacity-70 mb-2">
+          {currentUser
+            ? (isZh ? `用户：${currentUser.username}` : `User: ${currentUser.username}`)
+            : (isZh ? '未登录' : 'Not logged in')}
+        </div>
+        <div className="text-[10px] uppercase opacity-60 mb-4">
+          {isZh
+            ? `已选 ${galleryTotals.selectedCount}/${galleryImages.length} | ${formatMb(galleryTotals.selectedBytes)} / ${formatMb(galleryTotals.totalBytes)} MB`
+            : `Selected ${galleryTotals.selectedCount}/${galleryImages.length} | ${formatMb(galleryTotals.selectedBytes)} / ${formatMb(galleryTotals.totalBytes)} MB`}
+        </div>
+        <div className="flex flex-wrap gap-2 mb-4">
+          <button
+            onClick={selectAllGallery}
+            disabled={galleryLoading || galleryImages.length === 0}
+            className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+          >
+            {isZh ? '全选' : 'Select all'}
+          </button>
+          <button
+            onClick={clearGallerySelection}
+            disabled={galleryLoading || galleryImages.length === 0}
+            className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+          >
+            {isZh ? '清除选择' : 'Clear selection'}
+          </button>
+          <button
+            onClick={deleteSelectedGallery}
+            disabled={galleryLoading || galleryTotals.selectedCount === 0}
+            className="text-xs px-3 py-1 border font-bold uppercase transition-colors border-[color:var(--pip-color)] hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40"
+          >
+            {isZh ? '删除已选' : 'Delete selected'}
+          </button>
+        </div>
+        {galleryError && (
+          <div className="text-xs text-red-500 mb-3">{galleryError}</div>
+        )}
+        {galleryLoading ? (
+          <div className="text-xs opacity-70">{isZh ? '正在加载图库...' : 'Loading gallery...'}</div>
+        ) : galleryImages.length === 0 ? (
+          <div className="text-xs opacity-70">{isZh ? '暂无图片。' : 'No images found.'}</div>
+        ) : (
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+            {galleryImages.map(item => {
+              const relationLabel = item.related === null
+                ? (isZh ? '未知' : 'Unknown')
+                : (item.related ? (isZh ? '当前存档' : 'Current save') : (isZh ? '已孤立' : 'Orphaned'));
+              const relationClass = item.related === false ? 'text-yellow-300' : 'text-[color:var(--pip-color)]';
+              return (
+                <div key={item.imageId} className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)]">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="flex items-center gap-2 text-[10px] uppercase">
+                      <input
+                        type="checkbox"
+                        checked={item.selected}
+                        onChange={() => toggleGallerySelection(item.imageId)}
+                        className="accent-[color:var(--pip-color)]"
+                      />
+                      <span className="opacity-70">{item.imageId}</span>
+                    </label>
+                    <span className={`text-[10px] uppercase ${relationClass}`}>{relationLabel}</span>
+                  </div>
+                  <div className="mt-2 border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/60 p-1">
+                    <img
+                      src={item.url}
+                      alt={item.imageId}
+                      className="w-full h-auto opacity-90 hover:opacity-100 transition-opacity"
+                    />
+                  </div>
+                  <div className="text-[10px] opacity-60 mt-2 uppercase">
+                    {item.historyIndex !== null ? `#${item.historyIndex}` : '--'} · {formatMb(item.size)} MB
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -6765,6 +7008,7 @@ const App: React.FC = () => {
         {helpModal}
         {userPromptModal}
         {imagePromptModal}
+        {galleryModal}
         {arenaPromptModal}
         <div className="max-w-3xl w-full space-y-6 md:space-y-8 pip-boy-border p-6 md:p-12 bg-black/60 shadow-2xl relative">
           <div className="absolute top-4 right-4 flex space-x-2">
@@ -6793,6 +7037,12 @@ const App: React.FC = () => {
               className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
             >
               {isZh ? '图像提示' : 'IMAGE PROMPT'}
+            </button>
+            <button
+              onClick={openGallery}
+              className="px-2 py-1 text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+            >
+              {isZh ? '图库' : 'GALLERY'}
             </button>
             {isAdmin && (
               <button
@@ -7319,6 +7569,7 @@ const App: React.FC = () => {
       {helpModal}
       {userPromptModal}
       {imagePromptModal}
+      {galleryModal}
       {arenaPromptModal}
       {legacyCompressionModal}
       {legacyInventoryModal}
@@ -7333,51 +7584,146 @@ const App: React.FC = () => {
              <h1 className="text-lg md:text-2xl font-bold tracking-widest uppercase truncate max-w-[150px] md:max-w-none">PIP-BOY 3000</h1>
           </div>
           <div className="flex items-center space-x-2">
-            {isAdmin && (
+            <div className="relative md:hidden">
               <button
-                onClick={openUsersEditor}
+                onClick={() => setShowUtilityMenu(prev => !prev)}
                 className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
               >
-                {isZh ? '用户' : 'USERS'}
+                {isZh ? '工具' : 'UTILITY'}
               </button>
-            )}
-            <button
-              onClick={handleReturnToMenu}
-              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
-            >
-              {isZh ? '返回' : 'BACK'}
-            </button>
-            <button 
-              onClick={() => setIsSettingsOpen(true)}
-              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
-            >
-              {isZh ? '设置' : 'SET'}
-            </button>
-            <button
-              onClick={handleManualCompressionRequest}
-              disabled={compressionLocked}
-              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
-            >
-              {isZh ? '压缩' : 'MEMORY'}
-            </button>
-            <button 
-              onClick={() => setIsHelpOpen(true)}
-              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
-            >
-              {isZh ? '帮助' : 'HELP'}
-            </button>
-            <button
-              onClick={() => setIsUserPromptOpen(true)}
-              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
-            >
-              {isZh ? '文本提示' : 'TEXT PROMPT'}
-            </button>
-            <button
-              onClick={() => setIsImagePromptOpen(true)}
-              className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
-            >
-              {isZh ? '图像提示' : 'IMAGE PROMPT'}
-            </button>
+              {showUtilityMenu && (
+                <div className="absolute right-0 top-full mt-2 w-44 border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/90 text-xs uppercase shadow-lg z-30">
+                  {isAdmin && (
+                    <button
+                      onClick={() => {
+                        setShowUtilityMenu(false);
+                        openUsersEditor();
+                      }}
+                      className="w-full text-left px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                    >
+                      {isZh ? '用户' : 'USERS'}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setShowUtilityMenu(false);
+                      handleReturnToMenu();
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                  >
+                    {isZh ? '返回' : 'BACK'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowUtilityMenu(false);
+                      setIsSettingsOpen(true);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                  >
+                    {isZh ? '设置' : 'SET'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowUtilityMenu(false);
+                      handleManualCompressionRequest();
+                    }}
+                    disabled={compressionLocked}
+                    className="w-full text-left px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] disabled:opacity-40"
+                  >
+                    {isZh ? '压缩' : 'MEMORY'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowUtilityMenu(false);
+                      setIsHelpOpen(true);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                  >
+                    {isZh ? '帮助' : 'HELP'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowUtilityMenu(false);
+                      setIsUserPromptOpen(true);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                  >
+                    {isZh ? '文本提示' : 'TEXT PROMPT'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowUtilityMenu(false);
+                      setIsImagePromptOpen(true);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                  >
+                    {isZh ? '图像提示' : 'IMAGE PROMPT'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowUtilityMenu(false);
+                      openGallery();
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                  >
+                    {isZh ? '图库' : 'GALLERY'}
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="hidden md:flex items-center space-x-2">
+              {isAdmin && (
+                <button
+                  onClick={openUsersEditor}
+                  className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+                >
+                  {isZh ? '用户' : 'USERS'}
+                </button>
+              )}
+              <button
+                onClick={handleReturnToMenu}
+                className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+              >
+                {isZh ? '返回' : 'BACK'}
+              </button>
+              <button 
+                onClick={() => setIsSettingsOpen(true)}
+                className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+              >
+                {isZh ? '设置' : 'SET'}
+              </button>
+              <button
+                onClick={handleManualCompressionRequest}
+                disabled={compressionLocked}
+                className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase disabled:opacity-40"
+              >
+                {isZh ? '压缩' : 'MEMORY'}
+              </button>
+              <button 
+                onClick={() => setIsHelpOpen(true)}
+                className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+              >
+                {isZh ? '帮助' : 'HELP'}
+              </button>
+              <button
+                onClick={() => setIsUserPromptOpen(true)}
+                className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+              >
+                {isZh ? '文本提示' : 'TEXT PROMPT'}
+              </button>
+              <button
+                onClick={() => setIsImagePromptOpen(true)}
+                className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+              >
+                {isZh ? '图像提示' : 'IMAGE PROMPT'}
+              </button>
+              <button
+                onClick={openGallery}
+                className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+              >
+                {isZh ? '图库' : 'GALLERY'}
+              </button>
+            </div>
             <button 
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
               className="md:hidden border-2 border-[color:var(--pip-color)] px-3 py-1 font-bold text-sm uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-all"

@@ -21,7 +21,6 @@ export interface LoadResult {
 }
 
 const buildImageId = (historyIndex: number) => `h_${historyIndex}`;
-
 const sortChunks = <T extends { range: [number, number] }>(chunks: T[]) =>
   [...chunks].sort((a, b) => a.range[0] - b.range[0]);
 
@@ -190,6 +189,44 @@ export class SaveRepository {
     const url = URL.createObjectURL(image.blob);
     this.imageUrlCache.set(cacheKey, url);
     return url;
+  }
+
+  async listImageIds(saveKey: string) {
+    return await this.backend.listImages(saveKey);
+  }
+
+  async getImageData(saveKey: string, imageId: string) {
+    return await this.backend.getImage(saveKey, imageId);
+  }
+
+  async getHistoryExtent(saveKey: string) {
+    const [local, historyChunks] = await Promise.all([
+      this.backend.readLocalState(saveKey),
+      this.backend.listHistoryChunks(saveKey)
+    ]);
+    const localCount = local?.gameState?.history?.length ?? 0;
+    let baseIndex = 0;
+    if (historyChunks.length > 0) {
+      baseIndex = Math.max(...historyChunks.map(chunk => chunk.range[1])) + 1;
+    }
+    return {
+      total: baseIndex + localCount,
+      baseIndex,
+      localCount
+    };
+  }
+
+  async deleteImages(saveKey: string, imageIds: string[]) {
+    if (!imageIds.length) return;
+    await Promise.all(imageIds.map(imageId => this.backend.deleteImage(saveKey, imageId)));
+    imageIds.forEach((imageId) => {
+      const cacheKey = `${saveKey}::${imageId}`;
+      const cached = this.imageUrlCache.get(cacheKey);
+      if (cached) {
+        URL.revokeObjectURL(cached);
+        this.imageUrlCache.delete(cacheKey);
+      }
+    });
   }
 
   async exportZip(saveKey: string): Promise<Blob | null> {
