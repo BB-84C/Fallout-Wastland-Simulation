@@ -1577,6 +1577,31 @@ const normalizeActor = (actor: Actor): Actor => {
   };
 };
 
+const stripAvatarUrl = <T extends { avatarUrl?: string }>(actor: T) => {
+  const { avatarUrl, ...rest } = actor;
+  return rest;
+};
+
+const sanitizeActorForLlm = (actor: Actor | null) =>
+  (actor ? stripAvatarUrl(actor) : actor);
+
+const sanitizeKnownNpcsForLlm = (list: Actor[]) =>
+  list.map(stripAvatarUrl);
+
+const sanitizeKnownNpcsForNarration = (list: Actor[]) =>
+  list.map(({ inventory: _inventory, avatarUrl: _avatarUrl, ...rest }) => rest);
+
+const sanitizeStatusChangeForLlm = (change: EventOutcome & StatusChange) => {
+  const sanitized: EventOutcome & StatusChange = { ...change };
+  if (Array.isArray(change.newNpc)) {
+    sanitized.newNpc = change.newNpc.map(stripAvatarUrl);
+  }
+  if (Array.isArray(change.knownNpcsUpdates)) {
+    sanitized.knownNpcsUpdates = change.knownNpcsUpdates.map(({ avatarUrl, ...rest }) => rest);
+  }
+  return sanitized;
+};
+
 const mergeActor = (base: Actor, update: Actor): Actor => {
   const nextSpecial = update.special ? normalizeSpecial(update.special) : base.special;
   const updateSkills = update.skills ? normalizeSkills(update.skills, nextSpecial, false) : {};
@@ -4009,9 +4034,10 @@ const App: React.FC = () => {
         let eventOutcome: EventOutcome | null = null;
         let eventTokenUsage: TokenUsage | undefined;
         try {
-          const eventKnownNpcs = state.knownNpcs.map(({ avatarUrl, ...rest }) => rest);
+          const eventKnownNpcs = sanitizeKnownNpcsForLlm(state.knownNpcs);
+          const eventPlayer = (sanitizeActorForLlm(state.player) || state.player) as Actor;
           const eventResult = await getEventOutcome(
-            state.player,
+            eventPlayer,
             eventHistory,
             actionText,
             state.currentYear,
@@ -4081,9 +4107,10 @@ const App: React.FC = () => {
         let statusTokenUsage: TokenUsage | undefined;
         try {
           setStatusStage('running');
-          const statusKnownNpcs = state.knownNpcs.map(({ avatarUrl, ...rest }) => rest);
+          const statusKnownNpcs = sanitizeKnownNpcsForLlm(state.knownNpcs);
+          const statusPlayer = (sanitizeActorForLlm(state.player) || state.player) as Actor;
           const statusResult = await getStatusUpdate(
-            state.player,
+            statusPlayer,
             state.quests,
             statusKnownNpcs,
             state.currentYear,
@@ -4158,16 +4185,18 @@ const App: React.FC = () => {
         nextKnownNpcs = applyCompanionUpdates(nextKnownNpcs, companionUpdates);
 
         setNarrationStage('running');
-        const narratorKnownNpcs = nextKnownNpcs.map(({ inventory: _inventory, avatarUrl: _avatarUrl, ...rest }) => rest);
+        const narratorKnownNpcs = sanitizeKnownNpcsForNarration(nextKnownNpcs);
         const narratorQuests = mergedQuests.filter(quest => quest.status !== 'completed');
+        const narrationEventStatus = sanitizeStatusChangeForLlm(eventStatusChange);
+        const narrationPlayer = (sanitizeActorForLlm(statusPlayer || state.player) || state.player) as Actor;
         const narrationResponse: EventNarrationResponse = await getEventNarration(
-          statusPlayer || state.player,
+          narrationPlayer,
           narratorKnownNpcs,
           narratorQuests,
           nextYear,
           nextLocation,
           nextTime,
-          eventStatusChange,
+          narrationEventStatus,
           state.language,
           {
             tier: activeTier,
@@ -4322,14 +4351,16 @@ const App: React.FC = () => {
         return;
       }
 
+      const narratorPlayer = (sanitizeActorForLlm(state.player) || state.player) as Actor;
+      const narratorKnownNpcs = sanitizeKnownNpcsForLlm(state.knownNpcs);
       const response = await getNarrativeResponse(
-        state.player,
+        narratorPlayer,
         trimmedHistory,
         actionText,
         state.currentYear,
         state.location,
         state.quests,
-        state.knownNpcs,
+        narratorKnownNpcs,
         state.language,
         {
           tier: activeTier,
@@ -4393,9 +4424,10 @@ const App: React.FC = () => {
       let statusTokenUsage: TokenUsage | undefined;
       try {
         setStatusStage('running');
-        const statusKnownNpcs = state.knownNpcs.map(({ avatarUrl, ...rest }) => rest);
+        const statusKnownNpcs = sanitizeKnownNpcsForLlm(state.knownNpcs);
+        const statusPlayer = (sanitizeActorForLlm(state.player) || state.player) as Actor;
         const statusResult = await getStatusUpdate(
-          state.player,
+          statusPlayer,
           state.quests,
           statusKnownNpcs,
           state.currentYear,
@@ -5029,9 +5061,10 @@ const App: React.FC = () => {
             setSystemError(isZh
               ? `状态重建中 (${narrationIndex}/${total})...`
               : `Rebuilding status (${narrationIndex}/${total})...`);
-            const statusKnownNpcs = knownNpcs.map(({ avatarUrl, ...rest }) => rest);
+            const statusKnownNpcs = sanitizeKnownNpcsForLlm(knownNpcs);
+            const statusPlayer = (sanitizeActorForLlm(player) || player) as Actor;
             const statusResult = await getStatusUpdate(
-              player,
+              statusPlayer,
               quests,
               statusKnownNpcs,
               currentYear,
