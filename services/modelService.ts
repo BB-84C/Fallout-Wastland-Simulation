@@ -1120,7 +1120,7 @@ playerChange should contain only changed fields; for unchanged values use 0/fals
 All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
 Each newNpc entry MUST include appearance (short physical description).
 Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Use newNpc only for newly discovered NPCs.
-Use playerChange.perksAdd/perksRemove to add/remove player perks. Use knownNpcsUpdates.perksAdd/perksRemove to add/remove NPC/companion perks; avoid replacing the full perks array unless necessary.
+You are encouraged to use playerChange.perksAdd/perksRemove to add/remove player perks to reflect a consequence of an event. You are also encouraged to use knownNpcsUpdates.perksAdd/perksRemove to add/remove NPC/companion perks to reflect a consequence of an event.
 currentTime MUST be full ISO 8601 UTC, e.g. 2281-07-15T17:05:00.000Z.
 If no changes are needed, use empty string/0/false (or []/{} for lists/objects).`;
 
