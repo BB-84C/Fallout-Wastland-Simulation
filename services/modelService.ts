@@ -2828,6 +2828,10 @@ export async function recoverInventoryStatus(
   };
 }
 
+const removeBase64Images = (text: string) => {
+  return text.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g, '[BASE64_IMAGE_REMOVED]');
+};
+
 export async function compressMemory(
   payload: { saveState: any; compressedMemory: string; recentHistory: HistoryEntry[] },
   lang: Language,
@@ -2836,17 +2840,23 @@ export async function compressMemory(
 ): Promise<{ memory: string; tokenUsage?: TokenUsage }> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
+  
   const historyText = payload.recentHistory
     .map(entry => `${entry.sender.toUpperCase()}: ${entry.text}`)
     .join("\n");
+    
+  const safeHistoryText = removeBase64Images(historyText);
+  const safeSaveState = removeBase64Images(JSON.stringify(payload.saveState));
+  const safeCompressedMemory = removeBase64Images(payload.compressedMemory || 'None');
+
   const prompt = `SAVE STATE (JSON, no history):
-${JSON.stringify(payload.saveState)}
+${safeSaveState}
 
 EXISTING COMPRESSED MEMORY:
-${payload.compressedMemory || 'None'}
+${safeCompressedMemory}
 
 RECENT HISTORY:
-${historyText}
+${safeHistoryText}
 
 Return JSON: {"memory": "..."} only.`;
   const targetLang = lang === "zh" ? "Chinese" : "English";
