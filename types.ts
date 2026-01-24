@@ -200,10 +200,11 @@ export interface CompanionUpdate {
   reason?: string;
 }
 
-export type KnownNpcUpdate = Partial<Actor> & {
+export type KnownNpcUpdate = Partial<Omit<Actor, 'inventory' | 'perks'>> & {
   name: string;
   perksAdd?: Perk[];
   perksRemove?: { name: string }[];
+  inventoryChange?: InventoryChange;
 };
 
 export type StatusUpdate = StatusChange;

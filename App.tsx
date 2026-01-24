@@ -459,7 +459,7 @@ const normalizeSpecial = (special: Record<string, any> | null | undefined) => {
     const normalized = normalizeKey(key);
     const mapped = SPECIAL_KEY_MAP[normalized] ?? SPECIAL_KEY_MAP[key];
     if (!mapped) return;
-    next[mapped] = num;
+    next[mapped] = clampNumber(num, 0, 10);
   });
   return next;
 };
@@ -473,8 +473,9 @@ const normalizeSpecialDelta = (special: Record<string, any> | null | undefined) 
     const normalized = normalizeKey(key);
     const mapped = SPECIAL_KEY_MAP[normalized] ?? SPECIAL_KEY_MAP[key];
     if (!mapped) return;
+    const clamped = clampNumber(num, -5, 5);
     const existing = deltas[mapped];
-    deltas[mapped] = (typeof existing === 'number' ? existing : 0) + num;
+    deltas[mapped] = (typeof existing === 'number' ? existing : 0) + clamped;
   });
   return deltas;
 };
@@ -522,11 +523,12 @@ const normalizeSkills = (
     const normalized = normalizeKey(key);
     const mapped = SKILL_KEY_MAP[normalized];
     if (!mapped) return;
+    const clamped = clampNumber(num, 0, 100);
     const existing = normalizedSkills[mapped];
     if (typeof existing === 'number') {
-      normalizedSkills[mapped] = Math.max(existing, num);
+      normalizedSkills[mapped] = Math.max(existing, clamped);
     } else {
-      normalizedSkills[mapped] = num;
+      normalizedSkills[mapped] = clamped;
     }
   });
   return normalizedSkills;
@@ -541,8 +543,9 @@ const normalizeSkillDelta = (skills: Record<string, any> | null | undefined): Sk
     const normalized = normalizeKey(key);
     const mapped = SKILL_KEY_MAP[normalized];
     if (!mapped) return;
+    const clamped = clampNumber(num, -50, 50);
     const existing = deltas[mapped];
-    deltas[mapped] = (typeof existing === 'number' ? existing : 0) + num;
+    deltas[mapped] = (typeof existing === 'number' ? existing : 0) + clamped;
   });
   return deltas;
 };
@@ -1597,7 +1600,7 @@ const sanitizeStatusChangeForLlm = (change: EventOutcome & StatusChange) => {
     sanitized.newNpc = change.newNpc.map(stripAvatarUrl);
   }
   if (Array.isArray(change.knownNpcsUpdates)) {
-    sanitized.knownNpcsUpdates = change.knownNpcsUpdates.map(({ avatarUrl, ...rest }) => rest);
+    sanitized.knownNpcsUpdates = change.knownNpcsUpdates.map(({ avatarUrl, inventory, perks, ...rest }) => rest);
   }
   return sanitized;
 };
@@ -1768,14 +1771,26 @@ const applyKnownNpcUpdates = (list: Actor[], updates?: KnownNpcUpdate[]) => {
     const key = normalizeKey(npc.name);
     const update = updatesByKey.get(key);
     if (!update) return npc;
-    const merged = mergeActor(npc, update as Actor);
+    const {
+      inventory: _inventory,
+      perks: _perks,
+      inventoryChange,
+      perksAdd,
+      perksRemove,
+      ...rest
+    } = update as KnownNpcUpdate & { inventory?: InventoryItem[]; perks?: Perk[] };
+    const merged = mergeActor(npc, rest as Actor);
     const hasPerkDelta = Array.isArray(update.perksAdd) || Array.isArray(update.perksRemove);
     const nextPerks = hasPerkDelta
-      ? applyPerkDelta(npc.perks, update.perksAdd, update.perksRemove)
+      ? applyPerkDelta(npc.perks, perksAdd, perksRemove)
       : merged.perks;
+    const nextInventory = inventoryChange
+      ? applyInventoryChange(merged.inventory, inventoryChange)
+      : merged.inventory;
     return {
       ...merged,
       perks: nextPerks,
+      inventory: nextInventory,
       ifCompanion: update.ifCompanion ?? npc.ifCompanion,
       avatarUrl: typeof update.avatarUrl === 'string' ? update.avatarUrl : npc.avatarUrl
     };

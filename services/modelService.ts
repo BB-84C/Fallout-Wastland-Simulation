@@ -72,20 +72,20 @@ const actorSchema = {
     special: {
       type: Type.OBJECT,
       properties: {
-        [SpecialAttr.Strength]: { type: Type.NUMBER },
-        [SpecialAttr.Perception]: { type: Type.NUMBER },
-        [SpecialAttr.Endurance]: { type: Type.NUMBER },
-        [SpecialAttr.Charisma]: { type: Type.NUMBER },
-        [SpecialAttr.Intelligence]: { type: Type.NUMBER },
-        [SpecialAttr.Agility]: { type: Type.NUMBER },
-        [SpecialAttr.Luck]: { type: Type.NUMBER }
+        [SpecialAttr.Strength]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+        [SpecialAttr.Perception]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+        [SpecialAttr.Endurance]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+        [SpecialAttr.Charisma]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+        [SpecialAttr.Intelligence]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+        [SpecialAttr.Agility]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+        [SpecialAttr.Luck]: { type: Type.NUMBER, minimum: 0, maximum: 10 }
       },
       required: Object.values(SpecialAttr)
     },
     skills: {
       type: Type.OBJECT,
       properties: Object.values(Skill).reduce(
-        (acc: Record<string, any>, skill) => ({ ...acc, [skill]: { type: Type.NUMBER } }),
+        (acc: Record<string, any>, skill) => ({ ...acc, [skill]: { type: Type.NUMBER, minimum: 0, maximum: 100 } }),
         {}
       )
     },
@@ -198,53 +198,46 @@ const perkSchema = {
   required: ["name", "description", "rank"]
 };
 
-const partialSpecialSchema = {
+const deltaSpecialSchema = {
   type: Type.OBJECT,
   properties: {
-    [SpecialAttr.Strength]: { type: Type.NUMBER },
-    [SpecialAttr.Perception]: { type: Type.NUMBER },
-    [SpecialAttr.Endurance]: { type: Type.NUMBER },
-    [SpecialAttr.Charisma]: { type: Type.NUMBER },
-    [SpecialAttr.Intelligence]: { type: Type.NUMBER },
-    [SpecialAttr.Agility]: { type: Type.NUMBER },
-    [SpecialAttr.Luck]: { type: Type.NUMBER }
+    [SpecialAttr.Strength]: { type: Type.NUMBER, minimum: -5, maximum: 5 },
+    [SpecialAttr.Perception]: { type: Type.NUMBER, minimum: -5, maximum: 5 },
+    [SpecialAttr.Endurance]: { type: Type.NUMBER, minimum: -5, maximum: 5 },
+    [SpecialAttr.Charisma]: { type: Type.NUMBER, minimum: -5, maximum: 5 },
+    [SpecialAttr.Intelligence]: { type: Type.NUMBER, minimum: -5, maximum: 5 },
+    [SpecialAttr.Agility]: { type: Type.NUMBER, minimum: -5, maximum: 5 },
+    [SpecialAttr.Luck]: { type: Type.NUMBER, minimum: -5, maximum: 5 }
   }
 };
 
-const partialSkillsSchema = {
+const deltaSkillsSchema = {
   type: Type.OBJECT,
   properties: Object.values(Skill).reduce(
-    (acc: Record<string, any>, skill) => ({ ...acc, [skill]: { type: Type.NUMBER } }),
+    (acc: Record<string, any>, skill) => ({ ...acc, [skill]: { type: Type.NUMBER, minimum: -50, maximum: 50 } }),
     {}
   )
 };
 
-const knownNpcUpdateSchema = {
+const boundedSpecialSchema = {
   type: Type.OBJECT,
   properties: {
-    name: { type: Type.STRING },
-    appearance: { type: Type.STRING },
-    lore: { type: Type.STRING },
-    age: { type: Type.NUMBER },
-    gender: { type: Type.STRING },
-    faction: { type: Type.STRING },
-    health: { type: Type.NUMBER },
-    maxHealth: { type: Type.NUMBER },
-    karma: { type: Type.NUMBER },
-    caps: { type: Type.NUMBER },
-    special: partialSpecialSchema,
-    skills: partialSkillsSchema,
-    perksAdd: { type: Type.ARRAY, items: perkSchema },
-    perksRemove: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: { name: { type: Type.STRING } },
-        required: ["name"]
-      }
-    }
-  },
-  required: ["name"]
+    [SpecialAttr.Strength]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+    [SpecialAttr.Perception]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+    [SpecialAttr.Endurance]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+    [SpecialAttr.Charisma]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+    [SpecialAttr.Intelligence]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+    [SpecialAttr.Agility]: { type: Type.NUMBER, minimum: 0, maximum: 10 },
+    [SpecialAttr.Luck]: { type: Type.NUMBER, minimum: 0, maximum: 10 }
+  }
+};
+
+const boundedSkillsSchema = {
+  type: Type.OBJECT,
+  properties: Object.values(Skill).reduce(
+    (acc: Record<string, any>, skill) => ({ ...acc, [skill]: { type: Type.NUMBER, minimum: 0, maximum: 100 } }),
+    {}
+  )
 };
 
 const inventoryChangeSchema = {
@@ -280,6 +273,35 @@ const inventoryChangeSchema = {
   }
 };
 
+const knownNpcUpdateSchema = {
+  type: Type.OBJECT,
+  properties: {
+    name: { type: Type.STRING },
+    appearance: { type: Type.STRING },
+    lore: { type: Type.STRING },
+    age: { type: Type.NUMBER },
+    gender: { type: Type.STRING },
+    faction: { type: Type.STRING },
+    health: { type: Type.NUMBER },
+    maxHealth: { type: Type.NUMBER },
+    karma: { type: Type.NUMBER },
+    caps: { type: Type.NUMBER },
+    special: boundedSpecialSchema,
+    skills: boundedSkillsSchema,
+    inventoryChange: inventoryChangeSchema,
+    perksAdd: { type: Type.ARRAY, items: perkSchema },
+    perksRemove: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: { name: { type: Type.STRING } },
+        required: ["name"]
+      }
+    }
+  },
+  required: ["name"]
+};
+
 const playerChangeSchema = {
   type: Type.OBJECT,
   properties: {
@@ -287,8 +309,8 @@ const playerChangeSchema = {
     maxHealth: { type: Type.NUMBER },
     karma: { type: Type.NUMBER },
     caps: { type: Type.NUMBER },
-    special: partialSpecialSchema,
-    skills: partialSkillsSchema,
+    special: boundedSpecialSchema,
+    skills: boundedSkillsSchema,
     perksAdd: { type: Type.ARRAY, items: perkSchema },
     perksRemove: {
       type: Type.ARRAY,
@@ -397,12 +419,22 @@ const inventoryRecoverySchema = {
 type JsonSchema = Record<string, any>;
 
 const specialJsonProperties = Object.values(SpecialAttr).reduce((acc: Record<string, any>, attr) => {
-  acc[attr] = { type: "number" };
+  acc[attr] = { type: "number", minimum: 0, maximum: 10 };
   return acc;
 }, {});
 
 const skillsJsonProperties = Object.values(Skill).reduce((acc: Record<string, any>, skill) => {
-  acc[skill] = { type: "number" };
+  acc[skill] = { type: "number", minimum: 0, maximum: 100 };
+  return acc;
+}, {});
+
+const specialDeltaJsonProperties = Object.values(SpecialAttr).reduce((acc: Record<string, any>, attr) => {
+  acc[attr] = { type: "number", minimum: -5, maximum: 5 };
+  return acc;
+}, {});
+
+const skillsDeltaJsonProperties = Object.values(Skill).reduce((acc: Record<string, any>, skill) => {
+  acc[skill] = { type: "number", minimum: -50, maximum: 50 };
   return acc;
 }, {});
 
@@ -465,13 +497,13 @@ const jsonPlayerChangeSchema: JsonSchema = {
     caps: { type: "number" },
     special: {
       type: "object",
-      properties: specialJsonProperties,
+      properties: specialDeltaJsonProperties,
       required: Object.values(SpecialAttr),
       additionalProperties: false
     },
     skills: {
       type: "object",
-      properties: skillsJsonProperties,
+      properties: skillsDeltaJsonProperties,
       required: Object.values(Skill),
       additionalProperties: false
     },
@@ -602,6 +634,7 @@ const jsonKnownNpcUpdateSchema: JsonSchema = {
       properties: skillsJsonProperties,
       additionalProperties: false
     },
+    inventoryChange: jsonInventoryChangeSchema,
     perksAdd: { type: "array", items: jsonPerkSchema },
     perksRemove: {
       type: "array",
@@ -908,7 +941,7 @@ const buildStatusSystem = (targetLang: string, year: number, location: string) =
 6. QUESTS: Return questUpdates entries only when a quest is created, advanced, completed, or failed. Do not delete quests.
 7. OUTPUT LANGUAGE: All text fields must be in ${targetLang}.
 8. NEW NPCS: For newNpc entries, include a short physical appearance description in the appearance field.
-9. KNOWN NPC UPDATES: Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Do not add new NPCs there. Use perksAdd/perksRemove to add/remove NPC/companion perks; avoid replacing the full perks array unless you must fully redefine it.
+9. KNOWN NPC UPDATES: Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Do not add new NPCs there. Use perksAdd/perksRemove to add/remove NPC/companion perks; avoid replacing the full perks array unless you must fully redefine it. Use inventoryChange.add/remove to update NPC/companion inventory; do NOT output full inventory lists.
 10. PERKS: Use playerChange.perksAdd/perksRemove to add/remove player perks.
 11. RETURN FORMAT: Return JSON only with all keys. If nothing changes, use empty string/0/false (or []/{} for lists/objects). timePassedMinutes should be 0 if no time passes.
 12. TIME FORMAT: currentTime MUST be full ISO 8601 UTC, e.g. 2281-07-15T17:05:00.000Z. Do NOT return time-only like "16:17".
@@ -1120,7 +1153,7 @@ playerChange should contain only changed fields; for unchanged values use 0/fals
 All numeric playerChange fields must be deltas (positive or negative), not final totals. special and skills are per-stat deltas.
 Each newNpc entry MUST include appearance (short physical description).
 Use knownNpcsUpdates to modify existing known NPCs (e.g., mark as dead). Use newNpc only for newly discovered NPCs.
-You are encouraged to use playerChange.perksAdd/perksRemove to add/remove player perks to reflect a consequence of an event. You are also encouraged to use knownNpcsUpdates.perksAdd/perksRemove to add/remove NPC/companion perks to reflect a consequence of an event.
+You are encouraged to use playerChange.perksAdd/perksRemove to add/remove player perks to reflect a consequence of an event. You are also encouraged to use knownNpcsUpdates.perksAdd/perksRemove to add/remove NPC/companion perks to reflect a consequence of an event. Use knownNpcsUpdates.inventoryChange.add/remove to update NPC/companion inventory (do not output full inventories).
 currentTime MUST be full ISO 8601 UTC, e.g. 2281-07-15T17:05:00.000Z.
 If no changes are needed, use empty string/0/false (or []/{} for lists/objects).`;
 
