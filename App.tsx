@@ -1,5 +1,8 @@
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { renderToStaticMarkup } from 'react-dom/server.browser';
 import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, KnownNpcUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState, PipelineMode, EventOutcome, EventNarrationResponse, InterfaceColor, SavedStatusSnapshot, Perk } from './types';
 import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
@@ -1305,12 +1308,19 @@ const escapeHtml = (value: string) =>
 
 const escapeHtmlAttr = (value: string) => escapeHtml(value);
 
+const renderMarkdownToHtml = (text: string) =>
+  renderToStaticMarkup(
+    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+      {text}
+    </ReactMarkdown>
+  );
+
 const buildExportHtml = (history: HistoryEntry[], language: Language) => {
   const entries = history
     .filter(entry => entry.meta !== 'memory')
     .map(entry => {
       const label = formatExportLabel(entry.sender, language);
-      const text = escapeHtml(entry.text).replace(/\n/g, '<br />');
+      const text = renderMarkdownToHtml(entry.text);
       const image = entry.imageUrl
         ? `<div class="image"><img src="${escapeHtmlAttr(entry.imageUrl)}" alt="Scene" /></div>`
         : '';
@@ -1332,6 +1342,13 @@ const buildExportHtml = (history: HistoryEntry[], language: Language) => {
       .entry { margin-bottom: 24px; }
       .label { font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: #1a7f37; margin-bottom: 6px; }
       .text { font-size: 14px; line-height: 1.6; white-space: normal; }
+      .text h1, .text h2, .text h3 { margin: 0 0 10px; }
+      .text p { margin: 0 0 10px; }
+      .text ul, .text ol { margin: 0 0 10px 20px; padding: 0; }
+      .text blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 3px solid #ccc; color: #444; }
+      .text code { font-family: "Consolas", "Courier New", monospace; background: #f2f2f2; padding: 1px 4px; border-radius: 3px; }
+      .text pre { background: #f2f2f2; padding: 10px; border-radius: 4px; overflow-wrap: anywhere; }
+      .text pre code { background: transparent; padding: 0; }
       .image { margin-top: 10px; }
       .image img { max-width: 100%; height: auto; display: block; }
     </style>
@@ -1600,7 +1617,7 @@ const sanitizeStatusChangeForLlm = (change: EventOutcome & StatusChange) => {
     sanitized.newNpc = change.newNpc.map(stripAvatarUrl);
   }
   if (Array.isArray(change.knownNpcsUpdates)) {
-    sanitized.knownNpcsUpdates = change.knownNpcsUpdates.map(({ avatarUrl, inventory, perks, ...rest }) => rest);
+    sanitized.knownNpcsUpdates = change.knownNpcsUpdates.map(({ avatarUrl, ...rest }) => rest);
   }
   return sanitized;
 };
@@ -1772,13 +1789,11 @@ const applyKnownNpcUpdates = (list: Actor[], updates?: KnownNpcUpdate[]) => {
     const update = updatesByKey.get(key);
     if (!update) return npc;
     const {
-      inventory: _inventory,
-      perks: _perks,
       inventoryChange,
       perksAdd,
       perksRemove,
       ...rest
-    } = update as KnownNpcUpdate & { inventory?: InventoryItem[]; perks?: Perk[] };
+    } = update;
     const merged = mergeActor(npc, rest as Actor);
     const hasPerkDelta = Array.isArray(update.perksAdd) || Array.isArray(update.perksRemove);
     const nextPerks = hasPerkDelta
@@ -2171,7 +2186,7 @@ const App: React.FC = () => {
       .then(async (handle) => {
         if (!active || !handle) return;
         try {
-          const permission = await handle.queryPermission({ mode: 'readwrite' });
+          const permission = await (handle as any).queryPermission?.({ mode: 'readwrite' });
           if (permission === 'granted' && active) {
             setFsSaveHandle(handle);
           }
@@ -2687,6 +2702,37 @@ const App: React.FC = () => {
     });
   }, [gameState, currentUser, canManualSave, performSave]);
 
+  const buildExportHistoryForPdf = useCallback(async () => {
+    const history = gameState.history;
+    if (!history.length || !currentUser) return history;
+    const saveKey = getSaveKey(currentUser.username);
+    let imageIds: string[] = [];
+    try {
+      imageIds = await saveRepoRef.current.listImageIds(saveKey);
+    } catch {
+      return history;
+    }
+    if (!imageIds.length) return history;
+    const imageIndexSet = new Set<number>();
+    imageIds.forEach((imageId) => {
+      const index = parseImageIndex(imageId);
+      if (index !== null) {
+        imageIndexSet.add(index);
+      }
+    });
+    if (!imageIndexSet.size) return history;
+    const resolved = await Promise.all(history.map(async (entry, index) => {
+      if (entry.imageUrl || !imageIndexSet.has(index)) return entry;
+      try {
+        const url = await saveRepoRef.current.resolveImageUrl(saveKey, index);
+        return url ? { ...entry, imageUrl: url } : entry;
+      } catch {
+        return entry;
+      }
+    }));
+    return resolved;
+  }, [currentUser, gameState.history]);
+
   const exportData = (format: 'log-md' | 'log-pdf' | 'save-zip') => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     if (format === 'save-zip') {
@@ -2720,25 +2766,28 @@ const App: React.FC = () => {
       downloadTextFile(content, `fallout-terminal-${timestamp}.md`, 'text/markdown;charset=utf-8');
       return;
     }
-    const html = buildExportHtml(gameState.history, gameState.language);
-    const printWindow = window.open('', '_blank', 'width=900,height=700');
-    if (!printWindow) {
-      alert(isZh ? '无法打开导出窗口，请检查浏览器拦截。' : 'Unable to open export window. Please check popup settings.');
-      return;
-    }
-    printWindow.document.open();
-    printWindow.document.write(html);
-    printWindow.document.close();
-    const triggerPrint = () => {
-      printWindow.focus();
-      printWindow.print();
-    };
-    printWindow.addEventListener('load', () => {
-      setTimeout(triggerPrint, 200);
-    });
-    printWindow.onafterprint = () => {
-      printWindow.close();
-    };
+    (async () => {
+      const exportHistory = await buildExportHistoryForPdf();
+      const html = buildExportHtml(exportHistory, gameState.language);
+      const printWindow = window.open('', '_blank', 'width=900,height=700');
+      if (!printWindow) {
+        alert(isZh ? '无法打开导出窗口，请检查浏览器拦截。' : 'Unable to open export window. Please check popup settings.');
+        return;
+      }
+      printWindow.document.open();
+      printWindow.document.write(html);
+      printWindow.document.close();
+      const triggerPrint = () => {
+        printWindow.focus();
+        printWindow.print();
+      };
+      printWindow.addEventListener('load', () => {
+        setTimeout(triggerPrint, 200);
+      });
+      printWindow.onafterprint = () => {
+        printWindow.close();
+      };
+    })();
   };
 
   const exportArenaData = (format: 'log-md' | 'log-pdf') => {
@@ -2881,7 +2930,7 @@ const App: React.FC = () => {
         return;
       }
       const handle = await picker({ mode: 'readwrite' });
-      const permission = await handle.requestPermission({ mode: 'readwrite' });
+      const permission = await (handle as any).requestPermission?.({ mode: 'readwrite' });
       if (permission !== 'granted') {
         alert(isZh ? '未授予文件夹写入权限。' : 'Folder access was not granted.');
         return;
@@ -2940,7 +2989,7 @@ const App: React.FC = () => {
         return;
       }
       const handle = await picker({ mode: 'readwrite' });
-      const permission = await handle.requestPermission({ mode: 'readwrite' });
+      const permission = await (handle as any).requestPermission?.({ mode: 'readwrite' });
       if (permission !== 'granted') {
         alert(isZh ? '未授予文件夹写入权限。' : 'Folder access was not granted.');
         return;
@@ -2987,7 +3036,7 @@ const App: React.FC = () => {
       const parsedPlayer = parsed?.player ? normalizeActor(parsed.player) : null;
       const knownNpcNormalization = normalizeKnownNpcList(parsed?.knownNpcs);
       const parsedKnownNpcs = knownNpcNormalization.cleaned;
-      const rawStatusTrack = parsed?.status_track ?? parsed?.statusTrack;
+      const rawStatusTrack = parsed?.status_track ?? (parsed as any)?.statusTrack;
       const initialStatusPlayer = rawStatusTrack?.initial_status?.player
         ? normalizeActor(rawStatusTrack.initial_status.player)
         : null;
