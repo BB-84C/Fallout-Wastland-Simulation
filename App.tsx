@@ -5072,6 +5072,31 @@ const App: React.FC = () => {
     }
   };
 
+  const handleUpdateCompanionAppearance = useCallback((npcName: string, appearance: string) => {
+    const trimmed = appearance.trim();
+    setGameState(prev => {
+      const nextKnownNpcs = prev.knownNpcs.map(npc =>
+        npc.name === npcName ? { ...npc, appearance: trimmed } : npc
+      );
+      const nextStatusTrack = prev.status_track
+        ? {
+          ...prev.status_track,
+          initial_status: {
+            ...prev.status_track.initial_status,
+            knownNpcs: prev.status_track.initial_status.knownNpcs.map(npc =>
+              npc.name === npcName ? { ...npc, appearance: trimmed } : npc
+            )
+          }
+        }
+        : prev.status_track;
+      return {
+        ...prev,
+        knownNpcs: nextKnownNpcs,
+        status_track: nextStatusTrack
+      };
+    });
+  }, []);
+
   const cacheRawOutput = (err: unknown) => {
     const raw = getRawOutputFromError(err);
     if (!raw) return;
@@ -8025,6 +8050,7 @@ const App: React.FC = () => {
             statusRebuilding={isStatusRebuilding}
             canRebuildStatus={!!gameState.status_track && !gameState.isThinking}
             onRegenerateCompanionAvatar={handleRegenerateCompanionAvatar}
+            onUpdateCompanionAppearance={handleUpdateCompanionAppearance}
             companionAvatarPending={companionAvatarPending}
             canRegenerateCompanionAvatar={canRegenerateCompanionAvatar}
             onClose={() => setIsSidebarOpen(false)}

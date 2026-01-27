@@ -30,6 +30,7 @@ interface StatBarProps {
   statusRebuilding: boolean;
   canRebuildStatus: boolean;
   onRegenerateCompanionAvatar: (name: string) => void;
+  onUpdateCompanionAppearance: (name: string, appearance: string) => void;
   companionAvatarPending: Record<string, boolean>;
   canRegenerateCompanionAvatar: boolean;
   onClose: () => void;
@@ -120,6 +121,7 @@ const StatBar: React.FC<StatBarProps> = ({
   statusRebuilding,
   canRebuildStatus,
   onRegenerateCompanionAvatar,
+  onUpdateCompanionAppearance,
   companionAvatarPending,
   canRegenerateCompanionAvatar,
   onClose,
@@ -127,6 +129,8 @@ const StatBar: React.FC<StatBarProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<Tab>('STAT');
   const [expandedCompanion, setExpandedCompanion] = useState<string | null>(null);
+  const [editingCompanion, setEditingCompanion] = useState<string | null>(null);
+  const [appearanceDraft, setAppearanceDraft] = useState('');
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [openTooltipId, setOpenTooltipId] = useState<string | null>(null);
   const isInventoryTab = activeTab === 'INV';
@@ -139,6 +143,7 @@ const StatBar: React.FC<StatBarProps> = ({
 
   useEffect(() => {
     setOpenTooltipId(null);
+    setEditingCompanion(null);
   }, [activeTab]);
 
   const dateStr = new Date(time).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
@@ -154,6 +159,17 @@ const StatBar: React.FC<StatBarProps> = ({
   const apRecoveryLabel = apRecoveryMinutes % 60 === 0
     ? `${apRecoveryMinutes / 60} hr`
     : `${apRecoveryMinutes} min`;
+  const startEditAppearance = (companion: Actor) => {
+    setEditingCompanion(companion.name);
+    setAppearanceDraft(companion.appearance || '');
+  };
+  const cancelEditAppearance = () => {
+    setEditingCompanion(null);
+  };
+  const saveAppearance = (name: string) => {
+    onUpdateCompanionAppearance(name, appearanceDraft);
+    setEditingCompanion(null);
+  };
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -323,10 +339,46 @@ const StatBar: React.FC<StatBarProps> = ({
                         <div className="opacity-80 leading-tight">{companion.lore}</div>
                       </div>
                       <div>
-                        <div className="text-[0.625rem] uppercase opacity-60 mb-1">{language === 'en' ? 'Appearance' : '外貌'}</div>
-                        <div className="opacity-80 leading-tight">
-                          {companion.appearance ? companion.appearance : (language === 'en' ? 'Unknown' : '未知')}
+                        <div className="flex items-center justify-between text-[0.625rem] uppercase opacity-60 mb-1">
+                          <span>{language === 'en' ? 'Appearance' : '外貌'}</span>
+                          <button
+                            type="button"
+                            onClick={() => startEditAppearance(companion)}
+                            className="border border-[color:rgba(var(--pip-color-rgb),0.4)] px-2 py-0.5 text-[0.5625rem] uppercase hover:bg-[color:rgba(var(--pip-color-rgb),0.2)] transition-colors"
+                          >
+                            {language === 'en' ? 'Edit' : '编辑'}
+                          </button>
                         </div>
+                        {editingCompanion === companion.name ? (
+                          <div className="space-y-2">
+                            <textarea
+                              value={appearanceDraft}
+                              onChange={(event) => setAppearanceDraft(event.target.value)}
+                              rows={3}
+                              className="w-full border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/60 p-2 text-[0.6875rem] text-[color:var(--pip-color)] focus:outline-none"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => saveAppearance(companion.name)}
+                                className="border border-[color:rgba(var(--pip-color-rgb),0.6)] px-2 py-1 text-[0.5625rem] uppercase hover:bg-[color:rgba(var(--pip-color-rgb),0.25)] transition-colors"
+                              >
+                                {language === 'en' ? 'Save' : '保存'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={cancelEditAppearance}
+                                className="border border-[color:rgba(var(--pip-color-rgb),0.4)] px-2 py-1 text-[0.5625rem] uppercase hover:bg-[color:rgba(var(--pip-color-rgb),0.15)] transition-colors"
+                              >
+                                {language === 'en' ? 'Cancel' : '取消'}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="opacity-80 leading-tight">
+                            {companion.appearance ? companion.appearance : (language === 'en' ? 'Unknown' : '未知')}
+                          </div>
+                        )}
                       </div>
                       <div>
                         <div className="text-[0.625rem] uppercase opacity-60 mb-1">SPECIAL</div>
