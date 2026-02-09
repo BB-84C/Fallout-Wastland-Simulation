@@ -170,6 +170,17 @@ const persistUserProxyKey = (
 };
 
 const normalizeProxyBaseUrl = (value: string) => value.trim().replace(/\/+$/, '');
+const isRootProxyUrlWithoutApiPath = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  try {
+    const parsed = new URL(trimmed);
+    const normalizedPath = parsed.pathname.replace(/\/+$/, '');
+    return normalizedPath.length === 0;
+  } catch {
+    return false;
+  }
+};
 const clampNumber = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const DEFAULT_INTERFACE_COLOR: InterfaceColor = DEFAULT_SETTINGS.interfaceColor ?? { r: 26, g: 255, b: 26 };
 const buildSavedSnapshot = (state: GameState): SavedStatusSnapshot => ({
@@ -288,12 +299,27 @@ const isLikelyJsonParseError = (detail: string) => {
   );
 };
 
+const isProxyConvertRequestError = (detail: string) => {
+  const normalized = detail.toLowerCase();
+  return normalized.includes('convert_request_failed')
+    || (normalized.includes('new_api_error') && normalized.includes('not implemented'));
+};
+
 const appendJsonParseGuidance = (detail: string, isZh: boolean) => {
-  if (!isLikelyJsonParseError(detail)) return detail;
-  const guidance = isZh
-    ? '请打开设置，查看「原始输出缓存」中的信息，如果有正常的文字对话，但是明显末尾处一句话没说完就结束了，并且没有以任何"]"或者“}” 作为结尾。那就说明这通常是设备与模型提供方的连接中断导致（例如外出乘车使用了手机流量数据、启用的 VPN连接不稳定，或当前网络不稳定）。'
-    : 'Please open Settings and check the information in the "Raw Output Cache." If you see normal text dialogue but notice that a sentence abruptly ends without finishing, and there is no closing "]" or "}" character, this typically indicates a connection interruption between the device and the model provider. This can occur due to factors such as using mobile data while commuting, an unstable VPN connection, or poor network conditions.';
-  return `${detail}\n${guidance}`;
+  let enriched = detail;
+  if (isLikelyJsonParseError(detail)) {
+    const guidance = isZh
+      ? '请打开设置，查看「原始输出缓存」中的信息，如果有正常的文字对话，但是明显末尾处一句话没说完就结束了，并且没有以任何"]"或者“}” 作为结尾。那就说明这通常是设备与模型提供方的连接中断导致（例如外出乘车使用了手机流量数据、启用的 VPN连接不稳定，或当前网络不稳定）。'
+      : 'Please open Settings and check the information in the "Raw Output Cache." If you see normal text dialogue but notice that a sentence abruptly ends without finishing, and there is no closing "]" or "}" character, this typically indicates a connection interruption between the device and the model provider. This can occur due to factors such as using mobile data while commuting, an unstable VPN connection, or poor network conditions.';
+    enriched = `${enriched}\n${guidance}`;
+  }
+  if (isProxyConvertRequestError(detail)) {
+    const guidance = isZh
+      ? '中转站返回了 convert_request_failed，这表示该中转站无法把当前请求转换为上游模型所需协议。请在中转站后台切换到支持该协议的渠道/模型，或在本应用中更换提供商与模型配置。'
+      : 'The proxy returned convert_request_failed, which means it cannot translate this request to the upstream model protocol. Switch to a compatible channel/model in your proxy, or change provider/model settings in this app.';
+    enriched = `${enriched}\n${guidance}`;
+  }
+  return enriched;
 };
 
 const buildSaveQuotaMessage = (isZh: boolean) =>
@@ -1963,12 +1989,16 @@ const App: React.FC = () => {
   const hasTextProxyKey = !!currentUser?.textProxyKey;
   const hasImageProxyKey = !!currentUser?.imageProxyKey;
   const useProxy = isNormal && !!gameState.settings.useProxy;
+  const textProxyInputValue = gameState.settings.textProxyBaseUrl || gameState.settings.proxyBaseUrl || '';
+  const imageProxyInputValue = gameState.settings.imageProxyBaseUrl || gameState.settings.proxyBaseUrl || '';
   const textProxyBaseUrl = normalizeProxyBaseUrl(
-    gameState.settings.textProxyBaseUrl || gameState.settings.proxyBaseUrl || ''
+    textProxyInputValue
   );
   const imageProxyBaseUrl = normalizeProxyBaseUrl(
-    gameState.settings.imageProxyBaseUrl || gameState.settings.proxyBaseUrl || ''
+    imageProxyInputValue
   );
+  const textProxyMissingApiPath = useProxy && isRootProxyUrlWithoutApiPath(textProxyInputValue);
+  const imageProxyMissingApiPath = useProxy && isRootProxyUrlWithoutApiPath(imageProxyInputValue);
   const hasTextAuthKey = useProxy ? hasTextProxyKey : hasTextUserKey;
   const hasImageAuthKey = useProxy ? hasImageProxyKey : hasImageUserKey;
   const normalKeyUnlocked = isNormal && hasTextAuthKey;
@@ -5384,7 +5414,31 @@ const App: React.FC = () => {
 
   const updateTextProxyBaseUrl = (value: string) => {
     if (!isNormal) return;
-    const normalized = normalizeProxyBaseUrl(value);
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        textProxyBaseUrl: value
+      }
+    }));
+  };
+
+  const updateImageProxyBaseUrl = (value: string) => {
+    if (!isNormal) return;
+    setGameState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        imageProxyBaseUrl: value
+      }
+    }));
+  };
+
+  const commitTextProxyBaseUrl = () => {
+    if (!isNormal) return;
+    const normalized = normalizeProxyBaseUrl(
+      gameState.settings.textProxyBaseUrl || gameState.settings.proxyBaseUrl || ''
+    );
     setGameState(prev => ({
       ...prev,
       settings: {
@@ -5394,9 +5448,11 @@ const App: React.FC = () => {
     }));
   };
 
-  const updateImageProxyBaseUrl = (value: string) => {
+  const commitImageProxyBaseUrl = () => {
     if (!isNormal) return;
-    const normalized = normalizeProxyBaseUrl(value);
+    const normalized = normalizeProxyBaseUrl(
+      gameState.settings.imageProxyBaseUrl || gameState.settings.proxyBaseUrl || ''
+    );
     setGameState(prev => ({
       ...prev,
       settings: {
@@ -6305,11 +6361,19 @@ const App: React.FC = () => {
                       </div>
                       <input
                         type="text"
-                        value={gameState.settings.textProxyBaseUrl || gameState.settings.proxyBaseUrl || ''}
+                        value={textProxyInputValue}
                         onChange={(e) => updateTextProxyBaseUrl(e.target.value)}
+                        onBlur={commitTextProxyBaseUrl}
                         className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                         placeholder="https://example.com/v1"
                       />
+                      {textProxyMissingApiPath && (
+                        <div className="text-[10px] text-yellow-300 mt-1">
+                          {isZh
+                            ? '该 URL 未包含 API 路径。OpenAI 兼容中转站通常使用 /v1；其他提供商可能需要不同路径。'
+                            : 'This URL has no API path. For OpenAI-compatible proxies, use /v1; other providers may require provider-specific paths.'}
+                        </div>
+                      )}
                     </div>
                     <div>
                       <div className="text-[11px] uppercase opacity-70">
@@ -6317,11 +6381,19 @@ const App: React.FC = () => {
                       </div>
                       <input
                         type="text"
-                        value={gameState.settings.imageProxyBaseUrl || gameState.settings.proxyBaseUrl || ''}
+                        value={imageProxyInputValue}
                         onChange={(e) => updateImageProxyBaseUrl(e.target.value)}
+                        onBlur={commitImageProxyBaseUrl}
                         className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                         placeholder="https://example.com/v1"
                       />
+                      {imageProxyMissingApiPath && (
+                        <div className="text-[10px] text-yellow-300 mt-1">
+                          {isZh
+                            ? '该 URL 未包含 API 路径。OpenAI 兼容中转站通常使用 /v1；其他提供商可能需要不同路径。'
+                            : 'This URL has no API path. For OpenAI-compatible proxies, use /v1; other providers may require provider-specific paths.'}
+                        </div>
+                      )}
                     </div>
                     <div>
                       <div className="text-[11px] uppercase opacity-70">
