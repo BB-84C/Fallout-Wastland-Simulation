@@ -3555,7 +3555,7 @@ const App: React.FC = () => {
       const imagePromise = allowImages
         ? generateSceneImage(
           `The ${gameState.location} landscape during the year ${gameState.currentYear}, Fallout universe aesthetic`,
-          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl: imageProxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel, imageUserSystemPrompt: gameState.settings.imageUserSystemPrompt }
+          { highQuality: gameState.settings.highQualityImages, tier: activeTier, apiKey: currentUser?.imageApiKey, proxyApiKey: currentUser?.imageProxyKey, proxyBaseUrl: imageProxyBaseUrl, textProxyBaseUrl: textProxyBaseUrl, useProxy, imageModel: effectiveImageModel, provider: imageProvider, textProvider, textApiKey: currentUser?.textApiKey, textProxyApiKey: currentUser?.textProxyKey, textModel: effectiveTextModel, imageUserSystemPrompt: gameState.settings.imageUserSystemPrompt }
         )
         : Promise.resolve(undefined);
       const [imgData, avatarResults] = await Promise.all([imagePromise, avatarPromise]);
@@ -3864,6 +3864,7 @@ const App: React.FC = () => {
             apiKey: currentUser?.imageApiKey,
             proxyApiKey: currentUser?.imageProxyKey,
             proxyBaseUrl: imageProxyBaseUrl,
+            textProxyBaseUrl: textProxyBaseUrl,
             useProxy,
             imageModel: effectiveImageModel,
             provider: imageProvider,
@@ -3890,6 +3891,7 @@ const App: React.FC = () => {
               apiKey: currentUser?.imageApiKey,
               proxyApiKey: currentUser?.imageProxyKey,
               proxyBaseUrl: imageProxyBaseUrl,
+              textProxyBaseUrl: textProxyBaseUrl,
               useProxy,
               imageModel: effectiveImageModel,
               provider: imageProvider,
@@ -4316,6 +4318,7 @@ const App: React.FC = () => {
             apiKey: currentUser?.imageApiKey,
             proxyApiKey: currentUser?.imageProxyKey,
             proxyBaseUrl: imageProxyBaseUrlAction,
+            textProxyBaseUrl: textProxyBaseUrlAction,
             useProxy: useProxyAction,
             imageModel: effectiveImageModel,
             provider: imageProviderAction,
@@ -4499,6 +4502,7 @@ const App: React.FC = () => {
           apiKey: currentUser?.imageApiKey,
           proxyApiKey: currentUser?.imageProxyKey,
           proxyBaseUrl: imageProxyBaseUrlAction,
+          textProxyBaseUrl: textProxyBaseUrlAction,
           useProxy: useProxyAction,
           imageModel: effectiveImageModel,
           provider: imageProviderAction,

@@ -627,11 +627,13 @@ const jsonKnownNpcUpdateSchema: JsonSchema = {
     special: {
       type: "object",
       properties: specialJsonProperties,
+      required: Object.values(SpecialAttr),
       additionalProperties: false
     },
     skills: {
       type: "object",
       properties: skillsJsonProperties,
+      required: Object.values(Skill),
       additionalProperties: false
     },
     inventoryChange: jsonInventoryChangeSchema,
@@ -646,7 +648,23 @@ const jsonKnownNpcUpdateSchema: JsonSchema = {
       }
     }
   },
-  required: ["name"],
+  required: [
+    "name",
+    "appearance",
+    "lore",
+    "age",
+    "gender",
+    "faction",
+    "health",
+    "maxHealth",
+    "karma",
+    "caps",
+    "special",
+    "skills",
+    "inventoryChange",
+    "perksAdd",
+    "perksRemove"
+  ],
   additionalProperties: false
 };
 
@@ -1883,9 +1901,6 @@ const generateOpenAiImage = async (
   provider: ModelProvider
 ) => {
   const requestLabel = getOpenAiLabel(provider);
-  if (provider === "openai" && !/^(gpt-image-|dall-e-)/i.test(model)) {
-    throw new Error(`${requestLabel} image model "${model}" is not supported. Use gpt-image-1 or a DALL·E model.`);
-  }
   const effectivePrompt = provider === "grok"
     ? clampImagePrompt(prompt, 1024)
     : prompt;
@@ -3078,6 +3093,7 @@ export async function generateArenaAvatar(
     apiKey?: string;
     proxyApiKey?: string;
     proxyBaseUrl?: string;
+    textProxyBaseUrl?: string;
     useProxy?: boolean;
     imageModel?: ImageModelId;
     textModel?: TextModelId;
@@ -3092,6 +3108,7 @@ export async function generateArenaAvatar(
   const researchProvider = normalizeProvider(options?.textProvider || options?.provider);
   const useProxy = !!options?.useProxy;
   const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+  const researchProxyBaseUrl = normalizeBaseUrl(options?.textProxyBaseUrl || options?.proxyBaseUrl);
   if (useProxy && !proxyBaseUrl) {
     return { error: "Missing proxy base URL." };
   }
@@ -3119,7 +3136,7 @@ export async function generateArenaAvatar(
       try {
         const researchAi = new GoogleGenAI({
           apiKey: researchApiKey,
-          ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+          ...(researchProxyBaseUrl ? { httpOptions: { baseUrl: researchProxyBaseUrl } } : {})
         });
         const researchResponse = await researchAi.models.generateContent({
           model: textModel,
@@ -3139,7 +3156,7 @@ export async function generateArenaAvatar(
       }
     } else if (researchProvider === "grok" && researchApiKey) {
       try {
-        const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? proxyBaseUrl : undefined);
+        const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
         const researchResponse = await callGrokWebSearch(
           researchApiKey,
           researchBaseUrl,
@@ -3159,7 +3176,7 @@ export async function generateArenaAvatar(
       }
     } else if (researchProvider === "openai" && researchApiKey) {
       try {
-        const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? proxyBaseUrl : undefined);
+        const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
         const researchResponse = await callOpenAiWebSearch(
           researchApiKey,
           researchBaseUrl,
@@ -3231,7 +3248,7 @@ export async function generateArenaAvatar(
 
 export async function generateSceneImage(
   prompt: string,
-  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider; textProvider?: ModelProvider; textApiKey?: string; textProxyApiKey?: string; imageUserSystemPrompt?: string }
+  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; textProxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider; textProvider?: ModelProvider; textApiKey?: string; textProxyApiKey?: string; imageUserSystemPrompt?: string }
 ): Promise<{ url?: string; sources?: GroundingSource[]; error?: string } | undefined> {
   const imageProvider = normalizeProvider(options?.provider);
   const researchProvider = normalizeProvider(options?.textProvider || options?.provider);
@@ -3252,6 +3269,7 @@ export async function generateSceneImage(
       });
     }
     const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
+    const researchProxyBaseUrl = normalizeBaseUrl(options?.textProxyBaseUrl || options?.proxyBaseUrl);
     if (useProxy && !proxyBaseUrl) {
       return { error: "Missing proxy base URL." };
     }
@@ -3272,7 +3290,7 @@ export async function generateSceneImage(
         if (researchProvider === "gemini") {
           const researchAi = new GoogleGenAI({
             apiKey: researchApiKey,
-            ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
+            ...(researchProxyBaseUrl ? { httpOptions: { baseUrl: researchProxyBaseUrl } } : {})
           });
           try {
             const researchResponse = await researchAi.models.generateContent({
@@ -3300,7 +3318,7 @@ export async function generateSceneImage(
           }
         } else if (researchProvider === "grok") {
           try {
-            const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? proxyBaseUrl : undefined);
+            const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
             const researchResponse = await callGrokWebSearch(
               researchApiKey,
               researchBaseUrl,
@@ -3322,7 +3340,7 @@ export async function generateSceneImage(
           }
         } else if (researchProvider === "openai") {
           try {
-            const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? proxyBaseUrl : undefined);
+            const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
             const researchResponse = await callOpenAiWebSearch(
               researchApiKey,
               researchBaseUrl,
@@ -3377,6 +3395,7 @@ export async function generateSceneImage(
   }
 
   const baseUrl = resolveBaseUrl(imageProvider, useProxy ? options?.proxyBaseUrl : undefined);
+  const researchProxyBaseUrl = normalizeBaseUrl(options?.textProxyBaseUrl || options?.proxyBaseUrl);
   if (useProxy && !baseUrl) {
     return { error: "Missing proxy base URL." };
   }
@@ -3397,7 +3416,7 @@ export async function generateSceneImage(
         try {
           const researchAi = new GoogleGenAI({
             apiKey: researchApiKey,
-            ...(useProxy && baseUrl ? { httpOptions: { baseUrl } } : {})
+            ...(useProxy && researchProxyBaseUrl ? { httpOptions: { baseUrl: researchProxyBaseUrl } } : {})
           });
           const researchResponse = await researchAi.models.generateContent({
             model: options.textModel,
@@ -3424,7 +3443,7 @@ export async function generateSceneImage(
         }
       } else if (researchProvider === "grok") {
         try {
-          const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? options?.proxyBaseUrl : undefined);
+          const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
           const researchResponse = await callGrokWebSearch(
             researchApiKey,
             researchBaseUrl,
@@ -3446,7 +3465,7 @@ export async function generateSceneImage(
         }
       } else if (researchProvider === "openai") {
         try {
-          const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? options?.proxyBaseUrl : undefined);
+          const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
           const researchResponse = await callOpenAiWebSearch(
             researchApiKey,
             researchBaseUrl,
