@@ -1008,6 +1008,36 @@ const buildEventOutcomeHistory = (
   return entries;
 };
 
+const upsertStreamingNarratorEntry = (history: HistoryEntry[], text: string): HistoryEntry[] => {
+  const storyText = text || '';
+  if (!storyText.trim() && history.length === 0) {
+    return history;
+  }
+  const lastEntry = history[history.length - 1];
+  if (
+    lastEntry?.sender === 'narrator'
+    && lastEntry?.meta !== 'memory'
+    && !lastEntry?.groundingSources
+  ) {
+    return [
+      ...history.slice(0, -1),
+      {
+        ...lastEntry,
+        text: storyText,
+        isSaved: false
+      }
+    ];
+  }
+  return [
+    ...history,
+    {
+      sender: 'narrator',
+      text: storyText,
+      isSaved: false
+    }
+  ];
+};
+
 const hasMeaningfulNumber = (value: unknown) =>
   typeof value === 'number' && Number.isFinite(value) && value !== 0;
 
@@ -4125,6 +4155,16 @@ const App: React.FC = () => {
       tokenUsage: tokenUsageBase
     });
 
+    const onNarrationStream = (text: string) => {
+      setGameState(prev => {
+        if (!prev.isThinking) return prev;
+        return {
+          ...prev,
+          history: upsertStreamingNarratorEntry(prev.history, text)
+        };
+      });
+    };
+
     try {
       if (useEventPipelineAction) {
         let eventOutcome: EventOutcome | null = null;
@@ -4302,7 +4342,8 @@ const App: React.FC = () => {
             useProxy: useProxyAction,
             textModel: effectiveTextModel,
             provider: textProviderAction,
-            userSystemPrompt: actionSettings.userSystemPrompt
+            userSystemPrompt: actionSettings.userSystemPrompt,
+            onNarrationStream
           }
         );
         const narratorTokenUsage = narrationResponse.tokenUsage;
@@ -4467,7 +4508,8 @@ const App: React.FC = () => {
           useProxy: useProxyAction,
           textModel: effectiveTextModel,
           provider: textProviderAction,
-          userSystemPrompt: actionSettings.userSystemPrompt
+          userSystemPrompt: actionSettings.userSystemPrompt,
+          onNarrationStream
         }
       );
 

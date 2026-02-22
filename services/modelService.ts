@@ -53,6 +53,439 @@ const normalizeTokenUsage = (
   };
 };
 
+type JsonCallRuntimeOptions = {
+  onNarrationStream?: (text: string) => void;
+};
+
+type SseEvent = {
+  event: string;
+  data: string;
+};
+
+type StreamedJsonResult = {
+  content: string;
+  tokenUsage: TokenUsage;
+};
+
+const GEMINI_CACHE_TTL_SECONDS = 600;
+const GEMINI_CACHE_TTL = `${GEMINI_CACHE_TTL_SECONDS}s`;
+const GEMINI_CACHE_MIN_TOTAL_TOKENS = 1024;
+
+type GeminiCacheRecord = {
+  name: string;
+  expiresAtMs: number;
+};
+
+const geminiCacheRecords = new Map<string, GeminiCacheRecord>();
+const geminiCacheInflight = new Map<string, Promise<string | null>>();
+const geminiCacheUnsupportedModels = new Set<string>();
+const geminiCacheTooSmallKeys = new Set<string>();
+
+const isGeminiCacheTooSmallError = (message: string) => {
+  const lower = message.toLowerCase();
+  return lower.includes("too small") || lower.includes("min_total_token_count");
+};
+
+const isGeminiCacheUnsupportedError = (message: string) => {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("unsupported")
+    || lower.includes("not support")
+    || lower.includes("does not support")
+  );
+};
+
+const hashString = (value: string) => {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+};
+
+const buildOpenAiPromptCacheKey = (
+  model: string,
+  schemaName: string,
+  system: string,
+  providerLabel: string
+) => {
+  const keyBase = `${providerLabel}|${model}|${schemaName}|${system}`;
+  return `fallout-${hashString(keyBase)}`;
+};
+
+const tryParseJson = (value: string): any | null => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const consumeSse = async (
+  stream: ReadableStream<Uint8Array> | null,
+  onEvent: (event: SseEvent) => void
+) => {
+  if (!stream) {
+    return;
+  }
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const flushChunk = (chunk: string) => {
+    if (!chunk.trim()) return;
+    const lines = chunk.replace(/\r/g, "").split("\n");
+    let eventName = "message";
+    const dataParts: string[] = [];
+    lines.forEach((line) => {
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataParts.push(line.slice(5).trimStart());
+      }
+    });
+    if (!dataParts.length) return;
+    onEvent({ event: eventName, data: dataParts.join("\n") });
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    while (true) {
+      const boundary = buffer.indexOf("\n\n");
+      if (boundary === -1) break;
+      const chunk = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      flushChunk(chunk);
+    }
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    flushChunk(buffer);
+  }
+};
+
+const extractStoryTextFromPartialJson = (raw: string): string | null => {
+  const keyIndex = raw.indexOf('"storyText"');
+  if (keyIndex < 0) return null;
+  const colonIndex = raw.indexOf(":", keyIndex);
+  if (colonIndex < 0) return null;
+
+  let i = colonIndex + 1;
+  while (i < raw.length && /\s/.test(raw[i])) {
+    i += 1;
+  }
+  if (i >= raw.length || raw[i] !== '"') {
+    return null;
+  }
+
+  i += 1;
+  let result = "";
+  let escaping = false;
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (escaping) {
+      switch (ch) {
+        case '"':
+          result += '"';
+          break;
+        case "\\":
+          result += "\\";
+          break;
+        case "/":
+          result += "/";
+          break;
+        case "b":
+          result += "\b";
+          break;
+        case "f":
+          result += "\f";
+          break;
+        case "n":
+          result += "\n";
+          break;
+        case "r":
+          result += "\r";
+          break;
+        case "t":
+          result += "\t";
+          break;
+        case "u": {
+          const code = raw.slice(i + 1, i + 5);
+          if (/^[0-9a-fA-F]{4}$/.test(code)) {
+            result += String.fromCharCode(parseInt(code, 16));
+            i += 4;
+          }
+          break;
+        }
+        default:
+          result += ch;
+      }
+      escaping = false;
+      i += 1;
+      continue;
+    }
+    if (ch === "\\") {
+      escaping = true;
+      i += 1;
+      continue;
+    }
+    if (ch === '"') {
+      return result;
+    }
+    result += ch;
+    i += 1;
+  }
+
+  return result;
+};
+
+const createNarrationStreamAccumulator = (onNarrationStream?: (text: string) => void) => {
+  let raw = "";
+  let last = "";
+
+  const emit = (next: string | null | undefined) => {
+    if (typeof next !== "string") return;
+    if (next === last) return;
+    last = next;
+    onNarrationStream?.(next);
+  };
+
+  return {
+    append(delta: string) {
+      if (!onNarrationStream || !delta) return;
+      raw += delta;
+      emit(extractStoryTextFromPartialJson(raw));
+    },
+    finalize(content: string) {
+      if (!onNarrationStream) return;
+      const parsed = tryParseJson(content);
+      const parsedStory = parsed && typeof parsed.storyText === "string" ? parsed.storyText : null;
+      emit(parsedStory ?? extractStoryTextFromPartialJson(content) ?? last);
+    }
+  };
+};
+
+const shouldRetryWithoutPromptCache = (text: string) => {
+  const lower = text.toLowerCase();
+  return lower.includes("prompt_cache") || lower.includes("prompt cache");
+};
+
+const buildRequestFailedMessage = (requestLabel: string, status: number, errorText: string) => (
+  errorText
+    ? `${requestLabel} request failed (HTTP ${status}): ${errorText}`
+    : `${requestLabel} request failed (HTTP ${status}).`
+);
+
+const isStreamUnsupportedError = (status: number, errorText: string) => (
+  status === 400
+  || status === 404
+  || status === 405
+  || errorText.toLowerCase().includes("stream")
+);
+
+const fetchWithPromptCacheRetry = async (
+  send: (allowPromptCache: boolean) => Promise<Response>,
+  enablePromptCache: boolean
+) => {
+  let allowPromptCache = true;
+  let res = await send(allowPromptCache);
+  let errorText = "";
+  if (!res.ok) {
+    errorText = await res.text();
+    if (enablePromptCache && shouldRetryWithoutPromptCache(errorText)) {
+      allowPromptCache = false;
+      res = await send(allowPromptCache);
+      if (!res.ok) {
+        errorText = await res.text();
+      } else {
+        errorText = "";
+      }
+    }
+  }
+  return { res, allowPromptCache, errorText };
+};
+
+const fetchStreamWithPromptCacheRetry = async (
+  send: (allowPromptCache: boolean) => Promise<Response>,
+  enablePromptCache: boolean
+) => {
+  let res = await send(true);
+  let errorText = "";
+  if (!res.ok) {
+    errorText = await res.text();
+    if (enablePromptCache && shouldRetryWithoutPromptCache(errorText)) {
+      res = await send(false);
+      if (!res.ok) {
+        errorText = await res.text();
+      } else {
+        errorText = "";
+      }
+    }
+  }
+  return { res, errorText };
+};
+
+const buildGeminiCacheKey = (
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  systemInstruction: string
+) => `${apiKey.slice(-12)}|${baseUrl || "default"}|${model}|${hashString(systemInstruction)}`;
+
+const getGeminiCachedContentName = async (
+  ai: GoogleGenAI,
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  systemInstruction: string
+): Promise<string | null> => {
+  if (geminiCacheUnsupportedModels.has(model)) {
+    return null;
+  }
+
+  const cacheKey = buildGeminiCacheKey(apiKey, baseUrl, model, systemInstruction);
+  if (geminiCacheTooSmallKeys.has(cacheKey)) {
+    return null;
+  }
+  if (estimateTokens(systemInstruction) < GEMINI_CACHE_MIN_TOTAL_TOKENS) {
+    geminiCacheTooSmallKeys.add(cacheKey);
+    return null;
+  }
+  const now = Date.now();
+  const existing = geminiCacheRecords.get(cacheKey);
+  if (existing && existing.expiresAtMs > now) {
+    return existing.name;
+  }
+
+  const inFlight = geminiCacheInflight.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const createPromise = (async () => {
+    try {
+      const created = await ai.caches.create({
+        model,
+        config: {
+          systemInstruction,
+          ttl: GEMINI_CACHE_TTL,
+          displayName: `fallout-${hashString(cacheKey).slice(0, 10)}`
+        }
+      });
+      const name = typeof created?.name === "string" ? created.name : "";
+      if (!name) {
+        return null;
+      }
+      const expiresAtMs = created?.expireTime
+        ? Date.parse(created.expireTime)
+        : now + GEMINI_CACHE_TTL_SECONDS * 1000;
+      geminiCacheRecords.set(cacheKey, {
+        name,
+        expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : now + GEMINI_CACHE_TTL_SECONDS * 1000
+      });
+      return name;
+    } catch (error) {
+      const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+      if (isGeminiCacheTooSmallError(message)) {
+        geminiCacheTooSmallKeys.add(cacheKey);
+        return null;
+      }
+      if (isGeminiCacheUnsupportedError(message)) {
+        geminiCacheUnsupportedModels.add(model);
+        return null;
+      }
+      return null;
+    } finally {
+      geminiCacheInflight.delete(cacheKey);
+    }
+  })();
+
+  geminiCacheInflight.set(cacheKey, createPromise);
+  return createPromise;
+};
+
+const callGeminiJsonWithCache = async (
+  ai: GoogleGenAI,
+  params: {
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    prompt: string;
+    systemInstruction: string;
+    responseSchema: any;
+    onNarrationStream?: (text: string) => void;
+  }
+): Promise<{ text: string; usageMetadata?: any }> => {
+  const { apiKey, baseUrl, model, prompt, systemInstruction, responseSchema, onNarrationStream } = params;
+  const narrationStream = createNarrationStreamAccumulator(onNarrationStream);
+
+  const run = async (allowCachedContent: boolean) => {
+    const config: Record<string, any> = {
+      responseMimeType: "application/json",
+      responseSchema
+    };
+
+    if (allowCachedContent) {
+      const cachedContent = await getGeminiCachedContentName(ai, apiKey, baseUrl, model, systemInstruction);
+      if (cachedContent) {
+        config.cachedContent = cachedContent;
+      } else {
+        config.systemInstruction = systemInstruction;
+      }
+    } else {
+      config.systemInstruction = systemInstruction;
+    }
+
+    if (onNarrationStream) {
+      const stream = await ai.models.generateContentStream({
+        model,
+        contents: prompt,
+        config
+      });
+      let responseText = "";
+      let usageMetadata: any;
+      for await (const chunk of stream) {
+        if (typeof chunk?.text === "string" && chunk.text) {
+          responseText += chunk.text;
+          narrationStream.append(chunk.text);
+        }
+        if (chunk?.usageMetadata) {
+          usageMetadata = chunk.usageMetadata;
+        }
+      }
+      if (!responseText) {
+        throw new Error("Connection to the Wasteland lost.");
+      }
+      narrationStream.finalize(responseText);
+      return { text: responseText, usageMetadata };
+    }
+
+    const response = await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config
+    });
+    if (!response.text) {
+      throw new Error("Connection to the Wasteland lost.");
+    }
+    return { text: response.text, usageMetadata: response.usageMetadata };
+  };
+
+  try {
+    return await run(true);
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    if (!message.includes("cache") && !message.includes("cached")) {
+      throw error;
+    }
+    return run(false);
+  }
+};
+
 const actorSchemaHint = `Return JSON with keys:
 name, age, gender, faction, appearance, special, skills, perks, inventory, lore, health, maxHealth, karma, caps, ifCompanion (optional), avatarUrl (optional).
 Perks must include name, rank, and a non-empty description.
@@ -1579,9 +2012,12 @@ const callOpenAiJson = async (
   prompt: string,
   schema?: JsonSchema,
   schemaName = "response",
-  providerLabel = "OpenAI"
+  providerLabel = "OpenAI",
+  runtimeOptions?: JsonCallRuntimeOptions
 ) => {
   const requestLabel = providerLabel || "OpenAI";
+  const enablePromptCache = requestLabel === "OpenAI";
+  const narrationStream = createNarrationStreamAccumulator(runtimeOptions?.onNarrationStream);
   const responseFormatChat = schema
     ? { type: "json_schema", json_schema: { name: schemaName, schema, strict: true } }
     : { type: "json_object" };
@@ -1594,7 +2030,7 @@ const callOpenAiJson = async (
   };
   const isResponsesOnlyModel = /^gpt-5/i.test(model);
   const includeReasoning = requestLabel !== "Grok";
-  const buildResponsesBody = (formatOverride?: any) => {
+  const buildResponsesBody = (formatOverride?: any, stream = false, allowPromptCache = true) => {
     const body: Record<string, any> = {
       model,
       instructions: system,
@@ -1603,8 +2039,15 @@ const callOpenAiJson = async (
       ],
       text: { format: formatOverride ?? responseFormatResponses }
     };
+    if (stream) {
+      body.stream = true;
+    }
     if (includeReasoning) {
       body.reasoning = { effort: "low" };
+    }
+    if (enablePromptCache && allowPromptCache) {
+      body.prompt_cache_retention = "in_memory";
+      body.prompt_cache_key = buildOpenAiPromptCacheKey(model, schemaName, system, requestLabel);
     }
     return body;
   };
@@ -1632,11 +2075,124 @@ const callOpenAiJson = async (
     }
     return text;
   };
-  let res = await fetch(`${baseUrl}/responses`, {
-    method: "POST",
-    headers: baseHeaders,
-    body: JSON.stringify(buildResponsesBody())
-  });
+
+  const parseResponsesStream = async (res: Response): Promise<StreamedJsonResult> => {
+    let content = "";
+    let usage: any;
+    let completedResponsePayload: any = null;
+
+    await consumeSse(res.body, ({ event, data }) => {
+      if (!data || data === "[DONE]") {
+        return;
+      }
+      const payload = tryParseJson(data);
+      if (!payload || typeof payload !== "object") {
+        return;
+      }
+      const eventType = typeof payload.type === "string" ? payload.type : event;
+
+      if (eventType === "response.output_text.delta" && typeof payload.delta === "string") {
+        content += payload.delta;
+        narrationStream.append(payload.delta);
+        return;
+      }
+      if (eventType === "response.output_text.done" && typeof payload.text === "string" && !content.trim()) {
+        content += payload.text;
+        narrationStream.append(payload.text);
+        return;
+      }
+      if (eventType === "response.completed") {
+        const responsePayload = payload.response ?? payload;
+        completedResponsePayload = responsePayload;
+        usage = responsePayload?.usage ?? usage;
+        return;
+      }
+      if (!usage && payload.usage) {
+        usage = payload.usage;
+      }
+    });
+
+    if ((!content || !content.trim()) && completedResponsePayload) {
+      content = extractResponsesContent(completedResponsePayload);
+    }
+    if (!content.trim()) {
+      const error = new Error(`${requestLabel} response contained no output.`);
+      (error as { rawOutput?: string }).rawOutput = JSON.stringify(completedResponsePayload ?? {});
+      throw error;
+    }
+
+    narrationStream.finalize(content);
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: usage?.input_tokens,
+      completionTokens: usage?.output_tokens,
+      totalTokens: usage?.total_tokens
+    }, `${system}\n${prompt}`, content);
+    return { content, tokenUsage };
+  };
+
+  const parseChatCompletionsStream = async (res: Response): Promise<StreamedJsonResult> => {
+    let content = "";
+    let usage: any;
+
+    await consumeSse(res.body, ({ data }) => {
+      if (!data || data === "[DONE]") {
+        return;
+      }
+      const payload = tryParseJson(data);
+      if (!payload || typeof payload !== "object") {
+        return;
+      }
+      const delta = payload?.choices?.[0]?.delta?.content;
+      if (typeof delta === "string") {
+        content += delta;
+        narrationStream.append(delta);
+      }
+      if (payload.usage) {
+        usage = payload.usage;
+      }
+    });
+
+    if (!content.trim()) {
+      throw new Error(`${requestLabel} response contained no output.`);
+    }
+
+    narrationStream.finalize(content);
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: usage?.prompt_tokens,
+      completionTokens: usage?.completion_tokens,
+      totalTokens: usage?.total_tokens
+    }, `${system}\n${prompt}`, content);
+    return { content, tokenUsage };
+  };
+
+  if (runtimeOptions?.onNarrationStream) {
+    const { res: streamRes, errorText: streamErrorText } = await fetchStreamWithPromptCacheRetry(
+      (allowPromptCache) => fetch(`${baseUrl}/responses`, {
+        method: "POST",
+        headers: baseHeaders,
+        body: JSON.stringify(buildResponsesBody(undefined, true, allowPromptCache))
+      }),
+      enablePromptCache
+    );
+    if (streamRes.ok) {
+      return parseResponsesStream(streamRes);
+    }
+    if (enablePromptCache && !isStreamUnsupportedError(streamRes.status, streamErrorText)) {
+      throw new Error(buildRequestFailedMessage(requestLabel, streamRes.status, streamErrorText));
+    }
+  }
+
+  const initialResponsesResult = await fetchWithPromptCacheRetry(
+    (allowCache) => fetch(`${baseUrl}/responses`, {
+      method: "POST",
+      headers: baseHeaders,
+      body: JSON.stringify(buildResponsesBody(undefined, false, allowCache))
+    }),
+    enablePromptCache
+  );
+  let res = initialResponsesResult.res;
+  const allowPromptCache = initialResponsesResult.allowPromptCache;
+  const errorText = initialResponsesResult.errorText;
   if (res.ok) {
     const data = await res.json();
     const content = extractResponsesContent(data);
@@ -1656,13 +2212,13 @@ const callOpenAiJson = async (
       completionTokens: usage?.output_tokens,
       totalTokens: usage?.total_tokens
     }, `${system}\n${prompt}`, content);
+    narrationStream.finalize(content);
     return { content, tokenUsage };
   }
 
-  const errorText = await res.text();
-    const formatRejected = schema && (errorText.includes("json_schema") || errorText.includes("text.format"));
+  const formatRejected = schema && (errorText.includes("json_schema") || errorText.includes("text.format"));
   if (formatRejected) {
-    const retryBody = buildResponsesBody({ type: "json_object" });
+    const retryBody = buildResponsesBody({ type: "json_object" }, false, allowPromptCache);
     res = await fetch(`${baseUrl}/responses`, {
       method: "POST",
       headers: baseHeaders,
@@ -1682,6 +2238,7 @@ const callOpenAiJson = async (
         completionTokens: usage?.output_tokens,
         totalTokens: usage?.total_tokens
       }, `${system}\n${prompt}`, content);
+      narrationStream.finalize(content);
       return { content, tokenUsage };
     }
   }
@@ -1692,10 +2249,7 @@ const callOpenAiJson = async (
     || (requestLabel === "Grok" && res.status === 400)
   );
   if (!shouldFallback) {
-    const message = errorText
-      ? `${requestLabel} request failed (HTTP ${res.status}): ${errorText}`
-      : `${requestLabel} request failed (HTTP ${res.status}).`;
-    throw new Error(message);
+    throw new Error(buildRequestFailedMessage(requestLabel, res.status, errorText));
   }
 
   const baseBody = {
@@ -1705,10 +2259,40 @@ const callOpenAiJson = async (
       { role: "user", content: prompt }
     ]
   };
+
+  if (runtimeOptions?.onNarrationStream) {
+    let chatStreamRes = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: baseHeaders,
+      body: JSON.stringify({
+        ...baseBody,
+        response_format: responseFormatChat,
+        stream: true,
+        stream_options: { include_usage: true }
+      })
+    });
+    if (!chatStreamRes.ok) {
+      const chatStreamError = await chatStreamRes.text();
+      if (!isStreamUnsupportedError(chatStreamRes.status, chatStreamError)) {
+        throw new Error(buildRequestFailedMessage(requestLabel, chatStreamRes.status, chatStreamError));
+      }
+    } else {
+      return parseChatCompletionsStream(chatStreamRes);
+    }
+  }
+
+  const chatBody: Record<string, any> = {
+    ...baseBody,
+    response_format: responseFormatChat
+  };
+  if (enablePromptCache && allowPromptCache) {
+    chatBody.prompt_cache_retention = "in_memory";
+  }
+
   let chatRes = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: baseHeaders,
-    body: JSON.stringify({ ...baseBody, response_format: responseFormatChat })
+    body: JSON.stringify(chatBody)
   });
   if (!chatRes.ok) {
     const text = await chatRes.text();
@@ -1723,10 +2307,7 @@ const callOpenAiJson = async (
         throw new Error(await formatHttpError(chatRes, `${requestLabel} request failed`));
       }
     } else {
-      const message = text
-        ? `${requestLabel} request failed (HTTP ${chatRes.status}): ${text}`
-        : `${requestLabel} request failed (HTTP ${chatRes.status}).`;
-      throw new Error(message);
+      throw new Error(buildRequestFailedMessage(requestLabel, chatRes.status, text));
     }
   }
   const data = await chatRes.json();
@@ -1737,6 +2318,7 @@ const callOpenAiJson = async (
     completionTokens: usage?.completion_tokens,
     totalTokens: usage?.total_tokens
   }, `${system}\n${prompt}`, content);
+  narrationStream.finalize(content);
   return { content, tokenUsage };
 };
 
@@ -1746,41 +2328,111 @@ const callClaudeJson = async (
   model: string,
   system: string,
   prompt: string,
-  schema?: JsonSchema
+  schema?: JsonSchema,
+  runtimeOptions?: JsonCallRuntimeOptions
 ) => {
-  const baseBody: Record<string, any> = {
-    model,
-    max_tokens: 4096,
-    system,
-    messages: [{ role: "user", content: prompt }]
+  const narrationStream = createNarrationStreamAccumulator(runtimeOptions?.onNarrationStream);
+  const headers = {
+    "Content-Type": "application/json",
+    "x-api-key": apiKey,
+    "anthropic-version": "2023-06-01"
   };
-  if (schema) {
-    baseBody.output_format = {
-      type: "json_schema",
-      schema
+  const buildBody = (stream = false, allowPromptCache = true) => {
+    const body: Record<string, any> = {
+      model,
+      max_tokens: 4096,
+      system: allowPromptCache
+        ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }]
+        : system,
+      messages: [{ role: "user", content: prompt }]
     };
-    baseBody.betas = ["structured-outputs-2025-11-13"];
+    if (schema) {
+      body.output_format = {
+        type: "json_schema",
+        schema
+      };
+      body.betas = ["structured-outputs-2025-11-13"];
+    }
+    if (stream) {
+      body.stream = true;
+    }
+    return body;
+  };
+
+  const parseClaudeStream = async (res: Response): Promise<StreamedJsonResult> => {
+    let content = "";
+    let usage: any;
+
+    await consumeSse(res.body, ({ event, data }) => {
+      if (!data || data === "[DONE]") {
+        return;
+      }
+      const payload = tryParseJson(data);
+      if (!payload || typeof payload !== "object") {
+        return;
+      }
+      const eventType = typeof payload.type === "string" ? payload.type : event;
+      if (eventType === "content_block_delta") {
+        const delta = payload?.delta?.text;
+        if (typeof delta === "string") {
+          content += delta;
+          narrationStream.append(delta);
+        }
+      }
+      if (eventType === "message_start" && payload?.message?.usage) {
+        usage = payload.message.usage;
+      }
+      if (eventType === "message_delta" && payload?.usage) {
+        usage = payload.usage;
+      }
+    });
+
+    if (!content.trim()) {
+      throw new Error("Claude response contained no output.");
+    }
+
+    narrationStream.finalize(content);
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: usage?.input_tokens,
+      completionTokens: usage?.output_tokens,
+      totalTokens: usage?.input_tokens && usage?.output_tokens ? usage.input_tokens + usage.output_tokens : undefined
+    }, `${system}\n${prompt}`, content);
+    return { content, tokenUsage };
+  };
+
+  if (runtimeOptions?.onNarrationStream) {
+    const { res: streamRes, errorText: streamErrorText } = await fetchStreamWithPromptCacheRetry(
+      (allowPromptCache) => fetch(`${baseUrl}/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(buildBody(true, allowPromptCache))
+      }),
+      true
+    );
+    if (streamRes.ok) {
+      return parseClaudeStream(streamRes);
+    }
+    if (!isStreamUnsupportedError(streamRes.status, streamErrorText)) {
+      throw new Error(buildRequestFailedMessage("Claude", streamRes.status, streamErrorText));
+    }
   }
-  let res = await fetch(`${baseUrl}/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01"
-    },
-    body: JSON.stringify(baseBody)
-  });
+
+  const initialClaudeResult = await fetchWithPromptCacheRetry(
+    (allowPromptCache) => fetch(`${baseUrl}/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(buildBody(false, allowPromptCache))
+    }),
+    true
+  );
+  let res = initialClaudeResult.res;
+  const errorText = initialClaudeResult.errorText;
   if (!res.ok) {
-    const text = await res.text();
-    const formatRejected = text.includes("output_format") || text.includes("json_schema") || text.includes("structured");
+    const formatRejected = errorText.includes("output_format") || errorText.includes("json_schema") || errorText.includes("structured");
     if (schema && formatRejected) {
       res = await fetch(`${baseUrl}/messages`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01"
-        },
+        headers,
         body: JSON.stringify({
           model,
           max_tokens: 4096,
@@ -1792,10 +2444,7 @@ const callClaudeJson = async (
         throw new Error(await formatHttpError(res, "Claude request failed"));
       }
     } else {
-      const message = text
-        ? `Claude request failed (HTTP ${res.status}): ${text}`
-        : `Claude request failed (HTTP ${res.status}).`;
-      throw new Error(message);
+      throw new Error(buildRequestFailedMessage("Claude", res.status, errorText));
     }
   }
   const data = await res.json();
@@ -1806,6 +2455,7 @@ const callClaudeJson = async (
     completionTokens: usage?.output_tokens,
     totalTokens: usage?.input_tokens && usage?.output_tokens ? usage.input_tokens + usage.output_tokens : undefined
   }, `${system}\n${prompt}`, content || "");
+  narrationStream.finalize(content || "");
   return { content: content || "", tokenUsage };
 };
 
@@ -1816,8 +2466,14 @@ const callDoubaoJson = async (
   system: string,
   prompt: string,
   schema?: JsonSchema,
-  schemaName = "response"
+  schemaName = "response",
+  runtimeOptions?: JsonCallRuntimeOptions
 ) => {
+  const narrationStream = createNarrationStreamAccumulator(runtimeOptions?.onNarrationStream);
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`
+  };
   const baseBody = {
     model,
     input: [
@@ -1828,34 +2484,106 @@ const callDoubaoJson = async (
   const textFormat = schema
     ? { type: "json_schema", name: schemaName, schema, strict: true }
     : { type: "json_object" };
-  let res = await fetch(`${baseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({ ...baseBody, text: { format: textFormat } })
-  });
+  const buildBody = (format: any, stream = false, allowPromptCache = true) => {
+    const body: Record<string, any> = {
+      ...baseBody,
+      text: { format }
+    };
+    if (allowPromptCache) {
+      body.caching = { type: "enabled" };
+    }
+    if (stream) {
+      body.stream = true;
+      body.stream_options = { include_usage: true };
+    }
+    return body;
+  };
+
+  const parseDoubaoStream = async (res: Response): Promise<StreamedJsonResult> => {
+    let content = "";
+    let usage: any;
+
+    await consumeSse(res.body, ({ event, data }) => {
+      if (!data || data === "[DONE]") {
+        return;
+      }
+      const payload = tryParseJson(data);
+      if (!payload || typeof payload !== "object") {
+        return;
+      }
+      const eventType = typeof payload.type === "string" ? payload.type : event;
+      if (eventType === "response.output_text.delta" && typeof payload.delta === "string") {
+        content += payload.delta;
+        narrationStream.append(payload.delta);
+        return;
+      }
+      if (eventType === "response.output_text.done" && typeof payload.text === "string" && !content.trim()) {
+        content += payload.text;
+        narrationStream.append(payload.text);
+        return;
+      }
+      if (eventType === "response.completed" && payload?.response?.usage) {
+        usage = payload.response.usage;
+        return;
+      }
+      if (payload.usage) {
+        usage = payload.usage;
+      }
+    });
+
+    if (!content.trim()) {
+      throw new Error("Doubao response contained no output.");
+    }
+    narrationStream.finalize(content);
+    const tokenUsage = normalizeTokenUsage({
+      promptTokens: usage?.input_tokens,
+      completionTokens: usage?.output_tokens,
+      totalTokens: usage?.total_tokens
+    }, `${system}\n${prompt}`, content);
+    return { content, tokenUsage };
+  };
+
+  if (runtimeOptions?.onNarrationStream) {
+    const { res: streamRes, errorText: streamErrorText } = await fetchStreamWithPromptCacheRetry(
+      (allowPromptCache) => fetch(`${baseUrl}/responses`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(buildBody(textFormat, true, allowPromptCache))
+      }),
+      true
+    );
+    if (streamRes.ok) {
+      return parseDoubaoStream(streamRes);
+    }
+    if (!isStreamUnsupportedError(streamRes.status, streamErrorText)) {
+      throw new Error(buildRequestFailedMessage("Doubao", streamRes.status, streamErrorText));
+    }
+  }
+
+  const initialDoubaoResult = await fetchWithPromptCacheRetry(
+    (allowPromptCache) => fetch(`${baseUrl}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(buildBody(textFormat, false, allowPromptCache))
+    }),
+    true
+  );
+  let res = initialDoubaoResult.res;
+  const allowPromptCache = initialDoubaoResult.allowPromptCache;
+  const errorText = initialDoubaoResult.errorText;
   if (!res.ok) {
-    const text = await res.text();
-    const formatRejected = text.includes("response_format") || text.includes("text.format") || text.includes("json_schema");
+    const formatRejected = errorText.includes("response_format") || errorText.includes("text.format") || errorText.includes("json_schema");
     if (schema && formatRejected) {
       res = await fetch(`${baseUrl}/responses`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({ ...baseBody, text: { format: { type: "json_object" } } })
+        headers,
+        body: JSON.stringify(buildBody({ type: "json_object" }, false, allowPromptCache))
       });
       if (!res.ok) {
         throw new Error(await formatHttpError(res, "Doubao request failed"));
       }
     } else {
-      const message = text
-        ? `Doubao request failed (HTTP ${res.status}): ${text}`
-        : `Doubao request failed (HTTP ${res.status}).`;
-      throw new Error(message);
+      throw new Error(buildRequestFailedMessage("Doubao", res.status, errorText));
     }
   }
   const data = await res.json();
@@ -1876,6 +2604,7 @@ const callDoubaoJson = async (
     completionTokens: usage?.output_tokens,
     totalTokens: usage?.total_tokens
   }, `${system}\n${prompt}`, content || "");
+  narrationStream.finalize(content || "");
   return { content: content || "", tokenUsage };
 };
 
@@ -1998,14 +2727,13 @@ export async function createPlayerCharacter(
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
     });
     emit(`Requesting character profile from ${model}...`);
-    const response = await ai.models.generateContent({
+    const response = await callGeminiJsonWithCache(ai, {
+      apiKey,
+      baseUrl: proxyBaseUrl || "",
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: playerCreationSchema,
-        systemInstruction: system
-      }
+      prompt,
+      systemInstruction: system,
+      responseSchema: playerCreationSchema
     });
     if (!response.text) {
       throw new Error("No response from Vault-Tec database.");
@@ -2069,7 +2797,7 @@ export async function getNarrativeResponse(
   quests: Quest[],
   knownNpcs: Actor[],
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string; onNarrationStream?: (text: string) => void }
 ): Promise<NarratorResponse> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -2098,23 +2826,23 @@ export async function getNarrativeResponse(
       apiKey,
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
     });
-    const response = await ai.models.generateContent({
+    const response = await callGeminiJsonWithCache(ai, {
+      apiKey,
+      baseUrl: proxyBaseUrl || "",
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            storyText: { type: Type.STRING },
-            ruleViolation: { type: Type.STRING },
-            timePassedMinutes: { type: Type.NUMBER },
-            imagePrompt: { type: Type.STRING }
-          },
-          required: ["storyText", "timePassedMinutes", "imagePrompt"]
+      prompt,
+      systemInstruction: system,
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          storyText: { type: Type.STRING },
+          ruleViolation: { type: Type.STRING },
+          timePassedMinutes: { type: Type.NUMBER },
+          imagePrompt: { type: Type.STRING }
         },
-        systemInstruction: system
-      }
+        required: ["storyText", "timePassedMinutes", "imagePrompt"]
+      },
+      onNarrationStream: options?.onNarrationStream
     });
     if (!response.text) {
       throw new Error("Connection to the Wasteland lost.");
@@ -2154,11 +2882,12 @@ export async function getNarrativeResponse(
       prompt,
       narratorSchema,
       "narrator",
-      getOpenAiLabel(provider)
+      getOpenAiLabel(provider),
+      { onNarrationStream: options?.onNarrationStream }
     )
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, narratorSchema)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, narratorSchema, "narrator");
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, narratorSchema, { onNarrationStream: options?.onNarrationStream })
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, narratorSchema, "narrator", { onNarrationStream: options?.onNarrationStream });
 
   const parsed = safeJsonParse(result.content);
   const response = parseNarrator(parsed, userInput);
@@ -2213,14 +2942,13 @@ export async function getEventOutcome(
       apiKey,
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
     });
-    const response = await ai.models.generateContent({
+    const response = await callGeminiJsonWithCache(ai, {
+      apiKey,
+      baseUrl: proxyBaseUrl || "",
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: eventOutcomeSchema,
-        systemInstruction: system
-      }
+      prompt,
+      systemInstruction: system,
+      responseSchema: eventOutcomeSchema
     });
     if (!response.text) {
       throw new Error("Connection to the Wasteland lost.");
@@ -2275,7 +3003,7 @@ export async function getEventNarration(
   currentTime: string,
   eventOutcome: EventOutcome,
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string; onNarrationStream?: (text: string) => void }
 ): Promise<EventNarrationResponse> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -2305,21 +3033,21 @@ export async function getEventNarration(
       apiKey,
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
     });
-    const response = await ai.models.generateContent({
+    const response = await callGeminiJsonWithCache(ai, {
+      apiKey,
+      baseUrl: proxyBaseUrl || "",
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            storyText: { type: Type.STRING },
-            imagePrompt: { type: Type.STRING }
-          },
-          required: ["storyText", "imagePrompt"]
+      prompt,
+      systemInstruction: system,
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          storyText: { type: Type.STRING },
+          imagePrompt: { type: Type.STRING }
         },
-        systemInstruction: system
-      }
+        required: ["storyText", "imagePrompt"]
+      },
+      onNarrationStream: options?.onNarrationStream
     });
     if (!response.text) {
       throw new Error("Connection to the Wasteland lost.");
@@ -2363,11 +3091,12 @@ export async function getEventNarration(
       prompt,
       eventNarrationSchema,
       "event_narration",
-      getOpenAiLabel(provider)
+      getOpenAiLabel(provider),
+      { onNarrationStream: options?.onNarrationStream }
     )
     : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema, "event_narration");
+      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema, { onNarrationStream: options?.onNarrationStream })
+      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema, "event_narration", { onNarrationStream: options?.onNarrationStream });
 
   const parsed = safeJsonParse(result.content);
   const narration = { ...parseEventNarration(parsed, eventOutcome.outcomeSummary || ""), tokenUsage: result.tokenUsage };
@@ -2428,14 +3157,13 @@ export async function getArenaNarration(
       apiKey,
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
     });
-    const response = await ai.models.generateContent({
+    const response = await callGeminiJsonWithCache(ai, {
+      apiKey,
+      baseUrl: proxyBaseUrl || "",
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: arenaSchema,
-        systemInstruction: system
-      }
+      prompt,
+      systemInstruction: system,
+      responseSchema: arenaSchema
     });
     if (!response.text) {
       throw new Error("Connection to the Wasteland lost.");
@@ -2553,14 +3281,13 @@ export async function getStatusUpdate(
       apiKey,
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
     });
-    const response = await ai.models.generateContent({
+    const response = await callGeminiJsonWithCache(ai, {
+      apiKey,
+      baseUrl: proxyBaseUrl || "",
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: statusSchema,
-        systemInstruction: system
-      }
+      prompt,
+      systemInstruction: system,
+      responseSchema: statusSchema
     });
     if (!response.text) {
       throw new Error("Connection to the Wasteland lost.");
@@ -2641,14 +3368,13 @@ export async function refreshInventory(
       apiKey,
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
     });
-    const response = await ai.models.generateContent({
+    const response = await callGeminiJsonWithCache(ai, {
+      apiKey,
+      baseUrl: proxyBaseUrl || "",
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: inventoryRefreshSchema,
-        systemInstruction: system
-      }
+      prompt,
+      systemInstruction: system,
+      responseSchema: inventoryRefreshSchema
     });
     if (!response.text) {
       throw new Error("Connection to the Wasteland lost.");
@@ -2727,14 +3453,13 @@ export async function auditInventoryWeights(
       apiKey,
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
     });
-    const response = await ai.models.generateContent({
+    const response = await callGeminiJsonWithCache(ai, {
+      apiKey,
+      baseUrl: proxyBaseUrl || "",
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: inventoryRefreshSchema,
-        systemInstruction: system
-      }
+      prompt,
+      systemInstruction: system,
+      responseSchema: inventoryRefreshSchema
     });
     if (!response.text) {
       throw new Error("Connection to the Wasteland lost.");
@@ -2818,14 +3543,13 @@ export async function recoverInventoryStatus(
       apiKey,
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
     });
-    const response = await ai.models.generateContent({
+    const response = await callGeminiJsonWithCache(ai, {
+      apiKey,
+      baseUrl: proxyBaseUrl || "",
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: inventoryRecoverySchema,
-        systemInstruction: system
-      }
+      prompt,
+      systemInstruction: system,
+      responseSchema: inventoryRecoverySchema
     });
     if (!response.text) {
       throw new Error("Connection to the Wasteland lost.");
@@ -2935,14 +3659,13 @@ Return JSON: {"memory": "..."} only.`;
       apiKey,
       ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
     });
-    const response = await ai.models.generateContent({
+    const response = await callGeminiJsonWithCache(ai, {
+      apiKey,
+      baseUrl: proxyBaseUrl || "",
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: memorySchema,
-        systemInstruction: system
-      }
+      prompt,
+      systemInstruction: system,
+      responseSchema: memorySchema
     });
     if (!response.text) {
       throw new Error("No response from compression service.");
