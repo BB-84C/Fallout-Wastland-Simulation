@@ -1017,6 +1017,7 @@ const upsertStreamingNarratorEntry = (history: HistoryEntry[], text: string): Hi
   if (
     lastEntry?.sender === 'narrator'
     && lastEntry?.meta !== 'memory'
+    && !lastEntry?.imageUrl
     && !lastEntry?.groundingSources
   ) {
     return [
