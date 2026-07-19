@@ -338,7 +338,7 @@ const Terminal: React.FC<TerminalProps> = ({
   };
 
   return (
-    <div className="relative flex-1 min-h-0">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       <div 
         ref={scrollRef}
         onScroll={() => {
@@ -381,7 +381,7 @@ const Terminal: React.FC<TerminalProps> = ({
             }
           }
         }}
-        className={`h-full ${scrollClass} p-4 space-y-6 bg-black/40 border-b border-[color:rgba(var(--pip-color-rgb),0.3)]`}
+        className={`min-h-0 flex-1 ${scrollClass} p-4 space-y-6 bg-black/40 border-b border-[color:rgba(var(--pip-color-rgb),0.3)]`}
       >
         {visibleHistory.map((item, i) => (
           <div
@@ -514,7 +514,37 @@ const Terminal: React.FC<TerminalProps> = ({
           </div>
         )}
       </div>
-      <div className="absolute right-2 top-2 flex flex-col gap-2">
+      <div className="grid grid-cols-4 gap-1 border-t border-[color:rgba(var(--pip-color-rgb),0.3)] bg-black/90 p-2 md:hidden">
+        <button
+          onClick={handleJumpToFirst}
+          disabled={windowRange.start <= 0}
+          className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-1 py-2 text-[11px] font-bold uppercase leading-tight transition-colors hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40"
+        >
+          {isZh ? '到最前' : 'To the First'}
+        </button>
+        <button
+          onClick={handlePageUp}
+          disabled={windowRange.start <= 0}
+          className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-1 py-2 text-[11px] font-bold uppercase leading-tight transition-colors hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40"
+        >
+          {isZh ? '上翻' : 'To Top'}
+        </button>
+        <button
+          onClick={handlePageDown}
+          disabled={windowRange.end >= totalRounds}
+          className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-1 py-2 text-[11px] font-bold uppercase leading-tight transition-colors hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40"
+        >
+          {isZh ? '下翻' : 'To Bottom'}
+        </button>
+        <button
+          onClick={handleJumpToLatest}
+          disabled={windowRange.end >= totalRounds}
+          className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-1 py-2 text-[11px] font-bold uppercase leading-tight transition-colors hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40"
+        >
+          {isZh ? '到最新' : 'To the Latest'}
+        </button>
+      </div>
+      <div className="absolute right-2 top-2 hidden flex-col gap-2 md:flex">
         <button
           onClick={handleJumpToFirst}
           disabled={windowRange.start <= 0}
@@ -530,7 +560,7 @@ const Terminal: React.FC<TerminalProps> = ({
           {isZh ? '上翻' : 'To Top'}
         </button>
       </div>
-      <div className="absolute right-2 bottom-2 flex flex-col gap-2">
+      <div className="absolute bottom-2 right-2 hidden flex-col gap-2 md:flex">
         <button
           onClick={handlePageDown}
           disabled={windowRange.end >= totalRounds}

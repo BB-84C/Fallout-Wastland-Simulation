@@ -34,6 +34,7 @@ interface StatBarProps {
   companionAvatarPending: Record<string, boolean>;
   canRegenerateCompanionAvatar: boolean;
   onClose: () => void;
+  closeButtonRef?: React.Ref<HTMLButtonElement>;
   panelScale?: number;
 }
 
@@ -125,6 +126,7 @@ const StatBar: React.FC<StatBarProps> = ({
   companionAvatarPending,
   canRegenerateCompanionAvatar,
   onClose,
+  closeButtonRef,
   panelScale
 }) => {
   const [activeTab, setActiveTab] = useState<Tab>('STAT');
@@ -568,24 +570,25 @@ const StatBar: React.FC<StatBarProps> = ({
       >
         {/* Top Utility Header */}
         <div className="p-3 border-b border-[color:rgba(var(--pip-color-rgb),0.3)] space-y-3 bg-black">
-          <div className="flex justify-between items-center">
+          <div className="grid grid-cols-4 gap-2 md:flex md:items-center md:justify-between">
             <button 
+              ref={closeButtonRef}
               onClick={onClose}
-              className="md:hidden text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 bg-[color:rgba(var(--pip-color-rgb),0.2)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+              className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] bg-[color:rgba(var(--pip-color-rgb),0.2)] px-2 py-2 text-xs font-bold uppercase leading-tight transition-colors hover:bg-[color:var(--pip-color)] hover:text-black md:hidden"
             >
               {language === 'en' ? 'RETURN' : '返回'}
             </button>
-            <div className="flex space-x-2">
+            <div className="contents md:flex md:space-x-2">
               <button 
                 onClick={() => onLanguageToggle(language === 'en' ? 'zh' : 'en')}
-                className="text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors"
+                className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-2 text-xs leading-tight transition-colors hover:bg-[color:var(--pip-color)] hover:text-black md:min-h-0 md:py-0.5 md:text-[0.625rem]"
               >
                 {language === 'en' ? 'EN / 中' : '中 / EN'}
               </button>
               {showSave && (
                 <button
                   onClick={onToggleAutoSave}
-                  className={`text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 font-bold uppercase transition-colors ${
+                  className={`min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-2 text-xs font-bold uppercase leading-tight transition-colors md:min-h-0 md:py-0.5 md:text-[0.625rem] ${
                     autoSaveEnabled
                       ? 'bg-[color:var(--pip-color)] text-black'
                       : 'bg-[color:rgba(var(--pip-color-rgb),0.1)] hover:bg-[color:var(--pip-color)] hover:text-black'
@@ -599,7 +602,7 @@ const StatBar: React.FC<StatBarProps> = ({
               {showSave && (
                 <button 
                   onClick={onSave}
-                  className="text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 bg-[color:rgba(var(--pip-color-rgb),0.1)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold"
+                  className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] bg-[color:rgba(var(--pip-color-rgb),0.1)] px-2 py-2 text-xs font-bold leading-tight transition-colors hover:bg-[color:var(--pip-color)] hover:text-black md:min-h-0 md:py-0.5 md:text-[0.625rem]"
                 >
                   {language === 'en' ? 'SAVE' : '保存'}
                 </button>
@@ -607,7 +610,7 @@ const StatBar: React.FC<StatBarProps> = ({
               <button
                 onClick={onRefreshInventory}
                 disabled={inventoryRefreshing}
-                className="text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 bg-[color:rgba(var(--pip-color-rgb),0.1)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold disabled:opacity-40"
+                className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] bg-[color:rgba(var(--pip-color-rgb),0.1)] px-2 py-2 text-xs font-bold leading-tight transition-colors hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40 md:min-h-0 md:py-0.5 md:text-[0.625rem]"
               >
                 {inventoryRefreshing
                   ? (language === 'en' ? 'REFRESH...' : '刷新中...')
@@ -616,36 +619,36 @@ const StatBar: React.FC<StatBarProps> = ({
               <button
                 onClick={onRebuildStatus}
                 disabled={!canRebuildStatus || statusRebuilding}
-                className="text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 bg-[color:rgba(var(--pip-color-rgb),0.1)] hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold disabled:opacity-40"
+                className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] bg-[color:rgba(var(--pip-color-rgb),0.1)] px-2 py-2 text-xs font-bold leading-tight transition-colors hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40 md:min-h-0 md:py-0.5 md:text-[0.625rem]"
               >
                 {statusRebuilding
                   ? (language === 'en' ? 'REBUILD...' : '重建中...')
                   : (language === 'en' ? 'STAT REBUILD' : '状态重建')}
               </button>
-              <div className="relative">
+              <div className="relative min-w-0">
                 <button 
                   onClick={() => setShowExportMenu(prev => !prev)}
-                  className="text-[0.625rem] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-0.5 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold"
+                  className="min-h-[44px] w-full border border-[color:rgba(var(--pip-color-rgb),0.5)] px-2 py-2 text-xs font-bold leading-tight transition-colors hover:bg-[color:var(--pip-color)] hover:text-black md:min-h-0 md:w-auto md:py-0.5 md:text-[0.625rem]"
                 >
                   {language === 'en' ? 'EXPORT' : '导出'}
                 </button>
                 {showExportMenu && (
-                  <div className="absolute right-0 mt-1 w-24 border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/95 z-10">
+                  <div className="absolute right-0 z-10 mt-1 w-40 border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/95 md:w-24">
                     <button
                       onClick={() => { onExport('log-md'); setShowExportMenu(false); }}
-                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-colors"
+                      className="min-h-[44px] w-full px-2 py-2 text-xs uppercase transition-colors hover:bg-[color:var(--pip-color)] hover:text-black md:min-h-0 md:py-1 md:text-[0.625rem]"
                     >
                       {language === 'en' ? 'LOG MD' : '终端 MD'}
                     </button>
                     <button
                       onClick={() => { onExport('log-pdf'); setShowExportMenu(false); }}
-                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-colors"
+                      className="min-h-[44px] w-full px-2 py-2 text-xs uppercase transition-colors hover:bg-[color:var(--pip-color)] hover:text-black md:min-h-0 md:py-1 md:text-[0.625rem]"
                     >
                       {language === 'en' ? 'LOG PDF' : '终端 PDF'}
                     </button>
                     <button
                       onClick={() => { onExport('save-zip'); setShowExportMenu(false); }}
-                      className="w-full text-[0.625rem] px-2 py-1 uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-colors"
+                      className="min-h-[44px] w-full px-2 py-2 text-xs uppercase transition-colors hover:bg-[color:var(--pip-color)] hover:text-black md:min-h-0 md:py-1 md:text-[0.625rem]"
                     >
                       {language === 'en' ? 'SAVE ZIP' : '存档 ZIP'}
                     </button>
@@ -672,7 +675,7 @@ const StatBar: React.FC<StatBarProps> = ({
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 py-2 text-[0.625rem] font-bold transition-all border-r last:border-r-0 border-[color:rgba(var(--pip-color-rgb),0.2)] ${
+              className={`min-h-[44px] flex-1 border-r border-[color:rgba(var(--pip-color-rgb),0.2)] py-2 text-[11px] font-bold transition-all last:border-r-0 md:min-h-0 md:text-[0.625rem] ${
                 activeTab === tab.id 
                   ? 'bg-[color:var(--pip-color)] text-black shadow-[inset_0_0_8px_rgba(0,0,0,0.5)]' 
                   : 'text-[color:rgba(var(--pip-color-rgb),0.6)] hover:text-[color:var(--pip-color)] hover:bg-[color:rgba(var(--pip-color-rgb),0.1)]'

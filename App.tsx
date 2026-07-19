@@ -358,7 +358,8 @@ const STAT_PANEL_MIN = 240;
 const STAT_PANEL_MAX = 520;
 const ARENA_PANEL_MIN = 240;
 const ARENA_PANEL_MAX = 520;
-const VIEW_PADDING_CLASS = 'pt-[15vh] pb-[5vh] md:pt-0 md:pb-0 box-border';
+const MOBILE_MAX_TEXT_SCALE = 1.25;
+const VIEW_PADDING_CLASS = 'mobile-safe-view-padding box-border';
 
 const isUserOnboarded = (username: string) => {
   try {
@@ -2001,6 +2002,11 @@ const App: React.FC = () => {
   const [isDesktop, setIsDesktop] = useState(() =>
     typeof window === 'undefined' ? true : window.innerWidth >= 768
   );
+  const [hasCoarsePointer, setHasCoarsePointer] = useState(() =>
+    typeof window === 'undefined'
+      ? false
+      : window.matchMedia('(hover: none), (pointer: coarse)').matches
+  );
   const lastHistoryLength = useRef(0);
   const lastCompressedMemory = useRef('');
   const lastInventorySignature = useRef('');
@@ -2010,6 +2016,9 @@ const App: React.FC = () => {
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(0);
   const compressionStatusTimeout = useRef<number | null>(null);
+  const sidebarToggleRef = useRef<HTMLButtonElement>(null);
+  const sidebarCloseRef = useRef<HTMLButtonElement>(null);
+  const wasSidebarOpenRef = useRef(false);
 
   const activeTier: UserTier = currentUser?.tier ?? 'guest';
   const isAdmin = activeTier === 'admin';
@@ -2076,6 +2085,9 @@ const App: React.FC = () => {
   const textScale = Number.isFinite(gameState.settings.textScale)
     ? clampNumber(gameState.settings.textScale as number, 0.8, 5)
     : 1;
+  const shouldCapTextScale = !isDesktop || hasCoarsePointer;
+  const maxTextScale = shouldCapTextScale ? MOBILE_MAX_TEXT_SCALE : 5;
+  const effectiveTextScale = clampNumber(textScale, 0.8, maxTextScale);
   const interfaceColor = normalizeInterfaceColor(gameState.settings.interfaceColor, DEFAULT_INTERFACE_COLOR);
   const interfaceColorSoft = buildSoftColor(interfaceColor);
   const interfaceColorRgb = `${interfaceColor.r}, ${interfaceColor.g}, ${interfaceColor.b}`;
@@ -2648,14 +2660,14 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
-    const clamped = clampNumber(textScale, 0.8, 5);
+    const clamped = effectiveTextScale;
     const html = document.documentElement;
     const previous = html.style.fontSize;
     html.style.fontSize = `${clamped * 100}%`;
     return () => {
       html.style.fontSize = previous;
     };
-  }, [textScale]);
+  }, [effectiveTextScale]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -2674,6 +2686,32 @@ const App: React.FC = () => {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  useEffect(() => {
+    const pointerMedia = window.matchMedia('(hover: none), (pointer: coarse)');
+    const handlePointerChange = () => setHasCoarsePointer(pointerMedia.matches);
+    handlePointerChange();
+    pointerMedia.addEventListener('change', handlePointerChange);
+    return () => pointerMedia.removeEventListener('change', handlePointerChange);
+  }, []);
+
+  useEffect(() => {
+    if (isDesktop) {
+      wasSidebarOpenRef.current = isSidebarOpen;
+      return;
+    }
+
+    const wasOpen = wasSidebarOpenRef.current;
+    const focusFrame = window.requestAnimationFrame(() => {
+      if (isSidebarOpen) {
+        sidebarCloseRef.current?.focus();
+      } else if (wasOpen) {
+        sidebarToggleRef.current?.focus();
+      }
+    });
+    wasSidebarOpenRef.current = isSidebarOpen;
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [isDesktop, isSidebarOpen]);
 
   useEffect(() => {
     if (!draggingPanel) return;
@@ -6141,25 +6179,25 @@ const App: React.FC = () => {
               </div>
               <div className="text-xs opacity-70 mt-1">
                 {isZh
-                  ? '调整整体字体大小，适合不同设备与观看距离。'
-                  : 'Adjust global font size for different devices and viewing distances.'}
+                  ? `调整整体字体大小，适合不同设备与观看距离。手机端最高 ${MOBILE_MAX_TEXT_SCALE.toFixed(2)} 倍，避免控件移出屏幕。`
+                  : `Adjust global font size for different devices and viewing distances. Mobile layouts are capped at ${MOBILE_MAX_TEXT_SCALE.toFixed(2)}x to keep controls on screen.`}
               </div>
               <div className="mt-3 flex items-center gap-3">
                 <input
                   type="range"
                   min={0.8}
-                  max={5}
+                  max={maxTextScale}
                   step={0.05}
-                  value={textScale}
+                  value={effectiveTextScale}
                   onChange={(e) => updateTextScale(e.target.value)}
                   className="flex-1 accent-[var(--pip-color)]"
                 />
                 <input
                   type="number"
                   min={0.8}
-                  max={5}
+                  max={maxTextScale}
                   step={0.05}
-                  value={textScale.toFixed(2)}
+                  value={effectiveTextScale.toFixed(2)}
                   onChange={(e) => updateTextScale(e.target.value)}
                   className="w-20 bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-sm focus:outline-none"
                 />
@@ -7232,12 +7270,12 @@ const App: React.FC = () => {
   if (view === 'auth') {
     return (
       <div
-        className={`flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center ${VIEW_PADDING_CLASS}`}
+        className={`flex h-[100dvh] flex-col items-center justify-start overflow-y-auto p-4 text-center md:justify-center md:p-8 ${VIEW_PADDING_CLASS}`}
         style={scaledRootStyle}
       >
         {usersEditorModal}
         {tipModal}
-        <div className="max-w-xl w-full space-y-6 pip-boy-border p-6 md:p-10 bg-black/70 shadow-2xl relative">
+        <div className="relative my-auto w-full max-w-xl space-y-6 bg-black/70 p-6 shadow-2xl pip-boy-border md:my-0 md:p-10">
           <div className="absolute top-4 right-4 flex space-x-2">
             <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>EN</button>
             <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>中文</button>
@@ -7346,7 +7384,7 @@ const App: React.FC = () => {
   if (view === 'start') {
     return (
       <div
-        className={`flex flex-col items-center justify-center min-h-screen p-4 md:p-8 text-center ${VIEW_PADDING_CLASS}`}
+        className={`flex h-[100dvh] flex-col items-center justify-start overflow-y-auto p-4 text-center md:justify-center md:p-8 ${VIEW_PADDING_CLASS}`}
         style={scaledRootStyle}
       >
         {guestNotice}
@@ -7357,8 +7395,82 @@ const App: React.FC = () => {
         {imagePromptModal}
         {galleryModal}
         {arenaPromptModal}
-        <div className="max-w-3xl w-full space-y-6 md:space-y-8 pip-boy-border p-6 md:p-12 bg-black/60 shadow-2xl relative">
-          <div className="absolute top-4 right-4 flex space-x-2">
+        <div className="relative my-auto w-full max-w-3xl space-y-6 bg-black/60 p-6 pt-[72px] shadow-2xl pip-boy-border md:my-0 md:space-y-8 md:p-12">
+          <div className="absolute right-3 top-3 z-20 md:hidden">
+            <button
+              type="button"
+              aria-expanded={showUtilityMenu}
+              onClick={() => setShowUtilityMenu(prev => !prev)}
+              className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-2 text-sm font-bold uppercase hover:bg-[color:var(--pip-color)] hover:text-black"
+            >
+              {isZh ? '工具' : 'UTILITY'}
+            </button>
+            {showUtilityMenu && (
+              <div className="mobile-utility-menu absolute right-0 top-full z-30 mt-2 max-h-[calc(100dvh-96px)] w-[220px] max-w-[calc(100vw-32px)] overflow-y-auto border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/95 text-left text-sm uppercase shadow-lg">
+                <div className="grid grid-cols-2 border-b border-[color:rgba(var(--pip-color-rgb),0.3)]">
+                  <button
+                    type="button"
+                    onClick={() => { toggleLanguage('en'); setShowUtilityMenu(false); }}
+                    className={`min-h-[44px] px-3 py-2 text-center ${gameState.language === 'en' ? 'bg-[color:var(--pip-color)] text-black' : 'hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]'}`}
+                  >
+                    EN
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { toggleLanguage('zh'); setShowUtilityMenu(false); }}
+                    className={`min-h-[44px] px-3 py-2 text-center ${gameState.language === 'zh' ? 'bg-[color:var(--pip-color)] text-black' : 'hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]'}`}
+                  >
+                    中文
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setShowUtilityMenu(false); setIsSettingsOpen(true); }}
+                  className="min-h-[44px] w-full px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                >
+                  {isZh ? '设置' : 'SET'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowUtilityMenu(false); setIsHelpOpen(true); }}
+                  className="min-h-[44px] w-full px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                >
+                  {isZh ? '帮助' : 'HELP'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowUtilityMenu(false); setIsUserPromptOpen(true); }}
+                  className="min-h-[44px] w-full px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                >
+                  {isZh ? '文本提示' : 'TEXT PROMPT'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowUtilityMenu(false); setIsImagePromptOpen(true); }}
+                  className="min-h-[44px] w-full px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                >
+                  {isZh ? '图像提示' : 'IMAGE PROMPT'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowUtilityMenu(false); openGallery(); }}
+                  className="min-h-[44px] w-full px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                >
+                  {isZh ? '图库' : 'GALLERY'}
+                </button>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => { setShowUtilityMenu(false); openUsersEditor(); }}
+                    className="min-h-[44px] w-full px-3 py-2 hover:bg-[color:rgba(var(--pip-color-rgb),0.2)]"
+                  >
+                    {isZh ? '用户' : 'USERS'}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="absolute right-4 top-4 hidden space-x-2 md:flex">
             <button onClick={() => toggleLanguage('en')} className={`px-2 py-1 text-xs border ${gameState.language === 'en' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>EN</button>
             <button onClick={() => toggleLanguage('zh')} className={`px-2 py-1 text-xs border ${gameState.language === 'zh' ? 'bg-[color:var(--pip-color)] text-black' : 'border-[color:var(--pip-color)]'}`}>中文</button>
             <button
@@ -7464,7 +7576,7 @@ const App: React.FC = () => {
   if (view === 'creation') {
     return (
       <div
-        className={`flex flex-col items-center justify-center min-h-screen p-4 md:p-8 ${VIEW_PADDING_CLASS}`}
+        className={`flex h-[100dvh] flex-col items-center justify-start overflow-y-auto p-4 md:justify-center md:p-8 ${VIEW_PADDING_CLASS}`}
         style={scaledRootStyle}
       >
         {guestNotice}
@@ -7494,7 +7606,7 @@ const App: React.FC = () => {
             </div>
           </div>
         )}
-        <div className="max-w-4xl w-full pip-boy-border p-6 md:p-8 bg-black/80">
+        <div className="my-auto w-full max-w-4xl bg-black/80 p-6 pip-boy-border md:my-0 md:p-8">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-3xl md:text-4xl font-bold glow-text uppercase">
               {gameState.language === 'en' ? 'Identity Reconstruction' : '身份重建'}
@@ -7569,7 +7681,7 @@ const App: React.FC = () => {
   if (view === 'arena_setup') {
     return (
       <div
-        className={`flex flex-col items-center justify-center min-h-screen p-4 md:p-8 ${VIEW_PADDING_CLASS}`}
+        className={`flex h-[100dvh] flex-col items-center justify-start overflow-y-auto p-4 md:justify-center md:p-8 ${VIEW_PADDING_CLASS}`}
         style={scaledRootStyle}
       >
         {guestNotice}
@@ -7696,7 +7808,7 @@ const App: React.FC = () => {
 
   if (view === 'arena_play') {
     return (
-      <div className={`flex flex-col h-screen w-screen overflow-hidden relative ${VIEW_PADDING_CLASS}`} style={scaledRootStyle}>
+      <div className={`relative flex h-[100dvh] w-full flex-col overflow-hidden ${VIEW_PADDING_CLASS}`} style={scaledRootStyle}>
         {guestNotice}
         {usersEditorModal}
         {settingsModal}
@@ -7908,7 +8020,7 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className={`flex flex-col md:flex-row h-screen w-screen overflow-hidden relative ${VIEW_PADDING_CLASS}`} style={scaledRootStyle}>
+    <div className={`relative flex h-[100dvh] w-full flex-col overflow-hidden md:flex-row ${VIEW_PADDING_CLASS}`} style={scaledRootStyle}>
       {guestNotice}
       {usersEditorModal}
       {settingsModal}
@@ -7924,7 +8036,11 @@ const App: React.FC = () => {
       {statusRebuildModal}
       {manualCompressionModal}
       {/* Main Terminal Area */}
-      <div className="flex-1 flex flex-col min-w-0 bg-black/40 h-full overflow-hidden">
+      <div
+        aria-hidden={!isDesktop && isSidebarOpen ? true : undefined}
+        inert={!isDesktop && isSidebarOpen ? true : undefined}
+        className="flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-black/40"
+      >
         <header className="p-3 md:p-4 border-b border-[color:rgba(var(--pip-color-rgb),0.3)] bg-black/60 flex justify-between items-center z-20">
           <div className="flex items-center space-x-2 md:space-x-4">
              <div className="w-8 h-8 md:w-10 md:h-10 border-2 border-[color:var(--pip-color)] flex items-center justify-center font-bold text-lg md:text-xl">13</div>
@@ -7934,12 +8050,12 @@ const App: React.FC = () => {
             <div className="relative md:hidden">
               <button
                 onClick={() => setShowUtilityMenu(prev => !prev)}
-                className="text-xs border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-1 hover:bg-[color:var(--pip-color)] hover:text-black transition-colors font-bold uppercase"
+                className="min-h-[44px] border border-[color:rgba(var(--pip-color-rgb),0.5)] px-3 py-2 text-xs font-bold uppercase transition-colors hover:bg-[color:var(--pip-color)] hover:text-black"
               >
                 {isZh ? '工具' : 'UTILITY'}
               </button>
               {showUtilityMenu && (
-                <div className="absolute right-0 top-full mt-2 w-44 border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/90 text-xs uppercase shadow-lg z-30">
+                <div className="mobile-utility-menu absolute right-0 top-full z-30 mt-2 max-h-[calc(100dvh-96px)] w-[220px] max-w-[calc(100vw-32px)] overflow-y-auto border border-[color:rgba(var(--pip-color-rgb),0.4)] bg-black/95 text-xs uppercase shadow-lg">
                   {isAdmin && (
                     <button
                       onClick={() => {
@@ -8072,8 +8188,9 @@ const App: React.FC = () => {
               </button>
             </div>
             <button 
+              ref={sidebarToggleRef}
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              className="md:hidden border-2 border-[color:var(--pip-color)] px-3 py-1 font-bold text-sm uppercase hover:bg-[color:var(--pip-color)] hover:text-black transition-all"
+              className="min-h-[44px] border-2 border-[color:var(--pip-color)] px-3 py-2 text-sm font-bold uppercase transition-all hover:bg-[color:var(--pip-color)] hover:text-black md:hidden"
             >
               {isSidebarOpen ? (gameState.language === 'en' ? 'CLOSE' : '关闭') : (gameState.language === 'en' ? 'STAT' : '状态')}
             </button>
@@ -8129,6 +8246,11 @@ const App: React.FC = () => {
       {/* Responsive StatBar */}
       {gameState.player && (
         <div
+          aria-hidden={!isDesktop && !isSidebarOpen ? true : undefined}
+          inert={!isDesktop && !isSidebarOpen ? true : undefined}
+          role={!isDesktop ? 'dialog' : undefined}
+          aria-modal={!isDesktop ? true : undefined}
+          aria-label={!isDesktop ? (isZh ? '角色状态' : 'Character status') : undefined}
           className={`
             absolute md:static inset-0 z-40 md:z-auto
             transition-transform duration-300 ease-in-out
@@ -8173,6 +8295,7 @@ const App: React.FC = () => {
             companionAvatarPending={companionAvatarPending}
             canRegenerateCompanionAvatar={canRegenerateCompanionAvatar}
             onClose={() => setIsSidebarOpen(false)}
+            closeButtonRef={sidebarCloseRef}
             panelScale={statPanelScale}
           />
         </div>
