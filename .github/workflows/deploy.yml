@@ -1,0 +1,51 @@
+name: Deploy to bb84-vps
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-fallout
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Package release bundle
+        run: tar -czf fallout.tar.gz server.js package.json package-lock.json dist
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Upload bundle
+        run: >
+          scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes
+          -P ${{ secrets.VPS_PORT }}
+          fallout.tar.gz
+          ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/fallout.tar.gz
+
+      - name: Deploy and verify
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -p ${{ secrets.VPS_PORT }} \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            'cd /opt/fallout && tar xzf /tmp/fallout.tar.gz && npm ci --omit=dev && sudo systemctl restart fallout && sleep 2 && curl -sf http://127.0.0.1:8080/ > /dev/null && echo DEPLOY_OK' \
+            | tee deploy.log
+          grep -q DEPLOY_OK deploy.log
