@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Actor, NarratorResponse, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, ModelProvider, SpecialAttr, Skill, TokenUsage, HistoryEntry, StatusUpdate, InventoryItem, EventOutcome, EventNarrationResponse } from "../types";
+import { Actor, NarratorResponse, Language, Quest, GroundingSource, UserTier, PlayerCreationResult, TextModelId, ImageModelId, ModelRequestFormat, TextRequestFormat, ImageRequestFormat, SpecialAttr, Skill, TokenUsage, HistoryEntry, StatusUpdate, InventoryItem, EventOutcome, EventNarrationResponse } from "../types";
 import {
   createPlayerCharacter as createGeminiPlayer,
   getNarrativeResponse as getGeminiNarration,
@@ -14,11 +14,18 @@ import {
   auditInventoryWeights as auditGeminiInventoryWeights,
   recoverInventoryStatus as recoverGeminiInventoryStatus
 } from "./geminiService";
+import {
+  callGeminiInteractionsJson,
+  generateImageByFormat,
+  getGeminiSdkHttpOptions,
+  normalizeImageRequestFormat,
+  normalizeTextRequestFormat,
+  pingImageModel,
+  pingTextModel,
+  resolveBaseUrlForFormat
+} from "./requestFormats";
 
-const OPENAI_BASE_URL = "https://api.openai.com/v1";
-const GROK_BASE_URL = "https://api.x.ai/v1";
-const CLAUDE_BASE_URL = "https://api.anthropic.com/v1";
-const DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
+export { pingImageModel, pingTextModel };
 
 const estimateTokens = (text: string) => {
   if (!text) return 0;
@@ -1126,14 +1133,6 @@ const jsonNarratorSchema: JsonSchema = {
   additionalProperties: false
 };
 
-const jsonNarratorSchemaDoubao: JsonSchema = {
-  ...jsonNarratorSchema,
-  properties: {
-    ...jsonNarratorSchema.properties,
-    ruleViolation: { type: "string" }
-  }
-};
-
 const jsonArenaSchema: JsonSchema = {
   type: "object",
   properties: {
@@ -1231,22 +1230,6 @@ const jsonEventOutcomeSchema: JsonSchema = {
   },
   required: ["outcomeSummary", "ruleViolation"],
   additionalProperties: false
-};
-
-const jsonEventSchemaDoubao: JsonSchema = {
-  ...jsonEventSchema,
-  properties: {
-    ...jsonEventSchema.properties,
-    ruleViolation: { type: "string" }
-  }
-};
-
-const jsonEventOutcomeSchemaDoubao: JsonSchema = {
-  ...jsonEventOutcomeSchema,
-  properties: {
-    ...jsonEventOutcomeSchema.properties,
-    ruleViolation: { type: "string" }
-  }
 };
 
 const jsonInventoryRefreshSchema: JsonSchema = {
@@ -1624,16 +1607,23 @@ ${JSON.stringify(inventory)}
 TASK:
 Return JSON with key inventory containing the rectified items.`;
 
-const normalizeProvider = (provider?: ModelProvider): ModelProvider =>
-  provider && ["openai", "grok", "gemini", "claude", "doubao"].includes(provider) ? provider : "gemini";
+const normalizeProvider = (format?: string): ModelRequestFormat =>
+  format === "openai-images"
+    ? normalizeImageRequestFormat(format)
+    : normalizeTextRequestFormat(format);
 
-const isOpenAiCompatible = (provider: ModelProvider) => provider === "openai" || provider === "grok";
+const isOpenAiCompatible = (format: ModelRequestFormat) =>
+  format === "openai-responses"
+  || format === "openai-chat-completions"
+  || format === "openai-images";
 
-const getOpenAiLabel = (provider: ModelProvider) => (provider === "grok" ? "Grok" : "OpenAI");
+const getOpenAiLabel = (format: ModelRequestFormat) => (
+  format === "openai-chat-completions" ? "OpenAI Chat Completions" : "OpenAI Responses"
+);
 
-const requireApiKey = (apiKey: string | undefined, provider: ModelProvider) => {
+const requireApiKey = (apiKey: string | undefined, format: ModelRequestFormat) => {
   if (!apiKey) {
-    throw new Error(`Missing API key for ${provider}.`);
+    throw new Error(`Missing API key for ${format}.`);
   }
   return apiKey;
 };
@@ -1642,72 +1632,6 @@ const normalizeBaseUrl = (value?: string) => {
   const trimmed = value?.trim() || "";
   if (!trimmed) return "";
   return trimmed.replace(/\/+$/, "");
-};
-
-const extractGrokCitations = (payload: any): GroundingSource[] => {
-  const candidates = [
-    payload?.citations,
-    payload?.choices?.[0]?.citations,
-    payload?.choices?.[0]?.message?.citations,
-    payload?.choices?.[0]?.message?.context?.citations
-  ];
-  const citationList = candidates.find((entry) => Array.isArray(entry)) as any[] | undefined;
-  if (!citationList) return [];
-  return citationList
-    .map((item) => {
-      if (!item) return null;
-      if (typeof item === "string") {
-        return { title: item, uri: item };
-      }
-      const uri = item.url || item.uri || "";
-      if (!uri) return null;
-      const title = item.title || item.name || item.text || uri;
-      return { title, uri };
-    })
-    .filter((entry): entry is GroundingSource => !!entry);
-};
-
-const callGrokWebSearch = async (
-  apiKey: string,
-  baseUrl: string,
-  model: string,
-  prompt: string,
-  maxLength = 800
-): Promise<{ text: string; sources: GroundingSource[] }> => {
-  const res = await fetch(`${baseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        { role: "user", content: prompt }
-      ],
-      tools: [{ type: "web_search" }]
-    })
-  });
-  if (!res.ok) {
-    throw new Error(await formatHttpError(res, "Grok request failed"));
-  }
-  const data = await res.json();
-  let content = "";
-  if (typeof data?.output_text === "string") {
-    content = data.output_text;
-  } else if (Array.isArray(data?.output)) {
-    data.output.forEach((entry: any) => {
-      const parts = Array.isArray(entry?.content) ? entry.content : [];
-      parts.forEach((part: any) => {
-        if (typeof part?.text === "string") {
-          content += part.text;
-        }
-      });
-    });
-  }
-  const sources = extractGrokCitations(data);
-  const trimmed = clampImagePrompt(content, maxLength);
-  return { text: trimmed, sources };
 };
 
 const callOpenAiWebSearch = async (
@@ -1752,22 +1676,15 @@ const callOpenAiWebSearch = async (
   return { text: trimmed };
 };
 
-const resolveBaseUrl = (provider: ModelProvider, baseUrl?: string) => {
-  const normalized = normalizeBaseUrl(baseUrl);
-  if (normalized) return normalized;
-  switch (provider) {
-    case "openai":
-      return OPENAI_BASE_URL;
-    case "grok":
-      return GROK_BASE_URL;
-    case "claude":
-      return CLAUDE_BASE_URL;
-    case "doubao":
-      return DOUBAO_BASE_URL;
-    case "gemini":
-    default:
-      return "";
-  }
+const resolveBaseUrl = (format: ModelRequestFormat, baseUrl?: string) =>
+  resolveBaseUrlForFormat(format, baseUrl);
+
+const createGeminiClient = (apiKey: string, baseUrl?: string) => {
+  const httpOptions = getGeminiSdkHttpOptions(baseUrl);
+  return new GoogleGenAI({
+    apiKey,
+    ...(httpOptions ? { httpOptions } : {})
+  });
 };
 
 const formatHttpError = async (res: Response, fallback: string) => {
@@ -2004,6 +1921,105 @@ async function resizeImageToSquare(base64: string, size: number): Promise<string
   });
 }
 
+const callOpenAiChatJson = async (
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  system: string,
+  prompt: string,
+  schema?: JsonSchema,
+  schemaName = "response",
+  runtimeOptions?: JsonCallRuntimeOptions
+): Promise<StreamedJsonResult> => {
+  const narrationStream = createNarrationStreamAccumulator(runtimeOptions?.onNarrationStream);
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`
+  };
+  const baseBody = {
+    model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: prompt }
+    ]
+  };
+  const responseFormat = schema
+    ? { type: "json_schema", json_schema: { name: schemaName, schema, strict: true } }
+    : { type: "json_object" };
+
+  if (runtimeOptions?.onNarrationStream) {
+    const streamResponse = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        ...baseBody,
+        response_format: responseFormat,
+        stream: true,
+        stream_options: { include_usage: true }
+      })
+    });
+    if (streamResponse.ok) {
+      let content = "";
+      let usage: any;
+      await consumeSse(streamResponse.body, ({ data }) => {
+        if (!data || data === "[DONE]") return;
+        const payload = tryParseJson(data);
+        const delta = payload?.choices?.[0]?.delta?.content;
+        if (typeof delta === "string") {
+          content += delta;
+          narrationStream.append(delta);
+        }
+        if (payload?.usage) usage = payload.usage;
+      });
+      if (!content.trim()) throw new Error("OpenAI Chat Completions response contained no output.");
+      narrationStream.finalize(content);
+      return {
+        content,
+        tokenUsage: normalizeTokenUsage({
+          promptTokens: usage?.prompt_tokens,
+          completionTokens: usage?.completion_tokens,
+          totalTokens: usage?.total_tokens
+        }, `${system}\n${prompt}`, content)
+      };
+    }
+    const streamError = await streamResponse.text();
+    if (!isStreamUnsupportedError(streamResponse.status, streamError)) {
+      throw new Error(buildRequestFailedMessage("OpenAI Chat Completions", streamResponse.status, streamError));
+    }
+  }
+
+  const send = (format: any) => fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ ...baseBody, response_format: format })
+  });
+  let response = await send(responseFormat);
+  if (!response.ok) {
+    const detail = await response.text();
+    const formatRejected = detail.includes("response_format") || detail.includes("json_schema");
+    if (schema && formatRejected) {
+      response = await send({ type: "json_object" });
+    } else {
+      throw new Error(buildRequestFailedMessage("OpenAI Chat Completions", response.status, detail));
+    }
+  }
+  if (!response.ok) {
+    throw new Error(await formatHttpError(response, "OpenAI Chat Completions request failed"));
+  }
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content || "";
+  if (!content.trim()) throw new Error("OpenAI Chat Completions response contained no output.");
+  narrationStream.finalize(content);
+  return {
+    content,
+    tokenUsage: normalizeTokenUsage({
+      promptTokens: data?.usage?.prompt_tokens,
+      completionTokens: data?.usage?.completion_tokens,
+      totalTokens: data?.usage?.total_tokens
+    }, `${system}\n${prompt}`, content)
+  };
+};
+
 const callOpenAiJson = async (
   apiKey: string,
   baseUrl: string,
@@ -2015,6 +2031,9 @@ const callOpenAiJson = async (
   providerLabel = "OpenAI",
   runtimeOptions?: JsonCallRuntimeOptions
 ) => {
+  if (providerLabel === "OpenAI Chat Completions") {
+    return callOpenAiChatJson(apiKey, baseUrl, model, system, prompt, schema, schemaName, runtimeOptions);
+  }
   const requestLabel = providerLabel || "OpenAI";
   const enablePromptCache = requestLabel === "OpenAI";
   const narrationStream = createNarrationStreamAccumulator(runtimeOptions?.onNarrationStream);
@@ -2028,8 +2047,7 @@ const callOpenAiJson = async (
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`
   };
-  const isResponsesOnlyModel = /^gpt-5/i.test(model);
-  const includeReasoning = requestLabel !== "Grok";
+  const includeReasoning = false;
   const buildResponsesBody = (formatOverride?: any, stream = false, allowPromptCache = true) => {
     const body: Record<string, any> = {
       model,
@@ -2243,11 +2261,7 @@ const callOpenAiJson = async (
     }
   }
 
-  const shouldFallback = !isResponsesOnlyModel && (
-    res.status === 404
-    || res.status === 405
-    || (requestLabel === "Grok" && res.status === 400)
-  );
+  const shouldFallback = false;
   if (!shouldFallback) {
     throw new Error(buildRequestFailedMessage(requestLabel, res.status, errorText));
   }
@@ -2335,7 +2349,8 @@ const callClaudeJson = async (
   const headers = {
     "Content-Type": "application/json",
     "x-api-key": apiKey,
-    "anthropic-version": "2023-06-01"
+    "anthropic-version": "2023-06-01",
+    "anthropic-dangerous-direct-browser-access": "true"
   };
   const buildBody = (stream = false, allowPromptCache = true) => {
     const body: Record<string, any> = {
@@ -2459,7 +2474,8 @@ const callClaudeJson = async (
   return { content: content || "", tokenUsage };
 };
 
-const callDoubaoJson = async (
+const callJsonByFormat = async (
+  format: ModelRequestFormat,
   apiKey: string,
   baseUrl: string,
   model: string,
@@ -2468,226 +2484,43 @@ const callDoubaoJson = async (
   schema?: JsonSchema,
   schemaName = "response",
   runtimeOptions?: JsonCallRuntimeOptions
-) => {
-  const narrationStream = createNarrationStreamAccumulator(runtimeOptions?.onNarrationStream);
-  const headers = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${apiKey}`
-  };
-  const baseBody = {
-    model,
-    input: [
-      { role: "system", content: [{ type: "input_text", text: system }] },
-      { role: "user", content: [{ type: "input_text", text: prompt }] }
-    ]
-  };
-  const textFormat = schema
-    ? { type: "json_schema", name: schemaName, schema, strict: true }
-    : { type: "json_object" };
-  const buildBody = (format: any, stream = false, allowPromptCache = true) => {
-    const body: Record<string, any> = {
-      ...baseBody,
-      text: { format }
-    };
-    if (allowPromptCache) {
-      body.caching = { type: "enabled" };
-    }
-    if (stream) {
-      body.stream = true;
-      body.stream_options = { include_usage: true };
-    }
-    return body;
-  };
-
-  const parseDoubaoStream = async (res: Response): Promise<StreamedJsonResult> => {
-    let content = "";
-    let usage: any;
-
-    await consumeSse(res.body, ({ event, data }) => {
-      if (!data || data === "[DONE]") {
-        return;
-      }
-      const payload = tryParseJson(data);
-      if (!payload || typeof payload !== "object") {
-        return;
-      }
-      const eventType = typeof payload.type === "string" ? payload.type : event;
-      if (eventType === "response.output_text.delta" && typeof payload.delta === "string") {
-        content += payload.delta;
-        narrationStream.append(payload.delta);
-        return;
-      }
-      if (eventType === "response.output_text.done" && typeof payload.text === "string" && !content.trim()) {
-        content += payload.text;
-        narrationStream.append(payload.text);
-        return;
-      }
-      if (eventType === "response.completed" && payload?.response?.usage) {
-        usage = payload.response.usage;
-        return;
-      }
-      if (payload.usage) {
-        usage = payload.usage;
-      }
-    });
-
-    if (!content.trim()) {
-      throw new Error("Doubao response contained no output.");
-    }
-    narrationStream.finalize(content);
-    const tokenUsage = normalizeTokenUsage({
-      promptTokens: usage?.input_tokens,
-      completionTokens: usage?.output_tokens,
-      totalTokens: usage?.total_tokens
-    }, `${system}\n${prompt}`, content);
-    return { content, tokenUsage };
-  };
-
-  if (runtimeOptions?.onNarrationStream) {
-    const { res: streamRes, errorText: streamErrorText } = await fetchStreamWithPromptCacheRetry(
-      (allowPromptCache) => fetch(`${baseUrl}/responses`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(buildBody(textFormat, true, allowPromptCache))
-      }),
-      true
-    );
-    if (streamRes.ok) {
-      return parseDoubaoStream(streamRes);
-    }
-    if (!isStreamUnsupportedError(streamRes.status, streamErrorText)) {
-      throw new Error(buildRequestFailedMessage("Doubao", streamRes.status, streamErrorText));
-    }
-  }
-
-  const initialDoubaoResult = await fetchWithPromptCacheRetry(
-    (allowPromptCache) => fetch(`${baseUrl}/responses`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(buildBody(textFormat, false, allowPromptCache))
-    }),
-    true
-  );
-  let res = initialDoubaoResult.res;
-  const allowPromptCache = initialDoubaoResult.allowPromptCache;
-  const errorText = initialDoubaoResult.errorText;
-  if (!res.ok) {
-    const formatRejected = errorText.includes("response_format") || errorText.includes("text.format") || errorText.includes("json_schema");
-    if (schema && formatRejected) {
-      res = await fetch(`${baseUrl}/responses`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(buildBody({ type: "json_object" }, false, allowPromptCache))
-      });
-      if (!res.ok) {
-        throw new Error(await formatHttpError(res, "Doubao request failed"));
-      }
-    } else {
-      throw new Error(buildRequestFailedMessage("Doubao", res.status, errorText));
-    }
-  }
-  const data = await res.json();
-  const output = Array.isArray(data?.output) ? data.output : [];
-  const outputText = output
-    .filter((item: any) => item?.type === "message" && item?.role === "assistant")
-    .flatMap((item: any) => Array.isArray(item?.content) ? item.content : [])
-    .filter((part: any) => part?.type === "output_text" && typeof part?.text === "string")
-    .map((part: any) => part.text)
-    .join("")
-    .trim();
-  const content = typeof data?.output_text === "string"
-    ? data.output_text.trim()
-    : outputText;
-  const usage = data?.usage;
-  const tokenUsage = normalizeTokenUsage({
-    promptTokens: usage?.input_tokens,
-    completionTokens: usage?.output_tokens,
-    totalTokens: usage?.total_tokens
-  }, `${system}\n${prompt}`, content || "");
-  narrationStream.finalize(content || "");
-  return { content: content || "", tokenUsage };
-};
-
-const fetchImageAsBase64 = async (url: string) => {
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch image (${res.status}).`);
-  }
-  const blob = await res.blob();
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Failed to read image data."));
-    reader.readAsDataURL(blob);
-  });
-};
-
-const generateOpenAiImage = async (
-  apiKey: string,
-  baseUrl: string,
-  model: string,
-  prompt: string,
-  provider: ModelProvider
-) => {
-  const requestLabel = getOpenAiLabel(provider);
-  const effectivePrompt = provider === "grok"
-    ? clampImagePrompt(prompt, 1024)
-    : prompt;
-  const requestBody: Record<string, any> = {
-    model,
-    prompt: effectivePrompt
-  };
-  if (provider !== "grok") {
-    requestBody.size = "1024x1024";
-  }
-  let res = await fetch(`${baseUrl}/images/generations`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(requestBody)
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    const message = text
-      ? `${requestLabel} image request failed (HTTP ${res.status}): ${text}`
-      : `${requestLabel} image request failed (HTTP ${res.status}).`;
-    throw new Error(message);
-  }
-  const data = await res.json();
-  const b64 = data?.data?.[0]?.b64_json as string | undefined;
-  if (b64) return b64;
-  const url = data?.data?.[0]?.url as string | undefined;
-  if (url) {
-    if (provider === "grok") {
-      return url;
-    }
-    const dataUrl = await fetchImageAsBase64(url);
-    return dataUrl.replace(/^data:image\/png;base64,/, "").replace(/^data:image\/jpeg;base64,/, "");
-  }
-  return undefined;
-};
-
-const generateDoubaoImage = async (apiKey: string, baseUrl: string, model: string, prompt: string) => {
-  const res = await fetch(`${baseUrl}/images/generations`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
+): Promise<StreamedJsonResult> => {
+  if (format === "openai-responses" || format === "openai-chat-completions") {
+    return callOpenAiJson(
+      apiKey,
+      baseUrl,
       model,
+      system,
       prompt,
-      size: "2048x2048",
-      response_format: "b64_json"
-    })
-  });
-  if (!res.ok) {
-    throw new Error(await formatHttpError(res, "Doubao image request failed"));
+      schema,
+      schemaName,
+      getOpenAiLabel(format),
+      runtimeOptions
+    );
   }
-  const data = await res.json();
-  return data?.data?.[0]?.b64_json as string | undefined;
+  if (format === "anthropic-messages") {
+    return callClaudeJson(apiKey, baseUrl, model, system, prompt, schema, runtimeOptions);
+  }
+  if (format === "gemini-interactions") {
+    const result = await callGeminiInteractionsJson({
+      apiKey,
+      baseUrl,
+      model,
+      system,
+      prompt,
+      schema
+    });
+    const usage = result.usage;
+    return {
+      content: result.content,
+      tokenUsage: normalizeTokenUsage({
+        promptTokens: usage?.total_input_tokens,
+        completionTokens: usage?.total_output_tokens,
+        totalTokens: usage?.total_tokens
+      }, `${system}\n${prompt}`, result.content)
+    };
+  }
+  throw new Error(`Unsupported text request format: ${format}.`);
 };
 
 export async function createPlayerCharacter(
@@ -2695,11 +2528,11 @@ export async function createPlayerCharacter(
   year: number,
   region: string,
   lang: Language,
-  options?: { tier?: UserTier; onProgress?: (message: string) => void; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string }
+  options?: { tier?: UserTier; onProgress?: (message: string) => void; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelRequestFormat; userSystemPrompt?: string }
 ): Promise<PlayerCreationResult> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
     if (options?.tier === "guest") {
       return createGeminiPlayer(userInput, year, region, lang, {
         tier: options?.tier,
@@ -2713,7 +2546,7 @@ export async function createPlayerCharacter(
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
@@ -2722,10 +2555,7 @@ export async function createPlayerCharacter(
     const targetLang = lang === "zh" ? "Chinese" : "English";
     const system = buildCharacterSystem(targetLang, options?.userSystemPrompt);
     const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). Include a short appearance description for the player and any companions. If the user mentions starting companions, include them.`;
-    const ai = new GoogleGenAI({
-      apiKey,
-      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-    });
+    const ai = createGeminiClient(apiKey, proxyBaseUrl);
     emit(`Requesting character profile from ${model}...`);
     const response = await callGeminiJsonWithCache(ai, {
       apiKey,
@@ -2756,7 +2586,7 @@ export async function createPlayerCharacter(
   if (useProxy && !baseUrl) {
     throw new Error("Missing proxy base URL.");
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
@@ -2766,20 +2596,9 @@ export async function createPlayerCharacter(
   const system = buildCharacterSystem(targetLang, options?.userSystemPrompt);
   const prompt = `Create a Fallout character for the year ${year} in ${region} based on this input: "${userInput}". Ensure they have appropriate initial perks, inventory, and starting Bottle Caps (50-200 caps). Include a short appearance description for the player and any companions. If the user mentions starting companions, include them.`;
 
-  const result = isOpenAiCompatible(provider)
-    ? await callOpenAiJson(
-      apiKey,
-      baseUrl,
-      model,
-      system,
-      prompt,
-      jsonPlayerCreationSchema,
-      "player_creation",
-      getOpenAiLabel(provider)
-    )
-    : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonPlayerCreationSchema)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonPlayerCreationSchema, "player_creation");
+  const result = await callJsonByFormat(
+    provider, apiKey, baseUrl, model, system, prompt, jsonPlayerCreationSchema, "player_creation"
+  );
 
   const parsed = safeJsonParse(result.content);
   if (parsed && typeof parsed === "object") {
@@ -2797,11 +2616,11 @@ export async function getNarrativeResponse(
   quests: Quest[],
   knownNpcs: Actor[],
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string; onNarrationStream?: (text: string) => void }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelRequestFormat; userSystemPrompt?: string; onNarrationStream?: (text: string) => void }
 ): Promise<NarratorResponse> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
     if (options?.tier === "guest") {
       return getGeminiNarration(player, history, userInput, year, location, quests, knownNpcs, lang, {
         tier: options?.tier,
@@ -2814,7 +2633,7 @@ export async function getNarrativeResponse(
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
@@ -2822,10 +2641,7 @@ export async function getNarrativeResponse(
     const targetLang = lang === "zh" ? "Chinese" : "English";
     const system = buildNarratorSystem(targetLang, year, location, options?.userSystemPrompt);
     const prompt = buildNarratorPrompt(player, history, userInput, year, location, quests, knownNpcs);
-    const ai = new GoogleGenAI({
-      apiKey,
-      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-    });
+    const ai = createGeminiClient(apiKey, proxyBaseUrl);
     const response = await callGeminiJsonWithCache(ai, {
       apiKey,
       baseUrl: proxyBaseUrl || "",
@@ -2862,7 +2678,7 @@ export async function getNarrativeResponse(
   if (useProxy && !baseUrl) {
     throw new Error("Missing proxy base URL.");
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
@@ -2872,22 +2688,18 @@ export async function getNarrativeResponse(
   const system = buildNarratorSystem(targetLang, year, location, options?.userSystemPrompt);
   const prompt = buildNarratorPrompt(player, history, userInput, year, location, quests, knownNpcs);
 
-  const narratorSchema = provider === "doubao" ? jsonNarratorSchemaDoubao : jsonNarratorSchema;
-  const result = isOpenAiCompatible(provider)
-    ? await callOpenAiJson(
-      apiKey,
-      baseUrl,
-      model,
-      system,
-      prompt,
-      narratorSchema,
-      "narrator",
-      getOpenAiLabel(provider),
-      { onNarrationStream: options?.onNarrationStream }
-    )
-    : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, narratorSchema, { onNarrationStream: options?.onNarrationStream })
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, narratorSchema, "narrator", { onNarrationStream: options?.onNarrationStream });
+  const narratorSchema = jsonNarratorSchema;
+  const result = await callJsonByFormat(
+    provider,
+    apiKey,
+    baseUrl,
+    model,
+    system,
+    prompt,
+    narratorSchema,
+    "narrator",
+    { onNarrationStream: options?.onNarrationStream }
+  );
 
   const parsed = safeJsonParse(result.content);
   const response = parseNarrator(parsed, userInput);
@@ -2905,7 +2717,7 @@ export async function getEventOutcome(
   quests: Quest[],
   knownNpcs: Actor[],
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelRequestFormat; userSystemPrompt?: string }
 ): Promise<EventOutcome> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -2913,7 +2725,7 @@ export async function getEventOutcome(
   const system = buildEventSystem(targetLang, year, location, options?.userSystemPrompt);
   const prompt = buildEventPrompt(player, history, userInput, year, location, currentTime, quests, knownNpcs);
 
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
     if (options?.tier === "guest") {
       const response = await getGeminiEventOutcome(
         player,
@@ -2933,15 +2745,12 @@ export async function getEventOutcome(
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
     }
-    const ai = new GoogleGenAI({
-      apiKey,
-      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-    });
+    const ai = createGeminiClient(apiKey, proxyBaseUrl);
     const response = await callGeminiJsonWithCache(ai, {
       apiKey,
       baseUrl: proxyBaseUrl || "",
@@ -2967,27 +2776,16 @@ export async function getEventOutcome(
   if (useProxy && !baseUrl) {
     throw new Error("Missing proxy base URL.");
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
   }
 
-  const eventSchemaForProvider = provider === "doubao" ? jsonEventOutcomeSchemaDoubao : jsonEventOutcomeSchema;
-  const result = isOpenAiCompatible(provider)
-    ? await callOpenAiJson(
-      apiKey,
-      baseUrl,
-      model,
-      system,
-      prompt,
-      eventSchemaForProvider,
-      "event_outcome",
-      getOpenAiLabel(provider)
-    )
-    : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, eventSchemaForProvider)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, eventSchemaForProvider, "event_outcome");
+  const eventSchemaForProvider = jsonEventOutcomeSchema;
+  const result = await callJsonByFormat(
+    provider, apiKey, baseUrl, model, system, prompt, eventSchemaForProvider, "event_outcome"
+  );
 
   const parsed = safeJsonParse(result.content);
   const outcome = { ...parseEventOutcomeSummary(parsed), tokenUsage: result.tokenUsage };
@@ -3003,7 +2801,7 @@ export async function getEventNarration(
   currentTime: string,
   eventOutcome: EventOutcome,
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider; userSystemPrompt?: string; onNarrationStream?: (text: string) => void }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelRequestFormat; userSystemPrompt?: string; onNarrationStream?: (text: string) => void }
 ): Promise<EventNarrationResponse> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -3011,7 +2809,7 @@ export async function getEventNarration(
   const system = buildEventNarratorSystem(targetLang, year, location, options?.userSystemPrompt);
   const prompt = buildEventNarratorPrompt(player, knownNpcs, quests, year, location, currentTime, eventOutcome);
 
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
     if (options?.tier === "guest") {
       return getGeminiEventNarration(player, knownNpcs, quests, year, location, currentTime, eventOutcome, lang, {
         tier: options?.tier,
@@ -3024,15 +2822,12 @@ export async function getEventNarration(
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
     }
-    const ai = new GoogleGenAI({
-      apiKey,
-      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-    });
+    const ai = createGeminiClient(apiKey, proxyBaseUrl);
     const response = await callGeminiJsonWithCache(ai, {
       apiKey,
       baseUrl: proxyBaseUrl || "",
@@ -3066,7 +2861,7 @@ export async function getEventNarration(
   if (useProxy && !baseUrl) {
     throw new Error("Missing proxy base URL.");
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
@@ -3082,21 +2877,17 @@ export async function getEventNarration(
     additionalProperties: false
   };
 
-  const result = isOpenAiCompatible(provider)
-    ? await callOpenAiJson(
-      apiKey,
-      baseUrl,
-      model,
-      system,
-      prompt,
-      eventNarrationSchema,
-      "event_narration",
-      getOpenAiLabel(provider),
-      { onNarrationStream: options?.onNarrationStream }
-    )
-    : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema, { onNarrationStream: options?.onNarrationStream })
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, eventNarrationSchema, "event_narration", { onNarrationStream: options?.onNarrationStream });
+  const result = await callJsonByFormat(
+    provider,
+    apiKey,
+    baseUrl,
+    model,
+    system,
+    prompt,
+    eventNarrationSchema,
+    "event_narration",
+    { onNarrationStream: options?.onNarrationStream }
+  );
 
   const parsed = safeJsonParse(result.content);
   const narration = { ...parseEventNarration(parsed, eventOutcome.outcomeSummary || ""), tokenUsage: result.tokenUsage };
@@ -3115,7 +2906,7 @@ export async function getArenaNarration(
     proxyBaseUrl?: string;
     useProxy?: boolean;
     textModel?: TextModelId;
-    provider?: ModelProvider;
+    provider?: ModelRequestFormat;
     userSystemPrompt?: string;
     finish?: boolean;
     mode?: 'scenario' | 'wargame';
@@ -3128,7 +2919,7 @@ export async function getArenaNarration(
   const finish = !!options?.finish;
   const mode = options?.mode === 'wargame' ? 'wargame' : 'scenario';
   const phase = options?.phase === 'battle' ? 'battle' : 'briefing';
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
     if (options?.tier === "guest") {
       return getGeminiArenaNarration(focus, involvedParties, history, lang, {
         tier: options?.tier,
@@ -3145,7 +2936,7 @@ export async function getArenaNarration(
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
@@ -3153,10 +2944,7 @@ export async function getArenaNarration(
     const targetLang = lang === "zh" ? "Chinese" : "English";
     const system = buildArenaSystem(targetLang, mode, options?.userSystemPrompt);
     const prompt = buildArenaPrompt(focus, involvedParties, history, finish, mode, phase, options?.forcePowers);
-    const ai = new GoogleGenAI({
-      apiKey,
-      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-    });
+    const ai = createGeminiClient(apiKey, proxyBaseUrl);
     const response = await callGeminiJsonWithCache(ai, {
       apiKey,
       baseUrl: proxyBaseUrl || "",
@@ -3193,7 +2981,7 @@ export async function getArenaNarration(
   if (useProxy && !baseUrl) {
     throw new Error("Missing proxy base URL.");
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
@@ -3203,20 +2991,9 @@ export async function getArenaNarration(
   const system = buildArenaSystem(targetLang, mode, options?.userSystemPrompt);
   const prompt = buildArenaPrompt(focus, involvedParties, history, finish, mode, phase, options?.forcePowers);
 
-  const result = isOpenAiCompatible(provider)
-    ? await callOpenAiJson(
-      apiKey,
-      baseUrl,
-      model,
-      system,
-      prompt,
-      jsonArenaSchema,
-      "arena",
-      getOpenAiLabel(provider)
-    )
-    : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonArenaSchema)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonArenaSchema, "arena");
+  const result = await callJsonByFormat(
+    provider, apiKey, baseUrl, model, system, prompt, jsonArenaSchema, "arena"
+  );
 
   const parsed = safeJsonParse(result.content);
   const storyText = parsed?.storyText ? String(parsed.storyText) : "";
@@ -3243,7 +3020,7 @@ export async function getStatusUpdate(
   currentTime: string,
   narration: string,
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelRequestFormat }
 ): Promise<{ update: StatusUpdate; tokenUsage?: TokenUsage }> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -3251,7 +3028,7 @@ export async function getStatusUpdate(
   const system = buildStatusSystem(targetLang, year, location);
   const prompt = buildStatusPrompt(player, quests, knownNpcs, year, location, currentTime, narration);
 
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
       if (options?.tier === "guest") {
         const response = await getGeminiStatusUpdate(
           player,
@@ -3272,15 +3049,12 @@ export async function getStatusUpdate(
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
     }
-    const ai = new GoogleGenAI({
-      apiKey,
-      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-    });
+    const ai = createGeminiClient(apiKey, proxyBaseUrl);
     const response = await callGeminiJsonWithCache(ai, {
       apiKey,
       baseUrl: proxyBaseUrl || "",
@@ -3307,26 +3081,15 @@ export async function getStatusUpdate(
   if (useProxy && !baseUrl) {
     throw new Error("Missing proxy base URL.");
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
   }
 
-  const result = isOpenAiCompatible(provider)
-    ? await callOpenAiJson(
-      apiKey,
-      baseUrl,
-      model,
-      system,
-      prompt,
-      jsonStatusSchema,
-      "status_update",
-      getOpenAiLabel(provider)
-    )
-    : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonStatusSchema)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonStatusSchema, "status_update");
+    const result = await callJsonByFormat(
+      provider, apiKey, baseUrl, model, system, prompt, jsonStatusSchema, "status_update"
+    );
 
     const parsed = safeJsonParse(result.content);
     const normalized = normalizeInventoryChangeCarrier(parsed);
@@ -3337,7 +3100,7 @@ export async function getStatusUpdate(
 export async function refreshInventory(
   inventory: InventoryItem[],
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelRequestFormat }
 ): Promise<{ inventory: InventoryItem[]; tokenUsage?: TokenUsage }> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -3345,7 +3108,7 @@ export async function refreshInventory(
   const system = buildInventoryRefreshSystem(targetLang);
   const prompt = buildInventoryRefreshPrompt(inventory);
 
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
     if (options?.tier === "guest") {
       const response = await refreshGeminiInventory(inventory, lang, {
         tier: options?.tier,
@@ -3359,15 +3122,12 @@ export async function refreshInventory(
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
     }
-    const ai = new GoogleGenAI({
-      apiKey,
-      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-    });
+    const ai = createGeminiClient(apiKey, proxyBaseUrl);
     const response = await callGeminiJsonWithCache(ai, {
       apiKey,
       baseUrl: proxyBaseUrl || "",
@@ -3393,26 +3153,15 @@ export async function refreshInventory(
   if (useProxy && !baseUrl) {
     throw new Error("Missing proxy base URL.");
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
   }
 
-  const result = isOpenAiCompatible(provider)
-    ? await callOpenAiJson(
-      apiKey,
-      baseUrl,
-      model,
-      system,
-      prompt,
-      jsonInventoryRefreshSchema,
-      "inventory_refresh",
-      getOpenAiLabel(provider)
-    )
-    : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_refresh");
+  const result = await callJsonByFormat(
+    provider, apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_refresh"
+  );
 
   const parsed = safeJsonParse(result.content);
   const items = parsed && typeof parsed === "object" && Array.isArray(parsed.inventory) ? parsed.inventory : [];
@@ -3422,7 +3171,7 @@ export async function refreshInventory(
 export async function auditInventoryWeights(
   inventory: InventoryItem[],
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelRequestFormat }
 ): Promise<{ inventory: InventoryItem[]; tokenUsage?: TokenUsage }> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -3430,7 +3179,7 @@ export async function auditInventoryWeights(
   const system = buildInventoryWeightSystem(targetLang);
   const prompt = buildInventoryWeightPrompt(inventory);
 
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
     if (options?.tier === "guest") {
       const response = await auditGeminiInventoryWeights(inventory, lang, {
         tier: options?.tier,
@@ -3444,15 +3193,12 @@ export async function auditInventoryWeights(
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
     }
-    const ai = new GoogleGenAI({
-      apiKey,
-      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-    });
+    const ai = createGeminiClient(apiKey, proxyBaseUrl);
     const response = await callGeminiJsonWithCache(ai, {
       apiKey,
       baseUrl: proxyBaseUrl || "",
@@ -3478,26 +3224,15 @@ export async function auditInventoryWeights(
   if (useProxy && !baseUrl) {
     throw new Error("Missing proxy base URL.");
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
   }
 
-  const result = isOpenAiCompatible(provider)
-    ? await callOpenAiJson(
-      apiKey,
-      baseUrl,
-      model,
-      system,
-      prompt,
-      jsonInventoryRefreshSchema,
-      "inventory_audit",
-      getOpenAiLabel(provider)
-    )
-    : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_audit");
+  const result = await callJsonByFormat(
+    provider, apiKey, baseUrl, model, system, prompt, jsonInventoryRefreshSchema, "inventory_audit"
+  );
 
   const parsed = safeJsonParse(result.content);
   const items = parsed && typeof parsed === "object" && Array.isArray(parsed.inventory) ? parsed.inventory : [];
@@ -3508,7 +3243,7 @@ export async function recoverInventoryStatus(
   lore: string,
   narrations: string[],
   lang: Language,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelRequestFormat }
 ): Promise<{ initialInventory: InventoryItem[]; inventoryChanges: { narration_index: number; inventoryChange: any }[]; tokenUsage?: TokenUsage }> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -3516,7 +3251,7 @@ export async function recoverInventoryStatus(
   const system = buildInventoryRecoverySystem(targetLang);
   const prompt = buildInventoryRecoveryPrompt(lore, narrations);
 
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
     if (options?.tier === "guest") {
       const response = await recoverGeminiInventoryStatus(lore, narrations, lang, {
         tier: options?.tier,
@@ -3534,15 +3269,12 @@ export async function recoverInventoryStatus(
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
     }
-    const ai = new GoogleGenAI({
-      apiKey,
-      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-    });
+    const ai = createGeminiClient(apiKey, proxyBaseUrl);
     const response = await callGeminiJsonWithCache(ai, {
       apiKey,
       baseUrl: proxyBaseUrl || "",
@@ -3571,26 +3303,15 @@ export async function recoverInventoryStatus(
   if (useProxy && !baseUrl) {
     throw new Error("Missing proxy base URL.");
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
   }
 
-  const result = isOpenAiCompatible(provider)
-    ? await callOpenAiJson(
-      apiKey,
-      baseUrl,
-      model,
-      system,
-      prompt,
-      jsonInventoryRecoverySchema,
-      "inventory_recovery",
-      getOpenAiLabel(provider)
-    )
-    : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRecoverySchema)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonInventoryRecoverySchema, "inventory_recovery");
+  const result = await callJsonByFormat(
+    provider, apiKey, baseUrl, model, system, prompt, jsonInventoryRecoverySchema, "inventory_recovery"
+  );
 
   const parsed = safeJsonParse(result.content);
   return {
@@ -3608,7 +3329,7 @@ export async function compressMemory(
   payload: { saveState: any; compressedMemory: string; recentHistory: HistoryEntry[] },
   lang: Language,
   maxMemoryK: number,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelProvider }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; textModel?: TextModelId; provider?: ModelRequestFormat }
 ): Promise<{ memory: string; tokenUsage?: TokenUsage }> {
   const provider = normalizeProvider(options?.provider);
   const useProxy = !!options?.useProxy;
@@ -3638,7 +3359,7 @@ Return JSON: {"memory": "..."} only.`;
 3. Output language must be ${targetLang}.
 4. Return JSON with key "memory" only.`;
 
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
     if (options?.tier === "guest") {
       return compressGeminiMemory(payload, lang, maxMemoryK, {
         tier: options?.tier,
@@ -3650,15 +3371,12 @@ Return JSON: {"memory": "..."} only.`;
     if (useProxy && !proxyBaseUrl) {
       throw new Error("Missing proxy base URL.");
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.textModel || "";
     if (!model) {
       throw new Error("Missing text model name.");
     }
-    const ai = new GoogleGenAI({
-      apiKey,
-      ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-    });
+    const ai = createGeminiClient(apiKey, proxyBaseUrl);
     const response = await callGeminiJsonWithCache(ai, {
       apiKey,
       baseUrl: proxyBaseUrl || "",
@@ -3687,26 +3405,15 @@ Return JSON: {"memory": "..."} only.`;
   if (useProxy && !baseUrl) {
     throw new Error("Missing proxy base URL.");
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+  const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.textModel || "";
   if (!model) {
     throw new Error("Missing text model name.");
   }
 
-  const result = isOpenAiCompatible(provider)
-    ? await callOpenAiJson(
-      apiKey,
-      baseUrl,
-      model,
-      system,
-      prompt,
-      jsonMemorySchema,
-      "memory",
-      getOpenAiLabel(provider)
-    )
-    : provider === "claude"
-      ? await callClaudeJson(apiKey, baseUrl, model, system, prompt, jsonMemorySchema)
-      : await callDoubaoJson(apiKey, baseUrl, model, system, prompt, jsonMemorySchema, "memory");
+  const result = await callJsonByFormat(
+    provider, apiKey, baseUrl, model, system, prompt, jsonMemorySchema, "memory"
+  );
 
   const parsed = safeJsonParse(result.content);
   const memory = typeof parsed?.memory === "string" ? parsed.memory.trim() : "";
@@ -3718,11 +3425,11 @@ Return JSON: {"memory": "..."} only.`;
 
 export async function generateCompanionAvatar(
   npc: Actor,
-  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; provider?: ModelProvider; imageUserSystemPrompt?: string }
+  options?: { tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; provider?: ModelRequestFormat; imageUserSystemPrompt?: string }
 ): Promise<{ url?: string; error?: string } | undefined> {
-  const provider = normalizeProvider(options?.provider);
+  const provider = normalizeImageRequestFormat(options?.provider);
   const useProxy = !!options?.useProxy;
-  if (provider === "gemini") {
+  if (provider === "gemini-generate-content") {
     if (options?.tier === "guest") {
       return generateGeminiAvatar(npc, {
         tier: options?.tier,
@@ -3735,7 +3442,7 @@ export async function generateCompanionAvatar(
     if (useProxy && !proxyBaseUrl) {
       return { error: "Missing proxy base URL." };
     }
-    const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+    const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
     const model = options?.imageModel || "";
     if (!model) {
       return { error: "Missing image model name." };
@@ -3746,10 +3453,7 @@ export async function generateCompanionAvatar(
     const guidanceBlock = guidanceLine ? `\n${guidanceLine}` : "";
     const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. ${appearanceLine} Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.${guidanceBlock}`;
     try {
-      const imageAi = new GoogleGenAI({
-        apiKey,
-        ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-      });
+      const imageAi = createGeminiClient(apiKey, proxyBaseUrl);
       const response = await imageAi.models.generateContent({
         model,
         contents: {
@@ -3773,15 +3477,11 @@ export async function generateCompanionAvatar(
       return { error: e instanceof Error ? e.message : String(e) };
     }
   }
-  if (provider === "claude") {
-    return { error: "Claude image generation is not supported." };
-  }
-
   const baseUrl = resolveBaseUrl(provider, useProxy ? options?.proxyBaseUrl : undefined);
   if (useProxy && !baseUrl) {
     return { error: "Missing proxy base URL." };
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, provider);
+  const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, provider);
   const model = options?.imageModel || "";
   if (!model) {
     return { error: "Missing image model name." };
@@ -3791,16 +3491,20 @@ export async function generateCompanionAvatar(
   const appearanceLine = appearance ? `Appearance: ${appearance}.` : '';
   const prompt = `Fallout companion portrait. Name: ${npc.name}. Faction: ${npc.faction}. Gender: ${npc.gender}. Age: ${npc.age}. ${appearanceLine} Style: Pip-Boy dossier headshot, gritty, realistic, neutral background.`;
   try {
-    const base64 = isOpenAiCompatible(provider)
-      ? await generateOpenAiImage(apiKey, baseUrl, model, prompt, provider)
-      : await generateDoubaoImage(apiKey, baseUrl, model, prompt);
-    if (!base64) {
-      return { error: "No image data returned from the model." };
-    }
-    if (provider === "grok" && /^https?:/i.test(base64)) {
-      return { url: base64 };
-    }
-    const resized = await resizeImageToSquare(`data:image/png;base64,${base64}`, 100);
+    const generated = await generateImageByFormat({
+      apiKey,
+      baseUrl,
+      model,
+      prompt,
+      format: provider,
+      aspectRatio: "1:1"
+    });
+    if (generated.url) return { url: generated.url };
+    if (!generated.base64) return { error: "No image data returned from the model." };
+    const resized = await resizeImageToSquare(
+      `data:${generated.mimeType || 'image/png'};base64,${generated.base64}`,
+      100
+    );
     return { url: resized };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
@@ -3820,26 +3524,22 @@ export async function generateArenaAvatar(
     useProxy?: boolean;
     imageModel?: ImageModelId;
     textModel?: TextModelId;
-    provider?: ModelProvider;
-    textProvider?: ModelProvider;
+    provider?: ModelRequestFormat;
+    textProvider?: ModelRequestFormat;
     textApiKey?: string;
     textProxyApiKey?: string;
     imageUserSystemPrompt?: string;
   }
 ): Promise<{ url?: string; error?: string } | undefined> {
-  const imageProvider = normalizeProvider(options?.provider);
-  const researchProvider = normalizeProvider(options?.textProvider || options?.provider);
+  const imageProvider = normalizeImageRequestFormat(options?.provider);
+  const researchProvider = normalizeTextRequestFormat(options?.textProvider || options?.provider);
   const useProxy = !!options?.useProxy;
   const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
   const researchProxyBaseUrl = normalizeBaseUrl(options?.textProxyBaseUrl || options?.proxyBaseUrl);
   if (useProxy && !proxyBaseUrl) {
     return { error: "Missing proxy base URL." };
   }
-  if (imageProvider === "claude") {
-    return { error: "Claude image generation is not supported." };
-  }
-
-  const imageApiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, imageProvider);
+  const imageApiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, imageProvider);
   const imageModel = options?.imageModel || "";
   if (!imageModel) {
     return { error: "Missing image model name." };
@@ -3855,12 +3555,9 @@ export async function generateArenaAvatar(
     const researchApiKey = useProxy
       ? (options?.textProxyApiKey || options?.proxyApiKey)
       : (options?.textApiKey || options?.apiKey);
-    if (researchProvider === "gemini" && researchApiKey) {
+    if (researchProvider === "gemini-generate-content" && researchApiKey) {
       try {
-        const researchAi = new GoogleGenAI({
-          apiKey: researchApiKey,
-          ...(researchProxyBaseUrl ? { httpOptions: { baseUrl: researchProxyBaseUrl } } : {})
-        });
+        const researchAi = createGeminiClient(researchApiKey, researchProxyBaseUrl);
         const researchResponse = await researchAi.models.generateContent({
           model: textModel,
           contents: `Research a Fallout portrait for: ${description}.${guidanceBlock}
@@ -3877,27 +3574,7 @@ export async function generateArenaAvatar(
       } catch {
         finalPrompt = basePrompt;
       }
-    } else if (researchProvider === "grok" && researchApiKey) {
-      try {
-        const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
-        const researchResponse = await callGrokWebSearch(
-          researchApiKey,
-          researchBaseUrl,
-          textModel,
-          `Research a Fallout portrait for: ${description}.${guidanceBlock}
-1. Identify key visual traits, attire, and faction motifs.
-2. Use Fallout Wiki terms when possible.
-3. Output a concise portrait description for a concept artist.
-4. Return plain text only, no citations or URLs. Keep it under 500 characters.`
-        , 500
-        );
-        if (researchResponse.text) {
-          finalPrompt = `Fallout dossier portrait. ${researchResponse.text}`;
-        }
-      } catch {
-        finalPrompt = basePrompt;
-      }
-    } else if (researchProvider === "openai" && researchApiKey) {
+    } else if (researchProvider === "openai-responses" && researchApiKey) {
       try {
         const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
         const researchResponse = await callOpenAiWebSearch(
@@ -3921,11 +3598,8 @@ export async function generateArenaAvatar(
   }
 
   try {
-    if (imageProvider === "gemini") {
-      const imageAi = new GoogleGenAI({
-        apiKey: imageApiKey,
-        ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-      });
+    if (imageProvider === "gemini-generate-content") {
+      const imageAi = createGeminiClient(imageApiKey, proxyBaseUrl);
       const response = await imageAi.models.generateContent({
         model: imageModel,
         contents: {
@@ -3947,22 +3621,20 @@ export async function generateArenaAvatar(
       return { error: "No image data returned from the model." };
     }
 
-    const base64 = isOpenAiCompatible(imageProvider)
-      ? await generateOpenAiImage(
-        imageApiKey,
-        resolveBaseUrl(imageProvider, proxyBaseUrl),
-        imageModel,
-        finalPrompt,
-        imageProvider
-      )
-      : await generateDoubaoImage(imageApiKey, resolveBaseUrl(imageProvider, proxyBaseUrl), imageModel, finalPrompt);
-    if (!base64) {
-      return { error: "No image data returned from the model." };
-    }
-    if (imageProvider === "grok" && /^https?:/i.test(base64)) {
-      return { url: base64 };
-    }
-    const resized = await resizeImageToSquare(`data:image/png;base64,${base64}`, 100);
+    const generated = await generateImageByFormat({
+      apiKey: imageApiKey,
+      baseUrl: resolveBaseUrl(imageProvider, proxyBaseUrl),
+      model: imageModel,
+      prompt: finalPrompt,
+      format: imageProvider,
+      aspectRatio: "1:1"
+    });
+    if (generated.url) return { url: generated.url };
+    if (!generated.base64) return { error: "No image data returned from the model." };
+    const resized = await resizeImageToSquare(
+      `data:${generated.mimeType || 'image/png'};base64,${generated.base64}`,
+      100
+    );
     return { url: resized };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
@@ -3971,158 +3643,31 @@ export async function generateArenaAvatar(
 
 export async function generateSceneImage(
   prompt: string,
-  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; textProxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelProvider; textProvider?: ModelProvider; textApiKey?: string; textProxyApiKey?: string; imageUserSystemPrompt?: string }
+  options?: { highQuality?: boolean; tier?: UserTier; apiKey?: string; proxyApiKey?: string; proxyBaseUrl?: string; textProxyBaseUrl?: string; useProxy?: boolean; imageModel?: ImageModelId; textModel?: TextModelId; provider?: ModelRequestFormat; textProvider?: ModelRequestFormat; textApiKey?: string; textProxyApiKey?: string; imageUserSystemPrompt?: string }
 ): Promise<{ url?: string; sources?: GroundingSource[]; error?: string } | undefined> {
-  const imageProvider = normalizeProvider(options?.provider);
-  const researchProvider = normalizeProvider(options?.textProvider || options?.provider);
+  const imageProvider = normalizeImageRequestFormat(options?.provider);
+  const researchProvider = normalizeTextRequestFormat(options?.textProvider || options?.provider);
   const useProxy = !!options?.useProxy;
-  const contextSuffix = buildImageContext(options?.imageUserSystemPrompt);
-  const imageContextSuffix = contextSuffix;
+  const imageContextSuffix = buildImageContext(options?.imageUserSystemPrompt);
   const guidanceLine = buildUserGuidanceLine(options?.imageUserSystemPrompt);
   const guidanceBlock = guidanceLine ? `\n${guidanceLine}` : "";
-  if (imageProvider === "gemini") {
-    if (options?.tier === "guest") {
-      const guestPrompt = imageContextSuffix ? `${prompt}\n${imageContextSuffix}` : prompt;
-      return generateGeminiScene(guestPrompt, {
-        highQuality: options?.highQuality,
-        tier: options?.tier,
-        apiKey: options?.apiKey,
-        imageModel: options?.imageModel,
-        textModel: options?.textModel
-      });
-    }
-    const proxyBaseUrl = normalizeBaseUrl(options?.proxyBaseUrl);
-    const researchProxyBaseUrl = normalizeBaseUrl(options?.textProxyBaseUrl || options?.proxyBaseUrl);
-    if (useProxy && !proxyBaseUrl) {
-      return { error: "Missing proxy base URL." };
-    }
-    const imageApiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, imageProvider);
-    const imageModel = options?.imageModel || "";
-    if (!imageModel) {
-      return { error: "Missing image model name." };
-    }
-    const textModel = options?.textModel || "";
-    const useHighQuality = options?.highQuality !== false;
-    const researchApiKey = useProxy
-      ? (options?.textProxyApiKey || options?.proxyApiKey)
-      : (options?.textApiKey || options?.apiKey);
-    try {
-      let detailedDescription = prompt;
-      let groundingSources: GroundingSource[] = [];
-      if (useHighQuality && textModel && researchApiKey) {
-        if (researchProvider === "gemini") {
-          const researchAi = new GoogleGenAI({
-            apiKey: researchApiKey,
-            ...(researchProxyBaseUrl ? { httpOptions: { baseUrl: researchProxyBaseUrl } } : {})
-          });
-          try {
-            const researchResponse = await researchAi.models.generateContent({
-              model: textModel,
-              contents: `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
-1. Extract 3-5 keywords related to Fallout lore, items, or environment.
-2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
-3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
-4. Format your final response as a detailed scene description for a concept artist.`,
-              config: {
-                tools: [{ googleSearch: {} }]
-              }
-            });
-            if (researchResponse?.text) {
-              detailedDescription = researchResponse.text;
-            }
-            groundingSources = researchResponse?.candidates?.[0]?.groundingMetadata?.groundingChunks
-              ?.filter((chunk: any) => chunk.web)
-              ?.map((chunk: any) => ({
-                title: chunk.web.title,
-                uri: chunk.web.uri
-              })) || [];
-          } catch {
-            // Skip research if the model does not support search.
-          }
-        } else if (researchProvider === "grok") {
-          try {
-            const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
-            const researchResponse = await callGrokWebSearch(
-              researchApiKey,
-              researchBaseUrl,
-              textModel,
-              `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
-1. Extract 3-5 keywords related to Fallout lore, items, or environment.
-2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
-3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
-4. Format your final response as a detailed scene description for a concept artist.
-5. Return plain text only, no citations or URLs. Keep it under 800 characters.`
-            , 800
-            );
-            if (researchResponse.text) {
-              detailedDescription = researchResponse.text;
-            }
-            groundingSources = researchResponse.sources;
-          } catch {
-            // Skip research if not supported.
-          }
-        } else if (researchProvider === "openai") {
-          try {
-            const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
-            const researchResponse = await callOpenAiWebSearch(
-              researchApiKey,
-              researchBaseUrl,
-              textModel,
-              `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
-1. Extract 3-5 keywords related to Fallout lore, items, or environment.
-2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
-3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
-4. Format your final response as a detailed scene description for a concept artist.
-5. Return plain text only, no citations or URLs. Keep it under 800 characters.`
-            , 800
-            );
-            if (researchResponse.text) {
-              detailedDescription = researchResponse.text;
-            }
-          } catch {
-            // Skip research if not supported.
-          }
-        }
-      }
-      const finalDescription = imageContextSuffix ? `${detailedDescription}\n${imageContextSuffix}` : detailedDescription;
-      const finalPrompt = buildImagePrompt(finalDescription, useHighQuality);
-      const imageAi = new GoogleGenAI({
-        apiKey: imageApiKey,
-        ...(proxyBaseUrl ? { httpOptions: { baseUrl: proxyBaseUrl } } : {})
-      });
-      const imageResponse = await imageAi.models.generateContent({
-        model: imageModel,
-        contents: {
-          parts: [{ text: finalPrompt }]
-        },
-        config: {
-          imageConfig: { aspectRatio: "16:9" }
-        }
-      });
-      if (imageResponse.candidates?.[0]?.content?.parts) {
-        for (const part of imageResponse.candidates[0].content.parts) {
-          if (part.inlineData) {
-            const rawBase64 = `data:image/png;base64,${part.inlineData.data}`;
-            const compressed = await compressImage(rawBase64);
-            return { url: compressed, sources: groundingSources };
-          }
-        }
-      }
-      return { error: "No image data returned from the model." };
-    } catch (e) {
-      return { error: e instanceof Error ? e.message : String(e) };
-    }
-  }
-  if (imageProvider === "claude") {
-    return { error: "Claude image generation is not supported." };
+  if (options?.tier === "guest") {
+    const guestPrompt = imageContextSuffix ? `${prompt}\n${imageContextSuffix}` : prompt;
+    return generateGeminiScene(guestPrompt, {
+      highQuality: options?.highQuality,
+      tier: options?.tier,
+      apiKey: options?.apiKey,
+      imageModel: options?.imageModel,
+      textModel: options?.textModel
+    });
   }
 
-  const baseUrl = resolveBaseUrl(imageProvider, useProxy ? options?.proxyBaseUrl : undefined);
+  const baseUrl = resolveBaseUrl(imageProvider, options?.proxyBaseUrl);
   const researchProxyBaseUrl = normalizeBaseUrl(options?.textProxyBaseUrl || options?.proxyBaseUrl);
   if (useProxy && !baseUrl) {
     return { error: "Missing proxy base URL." };
   }
-  const apiKey = requireApiKey(useProxy ? options?.proxyApiKey : options?.apiKey, imageProvider);
+  const apiKey = requireApiKey(options?.apiKey || options?.proxyApiKey, imageProvider);
   const model = options?.imageModel || "";
   if (!model) {
     return { error: "Missing image model name." };
@@ -4131,16 +3676,11 @@ export async function generateSceneImage(
     let detailedDescription = prompt;
     let groundingSources: GroundingSource[] = [];
     const useHighQuality = options?.highQuality !== false;
-    const researchApiKey = useProxy
-      ? (options?.textProxyApiKey || options?.proxyApiKey)
-      : (options?.textApiKey || options?.apiKey);
+    const researchApiKey = options?.textApiKey || options?.textProxyApiKey || options?.apiKey || options?.proxyApiKey;
     if (useHighQuality && options?.textModel && researchApiKey) {
-      if (researchProvider === "gemini") {
+      if (researchProvider === "gemini-generate-content") {
         try {
-          const researchAi = new GoogleGenAI({
-            apiKey: researchApiKey,
-            ...(useProxy && researchProxyBaseUrl ? { httpOptions: { baseUrl: researchProxyBaseUrl } } : {})
-          });
+          const researchAi = createGeminiClient(researchApiKey, researchProxyBaseUrl);
           const researchResponse = await researchAi.models.generateContent({
             model: options.textModel,
             contents: `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
@@ -4164,29 +3704,7 @@ export async function generateSceneImage(
         } catch {
           // Skip research if not supported.
         }
-      } else if (researchProvider === "grok") {
-        try {
-          const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
-          const researchResponse = await callGrokWebSearch(
-            researchApiKey,
-            researchBaseUrl,
-            options.textModel,
-            `Research visual references for this Fallout scene: "${prompt}".${guidanceBlock}
-1. Extract 3-5 keywords related to Fallout lore, items, or environment.
-2. Search for these keywords + "Fallout" on Google to identify high-quality visual benchmarks (e.g. from Fallout 4 or New Vegas).
-3. Based on your search results, describe the exact textures, lighting (e.g. dawn over the Mojave, fluorescent flickering in a vault), and key props.
-4. Format your final response as a detailed scene description for a concept artist.
-5. Return plain text only, no citations or URLs. Keep it under 800 characters.`
-          , 800
-          );
-          if (researchResponse.text) {
-            detailedDescription = researchResponse.text;
-          }
-          groundingSources = researchResponse.sources;
-        } catch {
-          // Skip research if not supported.
-        }
-      } else if (researchProvider === "openai") {
+      } else if (researchProvider === "openai-responses") {
         try {
           const researchBaseUrl = resolveBaseUrl(researchProvider, useProxy ? researchProxyBaseUrl : undefined);
           const researchResponse = await callOpenAiWebSearch(
@@ -4211,16 +3729,19 @@ export async function generateSceneImage(
     }
     const finalDescription = imageContextSuffix ? `${detailedDescription}\n${imageContextSuffix}` : detailedDescription;
     const finalPrompt = buildImagePrompt(finalDescription, useHighQuality);
-    const base64 = isOpenAiCompatible(imageProvider)
-      ? await generateOpenAiImage(apiKey, baseUrl, model, finalPrompt, imageProvider)
-      : await generateDoubaoImage(apiKey, baseUrl, model, finalPrompt);
-    if (!base64) {
-      return { error: "No image data returned from the model." };
-    }
-    if (imageProvider === "grok" && /^https?:/i.test(base64)) {
-      return { url: base64, sources: groundingSources };
-    }
-    const compressed = await compressImage(`data:image/png;base64,${base64}`);
+    const generated = await generateImageByFormat({
+      apiKey,
+      baseUrl,
+      model,
+      prompt: finalPrompt,
+      format: imageProvider,
+      aspectRatio: "16:9"
+    });
+    if (generated.url) return { url: generated.url, sources: groundingSources };
+    if (!generated.base64) return { error: "No image data returned from the model." };
+    const compressed = await compressImage(
+      `data:${generated.mimeType || 'image/png'};base64,${generated.base64}`
+    );
     return { url: compressed, sources: groundingSources };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
