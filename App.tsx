@@ -3,12 +3,18 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { renderToStaticMarkup } from 'react-dom/server.browser';
-import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, KnownNpcUpdate, PlayerCreationResult, ModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState, PipelineMode, EventOutcome, EventNarrationResponse, InterfaceColor, SavedStatusSnapshot, Perk } from './types';
+import { GameState, Actor, Language, Quest, HistoryEntry, GameSettings, UserRecord, UserTier, CompanionUpdate, KnownNpcUpdate, PlayerCreationResult, TextRequestFormat, ImageRequestFormat, LegacyModelProvider, SpecialAttr, Skill, SkillSet, SpecialSet, TokenUsage, StatusChange, StatusTrack, StatusSnapshot, StatusChangeEntry, InventoryItem, InventoryChange, PlayerChange, ArenaState, PipelineMode, EventOutcome, EventNarrationResponse, InterfaceColor, SavedStatusSnapshot, Perk } from './types';
 import { DEFAULT_SPECIAL, FALLOUT_ERA_STARTS } from './constants';
 import { formatYear, localizeLocation } from './localization';
 import Terminal from './components/Terminal';
 import StatBar from './components/StatBar';
-import { createPlayerCharacter, getNarrativeResponse, getArenaNarration, getStatusUpdate, getEventOutcome, getEventNarration, auditInventoryWeights, recoverInventoryStatus, generateSceneImage, generateArenaAvatar, generateCompanionAvatar, compressMemory } from './services/modelService';
+import { createPlayerCharacter, getNarrativeResponse, getArenaNarration, getStatusUpdate, getEventOutcome, getEventNarration, auditInventoryWeights, recoverInventoryStatus, generateSceneImage, generateArenaAvatar, generateCompanionAvatar, compressMemory, pingTextModel, pingImageModel } from './services/modelService';
+import {
+  DEFAULT_IMAGE_BASE_URL,
+  DEFAULT_TEXT_BASE_URL,
+  normalizeImageRequestFormat,
+  normalizeTextRequestFormat
+} from './services/requestFormats';
 import { SaveRepository, WebBackend, FSBackend, DEFAULT_LOCAL_HISTORY_LIMIT, getStorageHistoryLimit } from './save';
 import { clearFsHandle, loadFsHandle, saveFsHandle } from './save/handleStore';
 import wechatQr from './assets/wech.png';
@@ -32,6 +38,8 @@ const ARENA_SAVE_KEY_PREFIX = 'fallout_wasteland_arena_save';
 const USERS_DB_KEY = 'fallout_users_db';
 const USER_API_KEY_PREFIX = 'fallout_user_api_key';
 const USER_PROXY_KEY_PREFIX = 'fallout_user_proxy_key';
+const USER_API_PROFILES_PREFIX = 'fallout_user_api_profiles';
+const USER_ACTIVE_PROFILE_PREFIX = 'fallout_user_active_api_profile';
 const USER_ONBOARD_PREFIX = 'fallout_user_onboarded';
 const RESERVED_ADMIN_USERNAME = 'admin';
 const GUEST_COOLDOWN_KEY = 'fallout_guest_cooldown_until';
@@ -69,12 +77,20 @@ const DEFAULT_ARENA_PROMPT_EN = `1. Output approximately 1000 tokens, fully desc
 3. If one side is at a significant disadvantage, prioritize exploring non-confrontational approaches.
 4. At least one pivotal action or critical error must occur before determining the outcome.
 5. The battle result must be traceable as a chain of causality, not merely "who was stronger.".`;
-const MODEL_PROVIDER_OPTIONS: { value: ModelProvider; label: string }[] = [
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'grok', label: 'Grok' },
-  { value: 'gemini', label: 'Gemini' },
-  { value: 'claude', label: 'Claude' },
-  { value: 'doubao', label: 'Doubao' }
+const TEXT_REQUEST_FORMAT_OPTIONS: { value: TextRequestFormat; label: string; endpoint: string }[] = [
+  { value: 'openai-responses', label: 'OpenAI Responses', endpoint: '/responses' },
+  { value: 'openai-chat-completions', label: 'OpenAI Chat Completions', endpoint: '/chat/completions' },
+  { value: 'anthropic-messages', label: 'Anthropic Messages', endpoint: '/messages' },
+  { value: 'gemini-interactions', label: 'Gemini Interactions', endpoint: '/v1beta/interactions' },
+  { value: 'gemini-generate-content', label: 'Gemini GenerateContent', endpoint: '/v1beta/models/{model}:generateContent' }
+];
+
+const IMAGE_REQUEST_FORMAT_OPTIONS: { value: ImageRequestFormat; label: string; endpoint: string }[] = [
+  { value: 'openai-images', label: 'OpenAI Images', endpoint: '/images/generations' },
+  { value: 'openai-responses', label: 'OpenAI Responses + Image Tool', endpoint: '/responses' },
+  { value: 'openai-chat-completions', label: 'OpenAI Chat Completions + Image Output', endpoint: '/chat/completions' },
+  { value: 'gemini-interactions', label: 'Gemini Interactions', endpoint: '/v1beta/interactions' },
+  { value: 'gemini-generate-content', label: 'Gemini GenerateContent', endpoint: '/v1beta/models/{model}:generateContent' }
 ];
 
 const syncApState = (
@@ -101,45 +117,65 @@ const getSaveKey = (username: string) => `${SAVE_KEY_PREFIX}_${username}`;
 const getArenaSaveKey = (username: string) => `${ARENA_SAVE_KEY_PREFIX}_${username}`;
 type ApiKeyScope = 'text' | 'image';
 
-const getUserApiKeyKey = (username: string, provider: ModelProvider, scope?: ApiKeyScope) =>
-  `${USER_API_KEY_PREFIX}_${username}_${provider}${scope ? `_${scope}` : ''}`;
-const getUserProxyKeyKey = (username: string, provider: ModelProvider, scope?: ApiKeyScope) =>
-  `${USER_PROXY_KEY_PREFIX}_${username}_${provider}${scope ? `_${scope}` : ''}`;
+type ApiProfile = {
+  id: string;
+  scope: ApiKeyScope;
+  alias: string;
+  apiKey: string;
+  baseUrl: string;
+  requestFormat: TextRequestFormat | ImageRequestFormat;
+  model: string;
+  updatedAt: number;
+};
+
+const getUserApiKeyKey = (username: string, scope: ApiKeyScope) =>
+  `${USER_API_KEY_PREFIX}_${username}_${scope}`;
 const getUserOnboardKey = (username: string) => `${USER_ONBOARD_PREFIX}_${username}`;
+const getUserApiProfilesKey = (username: string) => `${USER_API_PROFILES_PREFIX}_${username}`;
+const getUserActiveProfileKey = (username: string, scope: ApiKeyScope) =>
+  `${USER_ACTIVE_PROFILE_PREFIX}_${username}_${scope}`;
 
-const loadUserApiKey = (username: string, provider: ModelProvider, scope?: ApiKeyScope) => {
+const loadApiProfiles = (username: string): ApiProfile[] => {
   try {
-    const scopedKey = getUserApiKeyKey(username, provider, scope);
-    const scopedValue = localStorage.getItem(scopedKey);
-    if (scopedValue !== null) return scopedValue;
-    if (!scope) return '';
-    return localStorage.getItem(getUserApiKeyKey(username, provider)) || '';
+    const parsed = JSON.parse(localStorage.getItem(getUserApiProfilesKey(username)) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((profile: any): profile is ApiProfile => (
+      profile
+      && typeof profile.id === 'string'
+      && (profile.scope === 'text' || profile.scope === 'image')
+      && typeof profile.alias === 'string'
+      && typeof profile.apiKey === 'string'
+      && typeof profile.baseUrl === 'string'
+      && typeof profile.requestFormat === 'string'
+      && typeof profile.model === 'string'
+    ));
+  } catch {
+    return [];
+  }
+};
+
+const persistApiProfiles = (username: string, profiles: ApiProfile[]) => {
+  localStorage.setItem(getUserApiProfilesKey(username), JSON.stringify(profiles));
+};
+
+const createProfileId = () => (
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `profile-${Date.now()}-${Math.random().toString(36).slice(2)}`
+);
+
+const loadUserApiKey = (username: string, scope: ApiKeyScope) => {
+  try {
+    return localStorage.getItem(getUserApiKeyKey(username, scope)) || '';
   } catch {
     return '';
   }
 };
 
-const loadUserProxyKey = (username: string, provider: ModelProvider, scope?: ApiKeyScope) => {
-  try {
-    const scopedKey = getUserProxyKeyKey(username, provider, scope);
-    const scopedValue = localStorage.getItem(scopedKey);
-    if (scopedValue !== null) return scopedValue;
-    if (!scope) return '';
-    return localStorage.getItem(getUserProxyKeyKey(username, provider)) || '';
-  } catch {
-    return '';
-  }
-};
-
-const persistUserApiKey = (
-  username: string,
-  provider: ModelProvider,
-  key: string,
-  scope?: ApiKeyScope
-) => {
+const persistUserApiKey = (username: string, scope: ApiKeyScope, key: string) => {
   try {
     const trimmed = key.trim();
-    const storageKey = getUserApiKeyKey(username, provider, scope);
+    const storageKey = getUserApiKeyKey(username, scope);
     if (!trimmed) {
       localStorage.removeItem(storageKey);
       return;
@@ -150,24 +186,39 @@ const persistUserApiKey = (
   }
 };
 
-const persistUserProxyKey = (
-  username: string,
-  provider: ModelProvider,
-  key: string,
-  scope?: ApiKeyScope
-) => {
+type LegacyKeyCandidate = {
+  id: string;
+  value: string;
+  provider: LegacyModelProvider;
+  source: 'direct' | 'proxy';
+  scope: ApiKeyScope | 'shared';
+};
+
+const LEGACY_PROVIDERS: LegacyModelProvider[] = ['openai', 'gemini', 'claude', 'doubao', 'grok'];
+
+const findLegacyKeyCandidates = (username: string, targetScope: ApiKeyScope): LegacyKeyCandidate[] => {
   try {
-    const trimmed = key.trim();
-    const storageKey = getUserProxyKeyKey(username, provider, scope);
-    if (!trimmed) {
-      localStorage.removeItem(storageKey);
-      return;
+    const candidates: LegacyKeyCandidate[] = [];
+    for (const provider of LEGACY_PROVIDERS) {
+      for (const source of ['direct', 'proxy'] as const) {
+        const prefix = source === 'direct' ? USER_API_KEY_PREFIX : USER_PROXY_KEY_PREFIX;
+        for (const scope of [targetScope, 'shared'] as const) {
+          const suffix = scope === 'shared' ? '' : `_${scope}`;
+          const id = `${prefix}_${username}_${provider}${suffix}`;
+          const value = localStorage.getItem(id)?.trim() || '';
+          if (value) candidates.push({ id, value, provider, source, scope });
+        }
+      }
     }
-    localStorage.setItem(storageKey, trimmed);
+    return candidates;
   } catch {
-    // Ignore storage errors.
+    return [];
   }
 };
+
+const maskApiKey = (value: string) => value.length <= 10
+  ? `${value.slice(0, 2)}••••${value.slice(-2)}`
+  : `${value.slice(0, 5)}••••••${value.slice(-4)}`;
 
 const normalizeProxyBaseUrl = (value: string) => value.trim().replace(/\/+$/, '');
 const isRootProxyUrlWithoutApiPath = (value: string) => {
@@ -315,8 +366,8 @@ const appendJsonParseGuidance = (detail: string, isZh: boolean) => {
   }
   if (isProxyConvertRequestError(detail)) {
     const guidance = isZh
-      ? '中转站返回了 convert_request_failed，这表示该中转站无法把当前请求转换为上游模型所需协议。请在中转站后台切换到支持该协议的渠道/模型，或在本应用中更换提供商与模型配置。'
-      : 'The proxy returned convert_request_failed, which means it cannot translate this request to the upstream model protocol. Switch to a compatible channel/model in your proxy, or change provider/model settings in this app.';
+      ? '中转站返回了 convert_request_failed，这表示该中转站无法把当前请求转换为上游模型所需协议。请在中转站后台切换到支持该协议的渠道/模型，或在本应用中更换请求格式与模型档案。'
+      : 'The relay returned convert_request_failed, which means it cannot translate this request to the upstream model protocol. Switch to a compatible relay channel/model, or change the request format and model profile in this app.';
     enriched = `${enriched}\n${guidance}`;
   }
   return enriched;
@@ -1153,7 +1204,22 @@ const isErrorHistoryEntry = (entry: HistoryEntry) => {
 };
 
 const normalizeProviderSettings = (settings: GameSettings): GameSettings => {
-  const fallbackProvider = settings.textProvider || settings.imageProvider || settings.modelProvider || 'gemini';
+  const legacyTextProvider = settings.textProvider || settings.modelProvider;
+  const legacyImageProvider = settings.imageProvider || settings.modelProvider || legacyTextProvider;
+  const textRequestFormat = normalizeTextRequestFormat(settings.textRequestFormat || legacyTextProvider);
+  const imageRequestFormat = normalizeImageRequestFormat(settings.imageRequestFormat || legacyImageProvider);
+  const textBaseUrl = normalizeProxyBaseUrl(
+    settings.textBaseUrl
+      || settings.textProxyBaseUrl
+      || settings.proxyBaseUrl
+      || DEFAULT_TEXT_BASE_URL[textRequestFormat]
+  );
+  const imageBaseUrl = normalizeProxyBaseUrl(
+    settings.imageBaseUrl
+      || settings.imageProxyBaseUrl
+      || settings.proxyBaseUrl
+      || DEFAULT_IMAGE_BASE_URL[imageRequestFormat]
+  );
   const defaultTextScale = Number.isFinite(DEFAULT_SETTINGS.textScale)
     ? (DEFAULT_SETTINGS.textScale as number)
     : 1;
@@ -1163,8 +1229,10 @@ const normalizeProviderSettings = (settings: GameSettings): GameSettings => {
   const interfaceColor = normalizeInterfaceColor(settings.interfaceColor, DEFAULT_INTERFACE_COLOR);
   return {
     ...settings,
-    textProvider: settings.textProvider || fallbackProvider,
-    imageProvider: settings.imageProvider || fallbackProvider,
+    textRequestFormat,
+    imageRequestFormat,
+    textBaseUrl,
+    imageBaseUrl,
     userSystemPrompt: settings.userSystemPrompt ?? '',
     userSystemPromptCustom: settings.userSystemPromptCustom ?? false,
     imageUserSystemPrompt: settings.imageUserSystemPrompt ?? '',
@@ -1180,18 +1248,10 @@ const normalizeSessionSettings = (settings: GameSettings, tier: UserTier, hasKey
   const normalized = normalizeSettingsForTier(settings, tier, minTurnsOverride);
   const lockedImages = lockImageTurnsForTier(normalized, tier, hasKey);
   const normalizedProviders = normalizeProviderSettings(lockedImages);
-  const normalizedProxyBaseUrl = normalizeProxyBaseUrl(normalizedProviders.proxyBaseUrl || '');
-  const normalizedTextProxyBaseUrl = normalizeProxyBaseUrl(
-    normalizedProviders.textProxyBaseUrl || normalizedProviders.proxyBaseUrl || ''
-  );
-  const normalizedImageProxyBaseUrl = normalizeProxyBaseUrl(
-    normalizedProviders.imageProxyBaseUrl || normalizedProviders.proxyBaseUrl || ''
-  );
   return lockHistoryTurnsForTier({
     ...normalizedProviders,
-    proxyBaseUrl: normalizedProxyBaseUrl,
-    textProxyBaseUrl: normalizedTextProxyBaseUrl,
-    imageProxyBaseUrl: normalizedImageProxyBaseUrl
+    textBaseUrl: normalizeProxyBaseUrl(normalizedProviders.textBaseUrl || ''),
+    imageBaseUrl: normalizeProxyBaseUrl(normalizedProviders.imageBaseUrl || '')
   }, tier);
 };
 
@@ -1919,6 +1979,32 @@ type GalleryImage = {
   selected: boolean;
 };
 
+type PingState = {
+  status: 'idle' | 'running' | 'success' | 'error';
+  message?: string;
+  details?: string;
+  imageUrl?: string;
+};
+
+const formatPingTrace = (
+  result: { requestId?: string; responseModel?: string; usage?: Record<string, any> },
+  isZh: boolean
+) => {
+  const usage = result.usage || {};
+  const totalTokens = usage.total_tokens ?? usage.totalTokenCount;
+  const imageTokens = usage.completion_tokens_details?.image_tokens
+    ?? usage.candidatesTokenCountDetails?.find?.((item: any) => item?.modality === 'IMAGE')?.tokenCount;
+  const cost = typeof usage.cost === 'number' ? usage.cost : undefined;
+  const parts = [
+    result.requestId ? `ID: ${result.requestId}` : '',
+    result.responseModel ? `${isZh ? '实际模型' : 'Response model'}: ${result.responseModel}` : '',
+    typeof totalTokens === 'number' ? `${isZh ? '总 Tokens' : 'Total tokens'}: ${totalTokens}` : '',
+    typeof imageTokens === 'number' ? `${isZh ? '图像 Tokens' : 'Image tokens'}: ${imageTokens}` : '',
+    typeof cost === 'number' ? `${isZh ? '费用' : 'Cost'}: $${cost.toFixed(6)}` : ''
+  ].filter(Boolean);
+  return parts.join(' · ');
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<'auth' | 'start' | 'creation' | 'playing' | 'arena_setup' | 'arena_play'>('auth');
   const [gameState, setGameState] = useState<GameState>(
@@ -1976,6 +2062,20 @@ const App: React.FC = () => {
   const [isImagePromptOpen, setIsImagePromptOpen] = useState(false);
   const [isArenaPromptOpen, setIsArenaPromptOpen] = useState(false);
   const [isTipOpen, setIsTipOpen] = useState(false);
+  const [isApiFormatHelpOpen, setIsApiFormatHelpOpen] = useState(false);
+  const [textPing, setTextPing] = useState<PingState>({ status: 'idle' });
+  const [imagePing, setImagePing] = useState<PingState>({ status: 'idle' });
+  const [legacyKeyRevision, setLegacyKeyRevision] = useState(0);
+  const [selectedLegacyTextKey, setSelectedLegacyTextKey] = useState('');
+  const [selectedLegacyImageKey, setSelectedLegacyImageKey] = useState('');
+  const [apiProfiles, setApiProfiles] = useState<ApiProfile[]>([]);
+  const [selectedTextProfileId, setSelectedTextProfileId] = useState('');
+  const [selectedImageProfileId, setSelectedImageProfileId] = useState('');
+  const [loadedTextProfileId, setLoadedTextProfileId] = useState('');
+  const [loadedImageProfileId, setLoadedImageProfileId] = useState('');
+  const [textProfileAlias, setTextProfileAlias] = useState('');
+  const [imageProfileAlias, setImageProfileAlias] = useState('');
+  const [profileNotice, setProfileNotice] = useState<string | null>(null);
   const [arenaError, setArenaError] = useState<string | null>(null);
   const [showArenaExportMenu, setShowArenaExportMenu] = useState(false);
   const [arenaSidebarFolded, setArenaSidebarFolded] = useState(false);
@@ -2026,21 +2126,19 @@ const App: React.FC = () => {
   const isGuest = activeTier === 'guest';
   const hasTextUserKey = !!currentUser?.textApiKey;
   const hasImageUserKey = !!currentUser?.imageApiKey;
-  const hasTextProxyKey = !!currentUser?.textProxyKey;
-  const hasImageProxyKey = !!currentUser?.imageProxyKey;
-  const useProxy = isNormal && !!gameState.settings.useProxy;
-  const textProxyInputValue = gameState.settings.textProxyBaseUrl || gameState.settings.proxyBaseUrl || '';
-  const imageProxyInputValue = gameState.settings.imageProxyBaseUrl || gameState.settings.proxyBaseUrl || '';
+  const hasTextProxyKey = hasTextUserKey;
+  const hasImageProxyKey = hasImageUserKey;
+  const useProxy = isNormal;
+  const textProxyInputValue = gameState.settings.textBaseUrl || '';
+  const imageProxyInputValue = gameState.settings.imageBaseUrl || '';
   const textProxyBaseUrl = normalizeProxyBaseUrl(
     textProxyInputValue
   );
   const imageProxyBaseUrl = normalizeProxyBaseUrl(
     imageProxyInputValue
   );
-  const textProxyMissingApiPath = useProxy && isRootProxyUrlWithoutApiPath(textProxyInputValue);
-  const imageProxyMissingApiPath = useProxy && isRootProxyUrlWithoutApiPath(imageProxyInputValue);
-  const hasTextAuthKey = useProxy ? hasTextProxyKey : hasTextUserKey;
-  const hasImageAuthKey = useProxy ? hasImageProxyKey : hasImageUserKey;
+  const hasTextAuthKey = hasTextUserKey;
+  const hasImageAuthKey = hasImageUserKey;
   const normalKeyUnlocked = isNormal && hasTextAuthKey;
   const isKeyUnlocked = isAdmin || normalKeyUnlocked;
   const apUnlimited = isKeyUnlocked;
@@ -2056,12 +2154,12 @@ const App: React.FC = () => {
   const lockedHistoryLimit = isGuest ? getHistoryLimitForTier('guest') : rawHistoryLimit;
   const historyLimit = lockedHistoryLimit === -1 ? null : Math.max(1, lockedHistoryLimit);
   const storageHistoryLimit = getStorageHistoryLimit(gameState.settings, DEFAULT_LOCAL_HISTORY_LIMIT);
-  const textProvider: ModelProvider = isGuest || isAdmin
-    ? 'gemini'
-    : (gameState.settings.textProvider || gameState.settings.modelProvider || 'gemini');
-  const imageProvider: ModelProvider = isGuest || isAdmin
-    ? 'gemini'
-    : (gameState.settings.imageProvider || gameState.settings.modelProvider || 'gemini');
+  const textProvider: TextRequestFormat = isGuest || isAdmin
+    ? 'gemini-generate-content'
+    : normalizeTextRequestFormat(gameState.settings.textRequestFormat || gameState.settings.textProvider || gameState.settings.modelProvider);
+  const imageProvider: ImageRequestFormat = isGuest || isAdmin
+    ? 'gemini-generate-content'
+    : normalizeImageRequestFormat(gameState.settings.imageRequestFormat || gameState.settings.imageProvider || gameState.settings.modelProvider);
   const selectedTextModel = gameState.settings.textModel?.trim() || undefined;
   const selectedImageModel = gameState.settings.imageModel?.trim() || undefined;
   const imagesEnabled = gameState.settings.imagesEnabled !== false;
@@ -2079,7 +2177,6 @@ const App: React.FC = () => {
   const statusRebuildNarrationCount = countNarrations(gameState.history);
   const canRegenerateCompanionAvatar = imagesEnabled
     && !isGuest
-    && imageProvider !== 'claude'
     && !!effectiveImageModel
     && (isAdmin || hasImageAuthKey);
   const textScale = Number.isFinite(gameState.settings.textScale)
@@ -2106,12 +2203,46 @@ const App: React.FC = () => {
     : (arenaSidebarFolded ? 'flex-[5]' : 'flex-[2]');
   const arenaSidebarFlexClass = isDesktop ? '' : 'flex-[1]';
   const isArenaSidebarFolded = !isDesktop && arenaSidebarFolded;
-  const textProxyOk = useProxy ? !!textProxyBaseUrl : true;
-  const imageProxyOk = useProxy ? !!imageProxyBaseUrl : true;
+  const textProxyOk = isNormal ? !!textProxyBaseUrl : true;
+  const imageProxyOk = isNormal ? !!imageProxyBaseUrl : true;
   const textConfigured = !!textProvider && !!hasTextAuthKey && textProxyOk && !!selectedTextModel;
   const imageConfigured = !imagesEnabled || (!!imageProvider && !!hasImageAuthKey && imageProxyOk && !!selectedImageModel);
   const isModelConfigured = isNormal ? (textConfigured && imageConfigured) : true;
   const canPlay = isGuest || isAdmin || isModelConfigured;
+  const legacyTextKeys = useMemo(
+    () => currentUser && isNormal ? findLegacyKeyCandidates(currentUser.username, 'text') : [],
+    [currentUser?.username, isNormal, isSettingsOpen, legacyKeyRevision]
+  );
+  const legacyImageKeys = useMemo(
+    () => currentUser && isNormal ? findLegacyKeyCandidates(currentUser.username, 'image') : [],
+    [currentUser?.username, isNormal, isSettingsOpen, legacyKeyRevision]
+  );
+  const textProfiles = useMemo(
+    () => apiProfiles.filter(profile => profile.scope === 'text'),
+    [apiProfiles]
+  );
+  const imageProfiles = useMemo(
+    () => apiProfiles.filter(profile => profile.scope === 'image'),
+    [apiProfiles]
+  );
+  const selectedTextProfile = textProfiles.find(profile => profile.id === selectedTextProfileId);
+  const selectedImageProfile = imageProfiles.find(profile => profile.id === selectedImageProfileId);
+  const loadedTextProfile = textProfiles.find(profile => profile.id === loadedTextProfileId);
+  const loadedImageProfile = imageProfiles.find(profile => profile.id === loadedImageProfileId);
+  const textProfileSelectionPending = selectedTextProfileId !== loadedTextProfileId;
+  const imageProfileSelectionPending = selectedImageProfileId !== loadedImageProfileId;
+  const textProfileDirty = !loadedTextProfile
+    || loadedTextProfile.alias !== textProfileAlias.trim()
+    || loadedTextProfile.apiKey !== (currentUser?.textApiKey || '')
+    || loadedTextProfile.baseUrl !== textProxyBaseUrl
+    || loadedTextProfile.requestFormat !== textProvider
+    || loadedTextProfile.model !== (selectedTextModel || '');
+  const imageProfileDirty = !loadedImageProfile
+    || loadedImageProfile.alias !== imageProfileAlias.trim()
+    || loadedImageProfile.apiKey !== (currentUser?.imageApiKey || '')
+    || loadedImageProfile.baseUrl !== imageProxyBaseUrl
+    || loadedImageProfile.requestFormat !== imageProvider
+    || loadedImageProfile.model !== (selectedImageModel || '');
   const compressionLocked = isCompressing || !!compressionError || !!legacyCompressionPrompt || isManualCompressionConfirmOpen;
   const inventoryLocked = isInventoryRefreshing || !!legacyInventoryPrompt;
   const statusRebuildLocked = isStatusRebuilding || !!statusRebuildPrompt;
@@ -2623,40 +2754,16 @@ const App: React.FC = () => {
   }, [currentUser, isNormal, isModelConfigured]);
 
   useEffect(() => {
-    if (!currentUser || !isNormal) return;
-    const storedKey = loadUserApiKey(currentUser.username, textProvider, 'text');
-    const currentKey = currentUser.textApiKey || '';
-    if (storedKey !== currentKey) {
-      setCurrentUser(prev => (prev ? { ...prev, textApiKey: storedKey || undefined } : prev));
+    if (!legacyTextKeys.some(candidate => candidate.id === selectedLegacyTextKey)) {
+      setSelectedLegacyTextKey(legacyTextKeys[0]?.id || '');
     }
-  }, [currentUser, isNormal, textProvider]);
+  }, [legacyTextKeys, selectedLegacyTextKey]);
 
   useEffect(() => {
-    if (!currentUser || !isNormal) return;
-    const storedKey = loadUserApiKey(currentUser.username, imageProvider, 'image');
-    const currentKey = currentUser.imageApiKey || '';
-    if (storedKey !== currentKey) {
-      setCurrentUser(prev => (prev ? { ...prev, imageApiKey: storedKey || undefined } : prev));
+    if (!legacyImageKeys.some(candidate => candidate.id === selectedLegacyImageKey)) {
+      setSelectedLegacyImageKey(legacyImageKeys[0]?.id || '');
     }
-  }, [currentUser, isNormal, imageProvider]);
-
-  useEffect(() => {
-    if (!currentUser || !isNormal) return;
-    const storedKey = loadUserProxyKey(currentUser.username, textProvider, 'text');
-    const currentKey = currentUser.textProxyKey || '';
-    if (storedKey !== currentKey) {
-      setCurrentUser(prev => (prev ? { ...prev, textProxyKey: storedKey || undefined } : prev));
-    }
-  }, [currentUser, isNormal, textProvider]);
-
-  useEffect(() => {
-    if (!currentUser || !isNormal) return;
-    const storedKey = loadUserProxyKey(currentUser.username, imageProvider, 'image');
-    const currentKey = currentUser.imageProxyKey || '';
-    if (storedKey !== currentKey) {
-      setCurrentUser(prev => (prev ? { ...prev, imageProxyKey: storedKey || undefined } : prev));
-    }
-  }, [currentUser, isNormal, imageProvider]);
+  }, [legacyImageKeys, selectedLegacyImageKey]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -3177,10 +3284,7 @@ const App: React.FC = () => {
       const historyWithFlags = normalizeHistorySavedFlags(normalizedHistory);
       const filteredHistory = filterUnsavedHistory(historyWithFlags);
       const now = Date.now();
-      const proxyEnabled = currentUser.settings.useProxy && currentUser.tier === 'normal';
-      const hasKey = currentUser.tier === 'normal'
-        ? (proxyEnabled ? !!currentUser.textProxyKey : !!currentUser.textApiKey)
-        : false;
+      const hasKey = currentUser.tier === 'normal' ? !!currentUser.textApiKey : false;
       const settings = normalizeSessionSettings(
         currentUser.settings || DEFAULT_SETTINGS,
         activeTier,
@@ -3306,6 +3410,27 @@ const App: React.FC = () => {
   }, [currentUser, isGuest, isNormal, isModelConfigured, activeTier, maxAp, apRecovery]);
 
   const applySession = (session: UserSession) => {
+    const profiles = session.tier === 'normal' ? loadApiProfiles(session.username) : [];
+    const storedActiveTextProfileId = session.tier === 'normal'
+      ? (localStorage.getItem(getUserActiveProfileKey(session.username, 'text')) || '')
+      : '';
+    const storedActiveImageProfileId = session.tier === 'normal'
+      ? (localStorage.getItem(getUserActiveProfileKey(session.username, 'image')) || '')
+      : '';
+    const activeTextProfileId = profiles.some(profile => profile.id === storedActiveTextProfileId && profile.scope === 'text')
+      ? storedActiveTextProfileId
+      : '';
+    const activeImageProfileId = profiles.some(profile => profile.id === storedActiveImageProfileId && profile.scope === 'image')
+      ? storedActiveImageProfileId
+      : '';
+    setApiProfiles(profiles);
+    setSelectedTextProfileId(activeTextProfileId);
+    setSelectedImageProfileId(activeImageProfileId);
+    setLoadedTextProfileId(activeTextProfileId);
+    setLoadedImageProfileId(activeImageProfileId);
+    setTextProfileAlias(profiles.find(profile => profile.id === activeTextProfileId)?.alias || '');
+    setImageProfileAlias(profiles.find(profile => profile.id === activeImageProfileId)?.alias || '');
+    setProfileNotice(null);
     setCurrentUser(session);
     setGameState(createInitialGameState(session.settings, session.ap, session.apLastUpdated, gameState.language));
     setArenaState(createInitialArenaState(session.settings, gameState.language));
@@ -3357,30 +3482,43 @@ const App: React.FC = () => {
     }
     const tier = record.tier;
     const baseSettings = normalizeProviderSettings(record.settings || DEFAULT_SETTINGS);
-    const textProvider = (baseSettings.textProvider || baseSettings.modelProvider || 'gemini') as ModelProvider;
-    const imageProvider = (baseSettings.imageProvider || baseSettings.modelProvider || textProvider) as ModelProvider;
-    const storedTextKey = tier === 'normal' ? loadUserApiKey(record.username, textProvider, 'text') : '';
-    const storedImageKey = tier === 'normal' ? loadUserApiKey(record.username, imageProvider, 'image') : '';
-    const storedTextProxyKey = tier === 'normal' ? loadUserProxyKey(record.username, textProvider, 'text') : '';
-    const storedImageProxyKey = tier === 'normal' ? loadUserProxyKey(record.username, imageProvider, 'image') : '';
+    const profiles = tier === 'normal' ? loadApiProfiles(record.username) : [];
+    const activeTextProfile = tier === 'normal'
+      ? profiles.find(profile => profile.id === localStorage.getItem(getUserActiveProfileKey(record.username, 'text')) && profile.scope === 'text')
+      : undefined;
+    const activeImageProfile = tier === 'normal'
+      ? profiles.find(profile => profile.id === localStorage.getItem(getUserActiveProfileKey(record.username, 'image')) && profile.scope === 'image')
+      : undefined;
+    const storedTextKey = activeTextProfile?.apiKey || '';
+    const storedImageKey = activeImageProfile?.apiKey || '';
     const sessionTextApiKey = storedTextKey || undefined;
     const sessionImageApiKey = storedImageKey || undefined;
-    const sessionTextProxyKey = storedTextProxyKey || undefined;
-    const sessionImageProxyKey = storedImageProxyKey || undefined;
-    const proxyEnabled = tier === 'normal' && !!baseSettings.useProxy;
-    const hasTextKey = tier === 'normal' && (proxyEnabled ? !!sessionTextProxyKey : !!sessionTextApiKey);
-    const hasImageKey = tier === 'normal' && (proxyEnabled ? !!sessionImageProxyKey : !!sessionImageApiKey);
-    const settings = normalizeSessionSettings(baseSettings, tier, hasTextKey);
+    const hasTextKey = tier === 'normal' && !!sessionTextApiKey;
+    const hasImageKey = tier === 'normal' && !!sessionImageApiKey;
+    const profileSettings: GameSettings = {
+      ...baseSettings,
+      ...(activeTextProfile ? {
+        textBaseUrl: activeTextProfile.baseUrl,
+        textRequestFormat: normalizeTextRequestFormat(activeTextProfile.requestFormat),
+        textModel: activeTextProfile.model
+      } : {}),
+      ...(activeImageProfile ? {
+        imageBaseUrl: activeImageProfile.baseUrl,
+        imageRequestFormat: normalizeImageRequestFormat(activeImageProfile.requestFormat),
+        imageModel: activeImageProfile.model
+      } : {})
+    };
+    const settings = normalizeSessionSettings(profileSettings, tier, hasTextKey);
     const textProxyBase = normalizeProxyBaseUrl(
-      settings.textProxyBaseUrl || settings.proxyBaseUrl || ''
+      settings.textBaseUrl || ''
     );
     const imageProxyBase = normalizeProxyBaseUrl(
-      settings.imageProxyBaseUrl || settings.proxyBaseUrl || ''
+      settings.imageBaseUrl || ''
     );
-    const hasProxyBase = proxyEnabled ? (!!textProxyBase && (!!imageProxyBase || settings.imagesEnabled === false)) : true;
+    const hasProxyBase = tier === 'normal' ? (!!textProxyBase && (!!imageProxyBase || settings.imagesEnabled === false)) : true;
     const imagesEnabled = settings.imagesEnabled !== false;
-    const textConfigured = !!settings.textModel?.trim() && !!settings.textProvider && hasTextKey;
-    const imageConfigured = !imagesEnabled || (!!settings.imageModel?.trim() && !!settings.imageProvider && hasImageKey);
+    const textConfigured = !!settings.textModel?.trim() && !!settings.textRequestFormat && hasTextKey;
+    const imageConfigured = !imagesEnabled || (!!settings.imageModel?.trim() && !!settings.imageRequestFormat && hasImageKey);
     const needsSetup = tier === 'normal' && (!isUserOnboarded(record.username) || !hasProxyBase || !textConfigured || !imageConfigured);
     const maxAllowedAp = getMaxApForTier(tier);
     let ap = Math.min(maxAllowedAp, typeof record.ap === 'number' ? record.ap : maxAllowedAp);
@@ -3401,8 +3539,8 @@ const App: React.FC = () => {
       settings,
       textApiKey: sessionTextApiKey,
       imageApiKey: sessionImageApiKey,
-      textProxyKey: sessionTextProxyKey,
-      imageProxyKey: sessionImageProxyKey,
+      textProxyKey: sessionTextApiKey,
+      imageProxyKey: sessionImageApiKey,
       isTemporary: false
     });
     setAuthError('');
@@ -3541,13 +3679,6 @@ const App: React.FC = () => {
       setIsSettingsOpen(true);
       return;
     }
-    if (textProvider === 'gemini' && !useProxy && !hasTextUserKey && typeof (window as any).aistudio !== 'undefined') {
-      const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-      if (!hasKey) {
-        setKeyAlert(true);
-      }
-    }
-
     const { year, region, time } = rollEra();
     
     setGameState(prev => ({ 
@@ -4062,14 +4193,14 @@ const App: React.FC = () => {
 
     const actionSettings = state.settings;
     const useEventPipelineAction = actionSettings.pipelineMode === 'event';
-    const useProxyAction = isNormal && !!actionSettings.useProxy;
+    const useProxyAction = isNormal;
     const textProxyBaseUrlAction = normalizeProxyBaseUrl(
-      actionSettings.textProxyBaseUrl || actionSettings.proxyBaseUrl || ''
+      actionSettings.textBaseUrl || ''
     );
     const imageProxyBaseUrlAction = normalizeProxyBaseUrl(
-      actionSettings.imageProxyBaseUrl || actionSettings.proxyBaseUrl || ''
+      actionSettings.imageBaseUrl || ''
     );
-    const hasTextAuthKeyAction = useProxyAction ? hasTextProxyKey : hasTextUserKey;
+    const hasTextAuthKeyAction = hasTextUserKey;
     const normalKeyUnlockedAction = isNormal && hasTextAuthKeyAction;
     const isKeyUnlockedAction = isAdmin || normalKeyUnlockedAction;
     const apUnlimitedAction = isKeyUnlockedAction;
@@ -4082,12 +4213,12 @@ const App: React.FC = () => {
     const lockedHistoryLimit = isGuest ? getHistoryLimitForTier('guest') : rawHistoryLimit;
     const historyLimitAction = lockedHistoryLimit === -1 ? null : Math.max(1, lockedHistoryLimit);
     const imagesEnabledAction = actionSettings.imagesEnabled !== false;
-    const textProviderAction: ModelProvider = isGuest || isAdmin
-      ? 'gemini'
-      : (actionSettings.textProvider || actionSettings.modelProvider || 'gemini');
-    const imageProviderAction: ModelProvider = isGuest || isAdmin
-      ? 'gemini'
-      : (actionSettings.imageProvider || actionSettings.modelProvider || 'gemini');
+    const textProviderAction: TextRequestFormat = isGuest || isAdmin
+      ? 'gemini-generate-content'
+      : normalizeTextRequestFormat(actionSettings.textRequestFormat || actionSettings.textProvider || actionSettings.modelProvider);
+    const imageProviderAction: ImageRequestFormat = isGuest || isAdmin
+      ? 'gemini-generate-content'
+      : normalizeImageRequestFormat(actionSettings.imageRequestFormat || actionSettings.imageProvider || actionSettings.modelProvider);
     const effectiveTextModel = actionSettings.textModel?.trim() || undefined;
     const effectiveImageModel = actionSettings.imageModel?.trim() || undefined;
     const tokenUsageBase = options?.reroll ? gameState.tokenUsage : state.tokenUsage;
@@ -4838,11 +4969,11 @@ const App: React.FC = () => {
         apiKey: currentUser?.textApiKey,
         proxyApiKey: currentUser?.textProxyKey,
         proxyBaseUrl: normalizeProxyBaseUrl(
-          state.settings.textProxyBaseUrl || state.settings.proxyBaseUrl || ''
+          state.settings.textBaseUrl || ''
         ),
-        useProxy: isNormal && !!state.settings.useProxy,
+        useProxy: isNormal,
         textModel: state.settings.textModel || undefined,
-        provider: (state.settings.textProvider || state.settings.modelProvider || 'gemini') as ModelProvider
+        provider: normalizeTextRequestFormat(state.settings.textRequestFormat || state.settings.textProvider || state.settings.modelProvider)
       });
       const memoryText = result.memory?.trim();
       if (!memoryText) {
@@ -4959,15 +5090,15 @@ const App: React.FC = () => {
     setInventoryRefreshError(null);
     const isZhRefresh = state.language === 'zh';
     try {
-      const provider = (state.settings.textProvider || state.settings.modelProvider || 'gemini') as ModelProvider;
+      const provider = normalizeTextRequestFormat(state.settings.textRequestFormat || state.settings.textProvider || state.settings.modelProvider);
       const baseOptions = {
         tier: activeTier,
         apiKey: currentUser?.textApiKey,
         proxyApiKey: currentUser?.textProxyKey,
         proxyBaseUrl: normalizeProxyBaseUrl(
-          state.settings.textProxyBaseUrl || state.settings.proxyBaseUrl || ''
+          state.settings.textBaseUrl || ''
         ),
-        useProxy: isNormal && !!state.settings.useProxy,
+        useProxy: isNormal,
         textModel: state.settings.textModel || undefined,
         provider
       };
@@ -5133,10 +5264,6 @@ const App: React.FC = () => {
     if (!target) return;
     if (!imagesEnabled) {
       setSystemError(isZh ? '已关闭头像生成。请在设置中开启图像。' : 'Image generation is disabled. Enable it in settings.');
-      return;
-    }
-    if (imageProvider === 'claude') {
-      setSystemError(isZh ? 'Claude 不支持图像生成。' : 'Claude image generation is not supported.');
       return;
     }
     if (!effectiveImageModel) {
@@ -5432,69 +5559,56 @@ const App: React.FC = () => {
     }));
   };
 
-  const updateTextProvider = (value: ModelProvider) => {
-    if (!currentUser || !isNormal) return;
+  const updateTextProvider = (value: TextRequestFormat) => {
+    if (!isNormal) return;
     setGameState(prev => ({
       ...prev,
       settings: {
         ...prev.settings,
-        textProvider: value
+        textRequestFormat: value,
+        textBaseUrl: !prev.settings.textBaseUrl
+          ? DEFAULT_TEXT_BASE_URL[value]
+          : prev.settings.textBaseUrl
       }
     }));
-    const storedKey = loadUserApiKey(currentUser.username, value, 'text');
-    const storedProxyKey = loadUserProxyKey(currentUser.username, value, 'text');
-    setCurrentUser(prev => (prev ? { ...prev, textApiKey: storedKey || undefined, textProxyKey: storedProxyKey || undefined } : prev));
+    setTextPing({ status: 'idle' });
   };
 
-  const updateImageProvider = (value: ModelProvider) => {
-    if (!currentUser || !isNormal) return;
+  const updateImageProvider = (value: ImageRequestFormat) => {
+    if (!isNormal) return;
     setGameState(prev => ({
       ...prev,
       settings: {
         ...prev.settings,
-        imageProvider: value
+        imageRequestFormat: value,
+        imageBaseUrl: !prev.settings.imageBaseUrl
+          ? DEFAULT_IMAGE_BASE_URL[value]
+          : prev.settings.imageBaseUrl
       }
     }));
-    const storedKey = loadUserApiKey(currentUser.username, value, 'image');
-    const storedProxyKey = loadUserProxyKey(currentUser.username, value, 'image');
-    setCurrentUser(prev => (prev ? { ...prev, imageApiKey: storedKey || undefined, imageProxyKey: storedProxyKey || undefined } : prev));
+    setImagePing({ status: 'idle' });
   };
 
   const updateTextApiKey = (value: string) => {
     if (!currentUser || !isNormal) return;
     const trimmed = value.trim();
-    persistUserApiKey(currentUser.username, textProvider, trimmed, 'text');
-    setCurrentUser(prev => (prev ? { ...prev, textApiKey: trimmed || undefined } : prev));
+    setCurrentUser(prev => (prev ? {
+      ...prev,
+      textApiKey: trimmed || undefined,
+      textProxyKey: trimmed || undefined
+    } : prev));
+    setTextPing({ status: 'idle' });
   };
 
   const updateImageApiKey = (value: string) => {
     if (!currentUser || !isNormal) return;
     const trimmed = value.trim();
-    persistUserApiKey(currentUser.username, imageProvider, trimmed, 'image');
-    setCurrentUser(prev => (prev ? { ...prev, imageApiKey: trimmed || undefined } : prev));
-  };
-
-  const updateProxyEnabled = (checked: boolean) => {
-    if (!isNormal) return;
-    setGameState(prev => ({
+    setCurrentUser(prev => (prev ? {
       ...prev,
-      settings: {
-        ...prev.settings,
-        useProxy: checked
-      }
-    }));
-  };
-
-  const updateProxyBaseUrl = (value: string) => {
-    if (!isNormal) return;
-    const normalized = normalizeProxyBaseUrl(value);
-    setGameState(prev => ({
-      ...prev,
-      settings: {
-        ...prev.settings,
-        proxyBaseUrl: normalized
-      }
-    }));
+      imageApiKey: trimmed || undefined,
+      imageProxyKey: trimmed || undefined
+    } : prev));
+    setImagePing({ status: 'idle' });
   };
 
   const updateTextProxyBaseUrl = (value: string) => {
@@ -5503,9 +5617,10 @@ const App: React.FC = () => {
       ...prev,
       settings: {
         ...prev.settings,
-        textProxyBaseUrl: value
+        textBaseUrl: value
       }
     }));
+    setTextPing({ status: 'idle' });
   };
 
   const updateImageProxyBaseUrl = (value: string) => {
@@ -5514,21 +5629,22 @@ const App: React.FC = () => {
       ...prev,
       settings: {
         ...prev.settings,
-        imageProxyBaseUrl: value
+        imageBaseUrl: value
       }
     }));
+    setImagePing({ status: 'idle' });
   };
 
   const commitTextProxyBaseUrl = () => {
     if (!isNormal) return;
     const normalized = normalizeProxyBaseUrl(
-      gameState.settings.textProxyBaseUrl || gameState.settings.proxyBaseUrl || ''
+      gameState.settings.textBaseUrl || ''
     );
     setGameState(prev => ({
       ...prev,
       settings: {
         ...prev.settings,
-        textProxyBaseUrl: normalized
+        textBaseUrl: normalized
       }
     }));
   };
@@ -5536,29 +5652,15 @@ const App: React.FC = () => {
   const commitImageProxyBaseUrl = () => {
     if (!isNormal) return;
     const normalized = normalizeProxyBaseUrl(
-      gameState.settings.imageProxyBaseUrl || gameState.settings.proxyBaseUrl || ''
+      gameState.settings.imageBaseUrl || ''
     );
     setGameState(prev => ({
       ...prev,
       settings: {
         ...prev.settings,
-        imageProxyBaseUrl: normalized
+        imageBaseUrl: normalized
       }
     }));
-  };
-
-  const updateTextProxyKey = (value: string) => {
-    if (!currentUser || !isNormal) return;
-    const trimmed = value.trim();
-    persistUserProxyKey(currentUser.username, textProvider, trimmed, 'text');
-    setCurrentUser(prev => (prev ? { ...prev, textProxyKey: trimmed || undefined } : prev));
-  };
-
-  const updateImageProxyKey = (value: string) => {
-    if (!currentUser || !isNormal) return;
-    const trimmed = value.trim();
-    persistUserProxyKey(currentUser.username, imageProvider, trimmed, 'image');
-    setCurrentUser(prev => (prev ? { ...prev, imageProxyKey: trimmed || undefined } : prev));
   };
 
   const updateTextModelName = (value: string) => {
@@ -5570,6 +5672,7 @@ const App: React.FC = () => {
         textModel: value
       }
     }));
+    setTextPing({ status: 'idle' });
   };
 
   const updateImageModelName = (value: string) => {
@@ -5581,6 +5684,250 @@ const App: React.FC = () => {
         imageModel: value
       }
     }));
+    setImagePing({ status: 'idle' });
+  };
+
+  const applyApiProfile = (profile: ApiProfile) => {
+    if (!currentUser || !isNormal) return;
+    if (profile.scope === 'text') {
+      setSelectedTextProfileId(profile.id);
+      setLoadedTextProfileId(profile.id);
+      setTextProfileAlias(profile.alias);
+      setCurrentUser(prev => prev ? {
+        ...prev,
+        textApiKey: profile.apiKey || undefined,
+        textProxyKey: profile.apiKey || undefined
+      } : prev);
+      setGameState(prev => ({
+        ...prev,
+        settings: {
+          ...prev.settings,
+          textBaseUrl: profile.baseUrl,
+          textRequestFormat: normalizeTextRequestFormat(profile.requestFormat),
+          textModel: profile.model
+        }
+      }));
+      persistUserApiKey(currentUser.username, 'text', profile.apiKey);
+      localStorage.setItem(getUserActiveProfileKey(currentUser.username, 'text'), profile.id);
+      setTextPing({ status: 'idle' });
+    } else {
+      setSelectedImageProfileId(profile.id);
+      setLoadedImageProfileId(profile.id);
+      setImageProfileAlias(profile.alias);
+      setCurrentUser(prev => prev ? {
+        ...prev,
+        imageApiKey: profile.apiKey || undefined,
+        imageProxyKey: profile.apiKey || undefined
+      } : prev);
+      setGameState(prev => ({
+        ...prev,
+        settings: {
+          ...prev.settings,
+          imageBaseUrl: profile.baseUrl,
+          imageRequestFormat: normalizeImageRequestFormat(profile.requestFormat),
+          imageModel: profile.model
+        }
+      }));
+      persistUserApiKey(currentUser.username, 'image', profile.apiKey);
+      localStorage.setItem(getUserActiveProfileKey(currentUser.username, 'image'), profile.id);
+      setImagePing({ status: 'idle' });
+    }
+    setProfileNotice(isZh ? `已加载档案：${profile.alias}` : `Loaded profile: ${profile.alias}`);
+  };
+
+  const beginNewApiProfile = (scope: ApiKeyScope) => {
+    if (scope === 'text') {
+      setSelectedTextProfileId('');
+      setLoadedTextProfileId('');
+      setTextProfileAlias('');
+      updateTextProvider('openai-chat-completions');
+      updateTextProxyBaseUrl(DEFAULT_TEXT_BASE_URL['openai-chat-completions']);
+      updateTextModelName('');
+      updateTextApiKey('');
+    } else {
+      setSelectedImageProfileId('');
+      setLoadedImageProfileId('');
+      setImageProfileAlias('');
+      updateImageProvider('openai-images');
+      updateImageProxyBaseUrl(DEFAULT_IMAGE_BASE_URL['openai-images']);
+      updateImageModelName('');
+      updateImageApiKey('');
+    }
+    setProfileNotice(isZh ? '已新建空白档案。填写后请手动保存。' : 'New blank profile. Fill it in, then save manually.');
+  };
+
+  const saveApiProfile = (scope: ApiKeyScope) => {
+    if (!currentUser || !isNormal) return;
+    const alias = (scope === 'text' ? textProfileAlias : imageProfileAlias).trim();
+    const apiKey = scope === 'text' ? (currentUser.textApiKey || '') : (currentUser.imageApiKey || '');
+    const baseUrl = scope === 'text' ? textProxyBaseUrl : imageProxyBaseUrl;
+    const model = scope === 'text' ? (selectedTextModel || '') : (selectedImageModel || '');
+    const requestFormat = scope === 'text' ? textProvider : imageProvider;
+    if (!alias || !apiKey || !baseUrl || !model) {
+      setProfileNotice(isZh
+        ? '保存失败：请填写档案别名、Base URL、API Key 和模型名。'
+        : 'Save failed: alias, Base URL, API key, and model are required.');
+      return;
+    }
+    const selectionPending = scope === 'text' ? textProfileSelectionPending : imageProfileSelectionPending;
+    if (selectionPending) {
+      setProfileNotice(isZh
+        ? '请先点击“加载”应用所选档案，或点击“新建”开始空白档案。'
+        : 'Load the selected profile first, or click New to start a blank profile.');
+      return;
+    }
+    const loadedId = scope === 'text' ? loadedTextProfileId : loadedImageProfileId;
+    const id = loadedId || createProfileId();
+    const profile: ApiProfile = {
+      id,
+      scope,
+      alias,
+      apiKey,
+      baseUrl,
+      requestFormat,
+      model,
+      updatedAt: Date.now()
+    };
+    const nextProfiles = apiProfiles.some(item => item.id === id)
+      ? apiProfiles.map(item => item.id === id ? profile : item)
+      : [...apiProfiles, profile];
+    persistApiProfiles(currentUser.username, nextProfiles);
+    persistUserApiKey(currentUser.username, scope, apiKey);
+    localStorage.setItem(getUserActiveProfileKey(currentUser.username, scope), id);
+    setApiProfiles(nextProfiles);
+    if (scope === 'text') {
+      setSelectedTextProfileId(id);
+      setLoadedTextProfileId(id);
+    } else {
+      setSelectedImageProfileId(id);
+      setLoadedImageProfileId(id);
+    }
+    setProfileNotice(isZh ? `档案“${alias}”已保存在本机。` : `Profile “${alias}” saved locally.`);
+  };
+
+  const deleteApiProfile = (scope: ApiKeyScope) => {
+    if (!currentUser || !isNormal) return;
+    const selectedId = scope === 'text' ? selectedTextProfileId : selectedImageProfileId;
+    const profile = apiProfiles.find(item => item.id === selectedId && item.scope === scope);
+    if (!profile) return;
+    const confirmed = window.confirm(isZh
+      ? `删除本机档案“${profile.alias}”？此操作不会删除服务商账户或 Key。`
+      : `Delete local profile “${profile.alias}”? This does not delete the provider account or key.`);
+    if (!confirmed) return;
+    const nextProfiles = apiProfiles.filter(item => item.id !== profile.id);
+    persistApiProfiles(currentUser.username, nextProfiles);
+    setApiProfiles(nextProfiles);
+    const loadedId = scope === 'text' ? loadedTextProfileId : loadedImageProfileId;
+    const deletingLoadedProfile = profile.id === loadedId;
+    if (deletingLoadedProfile) {
+      localStorage.removeItem(getUserActiveProfileKey(currentUser.username, scope));
+      persistUserApiKey(currentUser.username, scope, '');
+    }
+    if (scope === 'text') {
+      setSelectedTextProfileId(deletingLoadedProfile ? '' : loadedTextProfileId);
+      if (deletingLoadedProfile) {
+        setLoadedTextProfileId('');
+        setTextProfileAlias('');
+        setCurrentUser(prev => prev ? { ...prev, textApiKey: undefined, textProxyKey: undefined } : prev);
+        setGameState(prev => ({
+          ...prev,
+          settings: {
+            ...prev.settings,
+            textBaseUrl: DEFAULT_TEXT_BASE_URL['openai-chat-completions'],
+            textRequestFormat: 'openai-chat-completions',
+            textModel: ''
+          }
+        }));
+        setTextPing({ status: 'idle' });
+      }
+    } else {
+      setSelectedImageProfileId(deletingLoadedProfile ? '' : loadedImageProfileId);
+      if (deletingLoadedProfile) {
+        setLoadedImageProfileId('');
+        setImageProfileAlias('');
+        setCurrentUser(prev => prev ? { ...prev, imageApiKey: undefined, imageProxyKey: undefined } : prev);
+        setGameState(prev => ({
+          ...prev,
+          settings: {
+            ...prev.settings,
+            imageBaseUrl: DEFAULT_IMAGE_BASE_URL['openai-images'],
+            imageRequestFormat: 'openai-images',
+            imageModel: ''
+          }
+        }));
+        setImagePing({ status: 'idle' });
+      }
+    }
+    setProfileNotice(isZh ? `已删除本机档案“${profile.alias}”。` : `Deleted local profile “${profile.alias}”.`);
+  };
+
+  const importLegacyKey = (scope: ApiKeyScope) => {
+    const selectedId = scope === 'text' ? selectedLegacyTextKey : selectedLegacyImageKey;
+    const candidates = scope === 'text' ? legacyTextKeys : legacyImageKeys;
+    const candidate = candidates.find(item => item.id === selectedId);
+    if (!candidate) return;
+    const alias = `${candidate.provider} ${candidate.source === 'proxy' ? 'proxy' : 'direct'} (imported)`;
+    if (scope === 'text') {
+      setSelectedTextProfileId('');
+      setLoadedTextProfileId('');
+      setTextProfileAlias(alias);
+      updateTextApiKey(candidate.value);
+    } else {
+      setSelectedImageProfileId('');
+      setLoadedImageProfileId('');
+      setImageProfileAlias(alias);
+      updateImageApiKey(candidate.value);
+    }
+    setLegacyKeyRevision(value => value + 1);
+    setProfileNotice(isZh
+      ? '旧 Key 已载入当前表单；请确认 URL、请求格式和模型，然后手动保存为档案。'
+      : 'Legacy key loaded into the form. Confirm URL, request format, and model, then save the profile manually.');
+  };
+
+  const handleTextPing = async () => {
+    if (!currentUser?.textApiKey || !textProxyBaseUrl || !selectedTextModel) return;
+    setTextPing({ status: 'running', message: isZh ? '正在连接文字模型…' : 'Contacting text model…' });
+    try {
+      const result = await pingTextModel({
+        apiKey: currentUser.textApiKey,
+        baseUrl: textProxyBaseUrl,
+        model: selectedTextModel,
+        format: textProvider,
+        language: gameState.language
+      });
+      setTextPing({
+        status: 'success',
+        message: result.text,
+        details: formatPingTrace(result, isZh)
+      });
+    } catch (error) {
+      setTextPing({ status: 'error', message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const handleImagePing = async () => {
+    if (!currentUser?.imageApiKey || !imageProxyBaseUrl || !selectedImageModel) return;
+    setImagePing({ status: 'running', message: isZh ? '正在生成测试图…' : 'Generating test image…' });
+    try {
+      const result = await pingImageModel({
+        apiKey: currentUser.imageApiKey,
+        baseUrl: imageProxyBaseUrl,
+        model: selectedImageModel,
+        format: imageProvider
+      });
+      const imageUrl = result.url || (result.base64
+        ? `data:${result.mimeType || 'image/png'};base64,${result.base64}`
+        : '');
+      if (!imageUrl) throw new Error(isZh ? '模型未返回图片。' : 'The model returned no image.');
+      setImagePing({
+        status: 'success',
+        message: isZh ? '图像通道连接成功。' : 'Image channel connected.',
+        details: formatPingTrace(result, isZh),
+        imageUrl
+      });
+    } catch (error) {
+      setImagePing({ status: 'error', message: error instanceof Error ? error.message : String(error) });
+    }
   };
 
   const updateUserSystemPrompt = (value: string) => {
@@ -5969,7 +6316,7 @@ const App: React.FC = () => {
                   : (isGuest
                     ? 'Temporary users do not generate turn images; only the creation image is shown.'
                     : (isNormal && !hasTextAuthKey
-                      ? `Configure provider/API to adjust image frequency; currently fixed at ${normalDefaultImageTurns}.`
+                      ? `Configure a text API profile to adjust image frequency; currently fixed at ${normalDefaultImageTurns}.`
                       : 'Generate images every N turns; adjustable.')))}
             </div>
             <div className="mt-3 flex items-center space-x-3">
@@ -6318,54 +6665,120 @@ const App: React.FC = () => {
 
           {isNormal && (
             <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-4 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-4">
-              <div className="text-xs opacity-70">
-                {isZh
-                  ? '文本模型必须支持多模态输入（文本+图像）、函数调用与联网搜索。'
-                  : 'Text models must be multimodal (text + image input), support function calling, and online search.'}
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-bold uppercase">{isZh ? '模型 API 档案' : 'Model API Profiles'}</div>
+                  <div className="text-[11px] opacity-70 mt-1">
+                    {isZh
+                      ? '文字和图片是两套完全独立的配置。档案和 Key 只保存在此浏览器。'
+                      : 'Text and image use completely separate configurations. Profiles and keys stay in this browser.'}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsApiFormatHelpOpen(value => !value)}
+                  aria-expanded={isApiFormatHelpOpen}
+                  aria-label={isZh ? 'API 配置帮助' : 'API configuration help'}
+                  className="shrink-0 w-7 h-7 rounded-full border border-[color:rgba(var(--pip-color-rgb),0.6)] font-bold hover:bg-[color:var(--pip-color)] hover:text-black"
+                >?</button>
               </div>
 
+              {isApiFormatHelpOpen && (
+                <div className="border border-[color:rgba(var(--pip-color-rgb),0.35)] p-3 text-[11px] leading-relaxed space-y-2 bg-black/50">
+                  <p>{isZh
+                    ? '如果你使用中转站、OpenRouter、DeepSeek、火山引擎或其他国产模型服务，通常应先选 OpenAI Chat Completions；只有服务文档明确写了 Responses API 时才选 OpenAI Responses。Grok、豆包等 OpenAI 兼容服务也使用这两种格式，不需要专用选项。'
+                    : 'For relays, OpenRouter, DeepSeek, Volcengine, and most OpenAI-compatible services, start with OpenAI Chat Completions. Choose OpenAI Responses only when the service documentation explicitly supports it. Grok and Doubao need no special option.'}</p>
+                  <p>{isZh
+                    ? 'Base URL 只填写公共前缀，例如 https://api.openai.com/v1。应用会根据请求格式自动追加下方显示的 endpoint。不要把模型名或完整 endpoint 重复填进 Base URL。'
+                    : 'Base URL is the shared prefix, such as https://api.openai.com/v1. The app appends the endpoint shown below. Do not repeat the model name or full endpoint in the Base URL.'}</p>
+                  <p>{isZh
+                    ? 'Anthropic 原生接口选 Messages。Google AI Studio 可选 Gemini Interactions 或 GenerateContent；两者都支持文字和图片，但模型本身仍需具备对应能力。DeepSeek 没有图像生成能力，请只把它放在文字档案。'
+                    : 'Use Messages for native Anthropic APIs. Google AI Studio supports Gemini Interactions and GenerateContent for text and images, provided the selected model supports that capability. DeepSeek has no image generation, so use it only for text.'}</p>
+                  <p className="text-yellow-300">{isZh
+                    ? '重要：修改表单不会自动改写档案。请点击“保存档案”；Ping 只测试当前表单，也不会保存。'
+                    : 'Important: form edits do not overwrite a profile automatically. Click Save Profile. Ping tests the current form and does not save it.'}</p>
+                </div>
+              )}
+
+              {(legacyTextKeys.length > 0 || legacyImageKeys.length > 0) && (
+                <div className="border border-yellow-400/50 p-3 space-y-3 bg-yellow-400/5">
+                  <div className="text-xs font-bold uppercase text-yellow-300">
+                    {isZh ? '检测到旧版 Key' : 'Legacy keys detected'}
+                  </div>
+                  <div className="text-[11px] opacity-75">
+                    {isZh
+                      ? '请选择要导入的旧 Key。导入只会载入当前表单；确认 URL、格式和模型后，请手动保存成新档案。'
+                      : 'Choose a legacy key to import. Import only loads the form; confirm URL, format, and model, then save it as a new profile.'}
+                  </div>
+                  {legacyTextKeys.length > 0 && (
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <select value={selectedLegacyTextKey} onChange={e => setSelectedLegacyTextKey(e.target.value)} className="flex-1 bg-black border border-yellow-400/50 p-2 text-xs">
+                        {legacyTextKeys.map(candidate => <option key={candidate.id} value={candidate.id}>{`TEXT · ${candidate.provider} · ${candidate.source} · ${maskApiKey(candidate.value)}`}</option>)}
+                      </select>
+                      <button onClick={() => importLegacyKey('text')} className="px-3 py-2 border border-yellow-400/60 text-xs font-bold uppercase hover:bg-yellow-300 hover:text-black">{isZh ? '导入文字' : 'Import Text'}</button>
+                    </div>
+                  )}
+                  {legacyImageKeys.length > 0 && (
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <select value={selectedLegacyImageKey} onChange={e => setSelectedLegacyImageKey(e.target.value)} className="flex-1 bg-black border border-yellow-400/50 p-2 text-xs">
+                        {legacyImageKeys.map(candidate => <option key={candidate.id} value={candidate.id}>{`IMAGE · ${candidate.provider} · ${candidate.source} · ${maskApiKey(candidate.value)}`}</option>)}
+                      </select>
+                      <button onClick={() => importLegacyKey('image')} className="px-3 py-2 border border-yellow-400/60 text-xs font-bold uppercase hover:bg-yellow-300 hover:text-black">{isZh ? '导入图片' : 'Import Image'}</button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {profileNotice && <div className="text-[11px] border-l-2 border-[color:var(--pip-color)] pl-2">{profileNotice}</div>}
+
               <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-3">
-                <div className="text-sm font-bold uppercase">
-                  {isZh ? '文本模型' : 'Text Model'}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-bold uppercase">{isZh ? '文字通道' : 'Text Channel'}</div>
+                  {textProfileDirty && <span className="text-[10px] text-yellow-300 uppercase">{isZh ? '尚未保存' : 'Unsaved'}</span>}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto_auto] gap-2">
+                  <select value={selectedTextProfileId} onChange={e => setSelectedTextProfileId(e.target.value)} className="bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-xs">
+                    <option value="">{isZh ? '新档案 / 未选择' : 'New / no profile'}</option>
+                    {textProfiles.map(profile => <option key={profile.id} value={profile.id}>{profile.alias}</option>)}
+                  </select>
+                  <button onClick={() => selectedTextProfile && applyApiProfile(selectedTextProfile)} disabled={!selectedTextProfile} className="px-3 py-2 border border-[color:rgba(var(--pip-color-rgb),0.5)] text-xs uppercase disabled:opacity-40">{isZh ? '加载' : 'Load'}</button>
+                  <button onClick={() => beginNewApiProfile('text')} className="px-3 py-2 border border-[color:rgba(var(--pip-color-rgb),0.5)] text-xs uppercase">{isZh ? '新建' : 'New'}</button>
+                  <button onClick={() => deleteApiProfile('text')} disabled={!selectedTextProfile} className="px-3 py-2 border border-red-400/60 text-xs uppercase disabled:opacity-40">{isZh ? '删除' : 'Delete'}</button>
                 </div>
                 <div>
-                  <div className="text-[11px] uppercase opacity-70">
-                    {isZh ? '文本提供商' : 'Text Provider'}
-                  </div>
+                  <div className="text-[11px] uppercase opacity-70">{isZh ? '档案别名' : 'Profile Alias'}</div>
+                  <input type="text" value={textProfileAlias} onChange={e => setTextProfileAlias(e.target.value)} className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-xs" placeholder={isZh ? '例如：DeepSeek 主力文字' : 'e.g. DeepSeek Main Text'} />
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase opacity-70">Base URL</div>
+                  <input type="text" value={textProxyInputValue} onChange={e => updateTextProxyBaseUrl(e.target.value)} onBlur={commitTextProxyBaseUrl} className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-xs" placeholder="https://api.example.com/v1" />
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase opacity-70">{isZh ? '请求格式' : 'Request Format'}</div>
                   <select
                     value={textProvider}
-                    onChange={(e) => updateTextProvider(e.target.value as ModelProvider)}
+                    onChange={(e) => updateTextProvider(e.target.value as TextRequestFormat)}
                     className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                   >
-                    {MODEL_PROVIDER_OPTIONS.map((option) => (
+                    {TEXT_REQUEST_FORMAT_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
                     ))}
                   </select>
+                  <div className="text-[10px] opacity-60 mt-1">Endpoint: {TEXT_REQUEST_FORMAT_OPTIONS.find(option => option.value === textProvider)?.endpoint}</div>
                 </div>
                 <div>
-                  <div className="text-[11px] uppercase opacity-70">
-                    {isZh ? '文本 API Key' : 'Text API Key'}
-                  </div>
-                  <div className="text-[10px] opacity-60 mt-1">
-                    {isZh ? '仅保存在本地浏览器，不会上传到服务器。' : 'Stored only in this browser and never uploaded.'}
-                  </div>
+                  <div className="text-[11px] uppercase opacity-70">API Key</div>
                   <input
                     type="password"
                     value={currentUser?.textApiKey || ''}
                     onChange={(e) => updateTextApiKey(e.target.value)}
                     className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
-                    placeholder={isZh ? '粘贴文本 API Key' : 'Paste text API key'}
+                    placeholder={isZh ? '粘贴文字 API Key' : 'Paste text API key'}
                   />
                 </div>
                 <div>
-                  <div className="text-[11px] uppercase opacity-70">
-                    {isZh ? '文本模型名称' : 'Text model name'}
-                  </div>
-                  <div className="text-[10px] opacity-60 mt-1">
-                    {isZh ? '例如：gpt-4.1-mini 或 gemini-2.5-flash-lite' : 'Example: gpt-4.1-mini or gemini-2.5-flash-lite'}
-                  </div>
+                  <div className="text-[11px] uppercase opacity-70">{isZh ? '模型名称' : 'Model Name'}</div>
                   <input
                     type="text"
                     value={gameState.settings.textModel || ''}
@@ -6374,35 +6787,53 @@ const App: React.FC = () => {
                     placeholder={isZh ? '输入文本模型名称' : 'Enter text model name'}
                   />
                 </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={() => saveApiProfile('text')} disabled={textProfileSelectionPending} className="px-3 py-2 border-2 border-[color:var(--pip-color)] text-xs font-bold uppercase hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40">{textProfileSelectionPending ? (isZh ? '请先加载' : 'Load First') : loadedTextProfile ? (isZh ? '保存修改' : 'Save Changes') : (isZh ? '保存档案' : 'Save Profile')}</button>
+                  <button onClick={handleTextPing} disabled={textPing.status === 'running' || !hasTextAuthKey || !textProxyBaseUrl || !selectedTextModel} className="px-3 py-2 border border-[color:rgba(var(--pip-color-rgb),0.6)] text-xs font-bold uppercase disabled:opacity-40">{textPing.status === 'running' ? (isZh ? '测试中…' : 'Testing…') : 'PING'}</button>
+                  {textPing.message && <span className={`text-[11px] break-all ${textPing.status === 'error' ? 'text-red-300' : textPing.status === 'success' ? 'text-green-300' : ''}`}>{textPing.message}</span>}
+                  {textPing.details && <span className="basis-full text-[10px] opacity-70 break-all">{textPing.details}</span>}
+                </div>
               </div>
 
               <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-3">
-                <div className="text-sm font-bold uppercase">
-                  {isZh ? '图像模型' : 'Image Model'}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-bold uppercase">{isZh ? '图片通道' : 'Image Channel'}</div>
+                  {imageProfileDirty && <span className="text-[10px] text-yellow-300 uppercase">{isZh ? '尚未保存' : 'Unsaved'}</span>}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto_auto] gap-2">
+                  <select value={selectedImageProfileId} onChange={e => setSelectedImageProfileId(e.target.value)} className="bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-xs">
+                    <option value="">{isZh ? '新档案 / 未选择' : 'New / no profile'}</option>
+                    {imageProfiles.map(profile => <option key={profile.id} value={profile.id}>{profile.alias}</option>)}
+                  </select>
+                  <button onClick={() => selectedImageProfile && applyApiProfile(selectedImageProfile)} disabled={!selectedImageProfile} className="px-3 py-2 border border-[color:rgba(var(--pip-color-rgb),0.5)] text-xs uppercase disabled:opacity-40">{isZh ? '加载' : 'Load'}</button>
+                  <button onClick={() => beginNewApiProfile('image')} className="px-3 py-2 border border-[color:rgba(var(--pip-color-rgb),0.5)] text-xs uppercase">{isZh ? '新建' : 'New'}</button>
+                  <button onClick={() => deleteApiProfile('image')} disabled={!selectedImageProfile} className="px-3 py-2 border border-red-400/60 text-xs uppercase disabled:opacity-40">{isZh ? '删除' : 'Delete'}</button>
                 </div>
                 <div>
-                  <div className="text-[11px] uppercase opacity-70">
-                    {isZh ? '图像提供商' : 'Image Provider'}
-                  </div>
+                  <div className="text-[11px] uppercase opacity-70">{isZh ? '档案别名' : 'Profile Alias'}</div>
+                  <input type="text" value={imageProfileAlias} onChange={e => setImageProfileAlias(e.target.value)} className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-xs" placeholder={isZh ? '例如：Gemini 图片' : 'e.g. Gemini Images'} />
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase opacity-70">Base URL</div>
+                  <input type="text" value={imageProxyInputValue} onChange={e => updateImageProxyBaseUrl(e.target.value)} onBlur={commitImageProxyBaseUrl} className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-xs" placeholder="https://api.example.com/v1" />
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase opacity-70">{isZh ? '请求格式' : 'Request Format'}</div>
                   <select
                     value={imageProvider}
-                    onChange={(e) => updateImageProvider(e.target.value as ModelProvider)}
+                    onChange={(e) => updateImageProvider(e.target.value as ImageRequestFormat)}
                     className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
                   >
-                    {MODEL_PROVIDER_OPTIONS.map((option) => (
+                    {IMAGE_REQUEST_FORMAT_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
                     ))}
                   </select>
+                  <div className="text-[10px] opacity-60 mt-1">Endpoint: {IMAGE_REQUEST_FORMAT_OPTIONS.find(option => option.value === imageProvider)?.endpoint}</div>
                 </div>
                 <div>
-                  <div className="text-[11px] uppercase opacity-70">
-                    {isZh ? '图像 API Key' : 'Image API Key'}
-                  </div>
-                  <div className="text-[10px] opacity-60 mt-1">
-                    {isZh ? '仅保存在本地浏览器，不会上传到服务器。' : 'Stored only in this browser and never uploaded.'}
-                  </div>
+                  <div className="text-[11px] uppercase opacity-70">API Key</div>
                   <input
                     type="password"
                     value={currentUser?.imageApiKey || ''}
@@ -6412,12 +6843,7 @@ const App: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <div className="text-[11px] uppercase opacity-70">
-                    {isZh ? '图像模型名称' : 'Image model name'}
-                  </div>
-                  <div className="text-[10px] opacity-60 mt-1">
-                    {isZh ? '例如：gpt-image-1 或 gemini-2.5-flash-image' : 'Example: gpt-image-1 or gemini-2.5-flash-image'}
-                  </div>
+                  <div className="text-[11px] uppercase opacity-70">{isZh ? '模型名称' : 'Model Name'}</div>
                   <input
                     type="text"
                     value={gameState.settings.imageModel || ''}
@@ -6426,98 +6852,22 @@ const App: React.FC = () => {
                     placeholder={isZh ? '输入图像模型名称' : 'Enter image model name'}
                   />
                 </div>
-              </div>
-
-              <div className="border border-[color:rgba(var(--pip-color-rgb),0.3)] p-3 bg-[color:rgba(var(--pip-color-rgb),0.05)] space-y-3">
-                <label className="flex items-center gap-2 text-xs uppercase font-bold">
-                  <input
-                    type="checkbox"
-                    checked={!!gameState.settings.useProxy}
-                    onChange={(e) => updateProxyEnabled(e.target.checked)}
-                    className="accent-[var(--pip-color)]"
-                  />
-                  {isZh ? '使用中转站（API Proxy）' : 'Use API Proxy'}
-                </label>
-                {gameState.settings.useProxy && (
-                  <div className="space-y-3">
-                    <div>
-                      <div className="text-[11px] uppercase opacity-70">
-                        {isZh ? '中转站 Base URL（文本）' : 'Proxy Base URL (Text)'}
-                      </div>
-                      <input
-                        type="text"
-                        value={textProxyInputValue}
-                        onChange={(e) => updateTextProxyBaseUrl(e.target.value)}
-                        onBlur={commitTextProxyBaseUrl}
-                        className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
-                        placeholder="https://example.com/v1"
-                      />
-                      {textProxyMissingApiPath && (
-                        <div className="text-[10px] text-yellow-300 mt-1">
-                          {isZh
-                            ? '该 URL 未包含 API 路径。OpenAI 兼容中转站通常使用 /v1；其他提供商可能需要不同路径。'
-                            : 'This URL has no API path. For OpenAI-compatible proxies, use /v1; other providers may require provider-specific paths.'}
-                        </div>
-                      )}
-                    </div>
-                    <div>
-                      <div className="text-[11px] uppercase opacity-70">
-                        {isZh ? '中转站 Base URL（图像）' : 'Proxy Base URL (Image)'}
-                      </div>
-                      <input
-                        type="text"
-                        value={imageProxyInputValue}
-                        onChange={(e) => updateImageProxyBaseUrl(e.target.value)}
-                        onBlur={commitImageProxyBaseUrl}
-                        className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
-                        placeholder="https://example.com/v1"
-                      />
-                      {imageProxyMissingApiPath && (
-                        <div className="text-[10px] text-yellow-300 mt-1">
-                          {isZh
-                            ? '该 URL 未包含 API 路径。OpenAI 兼容中转站通常使用 /v1；其他提供商可能需要不同路径。'
-                            : 'This URL has no API path. For OpenAI-compatible proxies, use /v1; other providers may require provider-specific paths.'}
-                        </div>
-                      )}
-                    </div>
-                    <div>
-                      <div className="text-[11px] uppercase opacity-70">
-                        {isZh ? '中转站 API Key（文本）' : 'Proxy API Key (Text)'}
-                      </div>
-                      <input
-                        type="password"
-                        value={currentUser?.textProxyKey || ''}
-                        onChange={(e) => updateTextProxyKey(e.target.value)}
-                        className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
-                        placeholder={isZh ? '粘贴文本中转站 API Key' : 'Paste text proxy API key'}
-                      />
-                    </div>
-                    <div>
-                      <div className="text-[11px] uppercase opacity-70">
-                        {isZh ? '中转站 API Key（图像）' : 'Proxy API Key (Image)'}
-                      </div>
-                      <input
-                        type="password"
-                        value={currentUser?.imageProxyKey || ''}
-                        onChange={(e) => updateImageProxyKey(e.target.value)}
-                        className="mt-2 w-full bg-black border border-[color:rgba(var(--pip-color-rgb),0.5)] p-2 text-[color:var(--pip-color)] text-xs focus:outline-none"
-                        placeholder={isZh ? '粘贴图像中转站 API Key' : 'Paste image proxy API key'}
-                      />
-                    </div>
-                    <div className="text-[11px] opacity-70">
-                      {isZh
-                        ? '关于中转站兼容性说明：本应用在使用中转站时，仍按所选模型的官方 API 协议发起请求。若请求失败，通常是中转站不支持该模型的原生接口或高级功能。此类兼容性问题由中转站服务本身导致，并非应用错误。'
-                        : 'Proxy compatibility notice: requests are sent using the official API protocol of the selected provider. Failures usually mean the proxy does not support that native API or advanced features. Such compatibility issues are caused by the proxy service, not the app.'}
-                    </div>
+                <div className="flex flex-wrap items-start gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button onClick={() => saveApiProfile('image')} disabled={imageProfileSelectionPending} className="px-3 py-2 border-2 border-[color:var(--pip-color)] text-xs font-bold uppercase hover:bg-[color:var(--pip-color)] hover:text-black disabled:opacity-40">{imageProfileSelectionPending ? (isZh ? '请先加载' : 'Load First') : loadedImageProfile ? (isZh ? '保存修改' : 'Save Changes') : (isZh ? '保存档案' : 'Save Profile')}</button>
+                    <button onClick={handleImagePing} disabled={imagePing.status === 'running' || !hasImageAuthKey || !imageProxyBaseUrl || !selectedImageModel} className="px-3 py-2 border border-[color:rgba(var(--pip-color-rgb),0.6)] text-xs font-bold uppercase disabled:opacity-40">{imagePing.status === 'running' ? (isZh ? '测试中…' : 'Testing…') : 'PING'}</button>
                   </div>
-                )}
+                  {imagePing.imageUrl && <img src={imagePing.imageUrl} alt={isZh ? '图片通道 Ping 结果：像素风避难所小子竖起大拇指' : 'Image ping result: pixel-art Vault Boy giving a thumbs-up'} className="w-24 h-24 object-cover border border-[color:rgba(var(--pip-color-rgb),0.6)] image-render-pixel" />}
+                  {imagePing.message && <span className={`text-[11px] break-all ${imagePing.status === 'error' ? 'text-red-300' : imagePing.status === 'success' ? 'text-green-300' : ''}`}>{imagePing.message}</span>}
+                  {imagePing.details && <span className="basis-full text-[10px] opacity-70 break-all">{imagePing.details}</span>}
+                </div>
               </div>
 
               {!isModelConfigured && (
                 <div className="text-[11px] text-yellow-300 uppercase">
                   {isZh
-                    ? '需要填写文本提供商/API/模型；如启用图像生成，还需填写图像提供商/API/模型。'
-                    : 'Provide text provider/API/model; if images are enabled, also provide image provider/API/model.'}
+                    ? '需要填写并保存文字档案；如启用图像生成，还需填写并保存图片档案。'
+                    : 'Complete and save a text profile; if images are enabled, also complete and save an image profile.'}
                 </div>
               )}
             </div>
@@ -6637,8 +6987,8 @@ const App: React.FC = () => {
             <div className="text-xs uppercase opacity-60 mb-2">{isZh ? '快速开始' : 'Quick Start'}</div>
             <div className="opacity-80">
               {isZh
-                ? '注册用户需先在设置中填写文本提供商/API/模型；如启用图像生成，还需填写图像提供商/API/模型。完成后才能游玩。'
-                : 'Registered users must configure text provider/API/model first; if images are enabled, also configure image provider/API/model before playing.'}
+                ? '注册用户需先在设置中建立文字 API 档案；如启用图像生成，还需建立独立的图片档案。请记得手动保存档案。'
+                : 'Registered users must create a text API profile first and, when images are enabled, a separate image profile. Remember to save profiles manually.'}
             </div>
             <div className="opacity-80 mt-2">
               {isZh
@@ -6656,13 +7006,13 @@ const App: React.FC = () => {
             </div>
             <div className="opacity-80 mt-2">
               {isZh
-                ? '文本/图像提供商、模型与 API Key 完全分离，可分别配置。'
-                : 'Text and image providers, models, and API keys are fully separated and can be configured independently.'}
+                ? '文字与图片的 Base URL、请求格式、模型和 API Key 完全分离，可分别加载不同档案。'
+                : 'Text and image Base URLs, request formats, models, and API keys are fully separated and can load different profiles.'}
             </div>
             <div className="opacity-80 mt-2">
               {isZh
-                ? '使用中转站时，需要 Base URL 与独立的文本/图像中转站 Key；请求仍按官方原生协议发起。'
-                : 'When using API Proxy, provide a Base URL and separate text/image proxy keys; requests still use native provider protocols.'}
+                ? '大多数中转站和国产模型服务支持 OpenAI Chat Completions 格式；不确定时可从该格式开始并使用 Ping 测试。'
+                : 'Most relays and domestic model services support OpenAI Chat Completions; start there when unsure and verify with Ping.'}
             </div>
           </div>
 
@@ -7563,8 +7913,8 @@ const App: React.FC = () => {
              {!canPlay && isNormal && (
                <div className="text-xs opacity-70 uppercase">
                  {isZh
-                   ? '请先在设置中填写文本提供商/API/模型；如启用图像生成，还需填写图像提供商/API/模型。'
-                   : 'Configure text provider/API/model first; if images are enabled, also configure image provider/API/model.'}
+                   ? '请先在设置中填写文字 API 档案；如启用图像生成，还需填写独立的图片档案。'
+                   : 'Configure a text API profile first and, if images are enabled, a separate image profile.'}
                </div>
              )}
           </div>

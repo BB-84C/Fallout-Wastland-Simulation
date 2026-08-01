@@ -140,7 +140,24 @@ export type TextModelId = string;
 
 export type ImageModelId = string;
 
-export type ModelProvider = 'openai' | 'gemini' | 'claude' | 'doubao' | 'grok';
+export type TextRequestFormat =
+  | 'openai-responses'
+  | 'openai-chat-completions'
+  | 'anthropic-messages'
+  | 'gemini-interactions'
+  | 'gemini-generate-content';
+
+export type ImageRequestFormat =
+  | 'openai-images'
+  | 'openai-responses'
+  | 'openai-chat-completions'
+  | 'gemini-interactions'
+  | 'gemini-generate-content';
+
+export type ModelRequestFormat = TextRequestFormat | ImageRequestFormat;
+
+/** @deprecated Kept only so older saves can be migrated. */
+export type LegacyModelProvider = 'openai' | 'gemini' | 'claude' | 'doubao' | 'grok';
 
 export type PipelineMode = 'legacy' | 'event';
 
@@ -155,9 +172,16 @@ export interface GameSettings {
   proxyBaseUrl?: string;
   textProxyBaseUrl?: string;
   imageProxyBaseUrl?: string;
-  modelProvider?: ModelProvider;
-  textProvider?: ModelProvider;
-  imageProvider?: ModelProvider;
+  textBaseUrl?: string;
+  imageBaseUrl?: string;
+  textRequestFormat?: TextRequestFormat;
+  imageRequestFormat?: ImageRequestFormat;
+  /** @deprecated Legacy provider fields are read during migration only. */
+  modelProvider?: LegacyModelProvider;
+  /** @deprecated Legacy provider fields are read during migration only. */
+  textProvider?: LegacyModelProvider;
+  /** @deprecated Legacy provider fields are read during migration only. */
+  imageProvider?: LegacyModelProvider;
   textModel?: TextModelId;
   imageModel?: ImageModelId;
   userSystemPrompt?: string;
